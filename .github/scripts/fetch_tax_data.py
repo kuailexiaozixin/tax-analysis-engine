@@ -2,14 +2,30 @@
 """
 Fetch tax law search results from NPC API for 12 tax types.
 Saves JSON to docs/data/ for GitHub Pages to serve statically.
+
+只用标题检索（searchRange=1）。NPC 的正文检索实测不按检索词过滤，连"紫貂养殖"
+都能命中民法典，返回的是与查询无关的法规流。代价是主题类关键词拿不到多少结果：
+"研发费用" 只有 6 条（国家赔偿费用管理条例之类），"留抵退税" 只有 1 条，因为
+NPC 收录的是法律、行政法规标题，优惠类主题是政策文件、不在这些标题里。主题类
+内容要全得用 CLI 现查 tax_shui5 / tax_wechat / tax_web_search，不要指望这批 JSON。
 """
 import json
 import os
+import re
 import sys
 import time
 import requests
 import urllib3
 urllib3.disable_warnings()
+
+# NPC 把命中的关键词包在 <em class='highlight'>…</em> 里。只去掉字面量
+# "<em>" 会漏掉带 class 属性的那种，残留标签还会把检索词从标题中间劈开，
+# 让后面的相关性排序失效。
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def strip_html(s):
+    return _TAG_RE.sub("", s or "")
 
 BASE_URL = "https://flk.npc.gov.cn"
 HEADERS = {
@@ -34,16 +50,17 @@ TAX_SEARCHES = [
     {"keyword": "税收征收管理法", "type": "税收征管"},
 ]
 
-# Additional detailed topic searches (fulltext)
+# Topic searches. NPC 的正文检索（searchRange=2）实测不按检索词过滤，连无意义词都
+# 能命中民法典，返回的是与查询无关的法规流，所以这里只用标题检索。
 TOPIC_SEARCHES = [
-    {"keyword": "小微企业 企业所得税 优惠", "type": "小微企业优惠", "scope": "fulltext"},
-    {"keyword": "高新技术企业 企业所得税 优惠", "type": "高新技术企业优惠", "scope": "fulltext"},
-    {"keyword": "研发费用 加计扣除", "type": "研发费用加计扣除", "scope": "fulltext"},
-    {"keyword": "虚开发票 风险", "type": "虚开发票风险", "scope": "fulltext"},
-    {"keyword": "留抵退税", "type": "留抵退税", "scope": "fulltext"},
-    {"keyword": "出口退税", "type": "出口退税", "scope": "fulltext"},
-    {"keyword": "个人 专项附加扣除", "type": "专项附加扣除", "scope": "fulltext"},
-    {"keyword": "金税四期 风险指标", "type": "金税四期风险", "scope": "fulltext"},
+    {"keyword": "小微企业", "type": "小微企业优惠", "scope": "title"},
+    {"keyword": "高新技术企业", "type": "高新技术企业优惠", "scope": "title"},
+    {"keyword": "研发费用", "type": "研发费用加计扣除", "scope": "title"},
+    {"keyword": "发票", "type": "虚开发票风险", "scope": "title"},
+    {"keyword": "留抵退税", "type": "留抵退税", "scope": "title"},
+    {"keyword": "出口退税", "type": "出口退税", "scope": "title"},
+    {"keyword": "个人所得税", "type": "专项附加扣除", "scope": "title"},
+    {"keyword": "税收征收管理法", "type": "金税四期风险", "scope": "title"},
 ]
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "docs", "data")
@@ -80,13 +97,24 @@ def search_npc(keyword, scope="title", size=30, status=3):
     for item in rows:
         results.append({
             "id": item.get("bbbs", ""),
-            "title": (item.get("flfgname", item.get("title", "")) or "").replace("<em>", "").replace("</em>", ""),
+            "title": strip_html(item.get("flfgname", item.get("title", ""))),
             "publish_date": item.get("gbrq", ""),
             "effective_date": item.get("sxrq", ""),
             "status_code": item.get("sxx", 0),
             "issuing_authority": item.get("zdjgName", ""),
             "category": item.get("flxz", ""),
         })
+    if search_range == 1:
+        # NPC 标题模糊检索按发布时间排，"企业所得税" 首条是企业破产法，本体法
+        # 落在第 5 位。命中的是"标题含检索词部分字"的法律，按检索词在标题中的
+        # 位置重排一次；第三位恒为 0 以保持并列项原有的相对次序。
+        def rank(it):
+            t = it["title"].replace("中华人民共和国", "")
+            pos = t.find(keyword)
+            if pos < 0:
+                return (8, 8, 0)
+            return (0 if (t.endswith(keyword) or t.endswith(keyword + "法")) else 1, pos, 0)
+        results.sort(key=rank)
     return {"total": outer.get("total", 0), "results": results}
 
 # Fetch title searches for 12 tax types
@@ -108,13 +136,13 @@ for i, item in enumerate(TAX_SEARCHES):
         idx["searches"][key] = {"error": str(e)}
     time.sleep(0.5)
 
-# Fetch full-text topic searches
+# Fetch topic searches
 print("\nFetching 8 topic searches...")
 for i, item in enumerate(TOPIC_SEARCHES):
     key = f"topic_{item['type']}"
     try:
         print(f"  [{i+1}/{len(TOPIC_SEARCHES)}] {item['keyword']}...", end=" ")
-        data = search_npc(item['keyword'], scope=item.get("scope", "fulltext"), size=30)
+        data = search_npc(item['keyword'], scope=item.get("scope", "title"), size=30)
         print(f"{data['total']} results")
         idx["searches"][key] = {
             "keyword": item['keyword'],

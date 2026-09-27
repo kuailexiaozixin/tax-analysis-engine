@@ -167,8 +167,8 @@ doc.add_paragraph(
     '  用户浏览器 → Flask API Server (tax_server.py)\n'
     '    ├── POST /api/search        → NPC 国家法规库 API（flk.npc.gov.cn）\n'
     '    ├── GET  /api/text/<id>      → DOCX 下载解析（Python stdlib）\n'
-    '    ├── GET  /api/interpretations → Bing 搜索 chinatax / mof / gov.cn\n'
-    '    ├── GET  /api/web-related    → 实务公众号 + 网页搜索\n'
+    '    ├── GET  /api/interpretations → 360 site: 搜索 chinatax / mof / gov.cn\n'
+    '    ├── GET  /api/web-related    → 税屋 + 微信公众号 + 360 全网\n'
     '    └── GET  /api/ai-interpret   → Claude Code CLI 生成解读\n'
     '\n'
     '【GitHub Pages Demo 架构】\n'
@@ -183,15 +183,18 @@ add_table(doc, ['层级', '文件', '职责'],
 [
     ['前端层', 'frontend/index.html (430行)', '搜索界面 + 智能引导 + 法规弹窗 4-Tab'],
     ['API 服务', 'scripts/tax_server.py (710行)', 'Flask 路由 + 法规原文 + 解读搜索 + AI 解读'],
-    ['核心搜索', 'scripts/tax_search.py (492行)', '18 税种映射 + NPC API 调用 + 意图识别 + 缓存'],
+    ['核心搜索', 'scripts/tax_search.py', '16 项税种映射 + NPC API 调用 + 意图识别 + 缓存'],
     ['法规详情', 'scripts/tax_detail.py (240行)', 'NPC 详情 API + DOCX 下载 + 全文解析（zipfile+ElementTree）'],
-    ['Web 搜索', 'scripts/tax_web_search.py (240行)', 'chinatax WAS5 搜索引擎 + Bing site: + Baidu 兜底'],
-    ['多源聚合', 'scripts/tax_aggregator.py (274行)', 'ThreadPoolExecutor 三源并发 + Jaccard 去重 + 权威度排序'],
-    ['输出格式化', 'scripts/tax_formatter.py (198行)', '四段式 Markdown + 时效性徽章 + 免责声明'],
+    ['Web 搜索', 'scripts/tax_web_search.py', '税务总局 search5 JSON API（含 fgk 法规库）'],
+    ['站内搜索', 'scripts/tax_so360.py', '360 site: 检索，定位省局与地方文件'],
+    ['法规库清单', 'scripts/tax_fgk.py', '税务总局法规目录（只出清单，正文取不到）'],
+    ['实务解读', 'scripts/tax_shui5.py', '税屋：360 检索 + Jina Reader 读正文'],
+    ['实务解读', 'scripts/tax_wechat.py', '微信公众号：搜狗微信 + 移动 UA'],
+    ['多源聚合', 'scripts/tax_aggregator.py', 'ThreadPoolExecutor 五源并发 + Jaccard 去重 + 权威度排序'],
+    ['输出格式化', 'scripts/tax_formatter.py', '四段式 Markdown + 时效性徽章 + 免责声明'],
     ['数据采集', '.github/scripts/fetch_tax_data.py', 'GitHub Actions 每日从 NPC API 获取 20 个搜索集'],
-    ['静态 Demo', 'docs/index.html (434行)', '纯前端搜索 + 智能引导 + 6 项筛选 + 关键词高亮'],
-    ['部署1', 'deploy-vercel/', 'Vercel Serverless Python 部署方案'],
-    ['部署2', 'cloudflare-deploy/', 'Cloudflare Pages + Workers 部署方案'],
+    ['静态 Demo', 'docs/index.html', '纯前端搜索 + 智能引导 + 6 项筛选 + 关键词高亮'],
+    ['本地服务', 'scripts/tax_server.py', 'Flask 本地服务（0.0.0.0:5080）'],
 ], col_widths=[3, 5, 8])
 
 doc.add_page_break()
@@ -208,7 +211,7 @@ doc.add_paragraph(
 )
 add_table(doc, ['参数', '选项', '说明'],
 [
-    ['搜索范围 (scope)', 'title / fulltext', '标题搜索优先，无结果自动降级全文搜索'],
+    ['搜索范围 (scope)', 'title / fulltext', '默认 title。fulltext 不按检索词过滤，返回结果与查询无关，不要用于取答案'],
     ['匹配方式 (search_type)', 'exact / fuzzy', '精确匹配用于已知法规名，模糊匹配用于宽泛主题'],
     ['时效性 (status)', '1=已废止, 2=已修改, 3=现行有效, 4=尚未生效', '默认仅查现行有效 (sxx=3)'],
     ['排序 (sort)', 'relevance / date', '日期排序支持按公布日期降序查看最新政策'],
@@ -227,7 +230,7 @@ add_table(doc, ['意图', '触发信号', '搜索策略'],
     ['🧾 发票处理', '开票、红冲、遗失、抵扣认证', '"发票管理办法"精确 + 关键词全文'],
 ], col_widths=[3, 5, 8])
 
-doc.add_heading('3.3 18 税种关键词映射', level=2)
+doc.add_heading('3.3 税种关键词映射（16 项）', level=2)
 doc.add_paragraph('系统内置税种别名映射，将用户口语自动翻译为法律术语，提高搜索命中率。')
 add_table(doc, ['用户说', '搜索关键词', '优先法规'],
 [
@@ -262,9 +265,9 @@ doc.add_paragraph('点击搜索结果卡片弹出 4-Tab 法规弹窗：')
 add_table(doc, ['Tab', '功能', '数据来源'],
 [
     ['📖 法规原文', '全文展示 + 搜索关键词黄色高亮 + 章节/法条自动分类', 'NPC API → DOCX 实时下载解析 (Python stdlib)'],
-    ['🔍 官方解读', '多源搜索官方政策解读、答记者问、立法说明', 'Bing 搜索 chinatax/mof/gov.cn'],
+    ['🔍 官方解读', '多源搜索官方政策解读、答记者问、立法说明', '360 站内检索 chinatax/mof/gov.cn'],
     ['🤖 AI 解读', 'Claude 用通俗语言解读法规（适用主体/核心要点/注意事项）', 'Claude Code CLI 子进程'],
-    ['🌐 相关网页', '公众号实务解读（小颖言税/税海涛声/会计网等）+ 网络补充', 'Bing + Baidu 双引擎'],
+    ['🌐 相关网页', '税屋 + 微信公众号实务解读 + 360 全网补充', '360 引擎'],
 ], col_widths=[3, 6, 7])
 
 doc.add_heading('3.6 高级筛选栏', level=2)
@@ -289,10 +292,12 @@ doc.add_heading('4.1 权威数据源', level=2)
 add_table(doc, ['数据源', '覆盖范围', '权威度', '访问方式'],
 [
     ['NPC 国家法规库\n(flk.npc.gov.cn)', '法律、行政法规、地方法规、司法解释', '⭐⭐⭐⭐⭐', 'API 实时'],
-    ['国家税务总局\n(chinatax.gov.cn)', '部门规章、公告、政策解读、操作指南', '⭐⭐⭐⭐', 'WebFetch'],
-    ['财政部\n(mof.gov.cn)', '财政部公告、财税联合发文', '⭐⭐⭐⭐', 'Bing site:'],
-    ['中国政府网\n(gov.cn)', '国务院政策发布、答记者问', '⭐⭐⭐⭐⭐', 'Bing site:'],
-    ['税务法规库\n(fgk.chinatax.gov.cn)', '税务法规库结构化内容', '⭐⭐⭐⭐', 'Bing site:'],
+    ['国家税务总局\n(chinatax.gov.cn)', '部门规章、公告、政策解读、操作指南', '⭐⭐⭐⭐', 'search5 API'],
+    ['财政部\n(mof.gov.cn)', '财政部公告、财税联合发文', '⭐⭐⭐⭐', '360 site:'],
+    ['中国政府网\n(gov.cn)', '国务院政策发布、答记者问', '⭐⭐⭐⭐⭐', '360 site:'],
+    ['税务法规库\n(fgk.chinatax.gov.cn)', '税务法规目录（只出清单，正文取不到）', '⭐⭐⭐⭐', 'search5 API'],
+    ['税屋\n(shui5.cn)', '实务解读、专栏、答疑', '⭐⭐⭐', '360 检索 + Jina'],
+    ['微信公众号\n(mp.weixin.qq.com)', '实务解读、申报实操', '⭐⭐', '搜狗微信 + 移动 UA'],
 ], col_widths=[4, 6, 2, 4])
 
 doc.add_heading('4.2 实务解读来源', level=2)
@@ -366,8 +371,8 @@ doc.add_paragraph(
     '# 政策查询\n'
     'python scripts/tax_search.py "增值税" --status 3 --size 20\n'
     '\n'
-    '# 全文搜索 + 按日期排序\n'
-    'python scripts/tax_search.py "加计扣除" --scope fulltext --sort date\n'
+    '# 税务总局站正文检索（真正按词过滤）+ 排序\n'
+    'python scripts/tax_web_search.py "加计扣除" --size 20\n'
     '\n'
     '# 精确查找\n'
     'python scripts/tax_search.py "中华人民共和国企业所得税法" --exact\n'
@@ -397,20 +402,16 @@ doc.add_paragraph(
 
 doc.add_heading('5.5 部署方案', level=2)
 doc.add_paragraph(
-    '项目提供 3 种部署方式：\n'
+    '本项目只做本地运行，不提供服务器部署方案。\n'
     '\n'
-    '① GitHub Pages（已部署）\n'
-    '  优点：永久在线，零成本，无需服务器\n'
-    '  配置：Settings → Pages → Source: master branch, Folder: /docs\n'
+    '① 命令行直接调用（最常用）\n'
+    '  python scripts/tax_search.py "增值税" --status 3 --size 20\n'
     '\n'
-    '② Vercel Serverless\n'
-    '  优点：支持 Python Flask，实时 API 连接 NPC\n'
-    '  部署：cd deploy-vercel && vercel deploy --prod\n'
-    '  注意：中国大陆可能需要自定义域名\n'
+    '② 本地 Flask 服务\n'
+    '  python scripts/tax_server.py   然后浏览器打开 http://127.0.0.1:5080\n'
     '\n'
-    '③ Cloudflare Pages + Workers\n'
-    '  优点：全球 CDN，Workers 国内可访问\n'
-    '  部署：cd cloudflare-deploy && wrangler pages deploy .'
+    '③ GitHub Pages 静态 Demo（只读演示，不连实时 API）\n'
+    '  Settings → Pages → Source: master branch, Folder: /docs'
 )
 
 doc.add_page_break()
@@ -456,9 +457,9 @@ add_table(doc, ['路径', '说明'],
     ['│'],
     ['├── scripts/', 'Python 核心脚本'],
     ['│   ├── tax_server.py', 'Flask API 服务（6 个 REST 端点 + AI 解读）'],
-    ['│   ├── tax_search.py', 'NPC API 核心搜索（18 税种映射 + 意图识别 + 缓存）'],
+    ['│   ├── tax_search.py', 'NPC API 核心搜索（16 项税种映射 + 意图识别 + 缓存）'],
     ['│   ├── tax_detail.py', '法规详情与下载（DOCX ZIP+XML 解析）'],
-    ['│   ├── tax_web_search.py', 'chinatax.gov.cn 站内搜索（WAS5 + Bing + Baidu）'],
+    ['│   ├── tax_web_search.py', '税务总局 search5 JSON 检索（含 fgk 法规库）'],
     ['│   ├── tax_aggregator.py', '多源聚合（并发 + Jaccard 去重 + 权威度排序）'],
     ['│   ├── tax_formatter.py', '结构化 Markdown 输出'],
     ['│   └── tunnel_daemon.py', '隧道守护脚本（自动重连）'],
@@ -471,7 +472,7 @@ add_table(doc, ['路径', '说明'],
     ['│   └── data/', '预置搜索数据（21 个 JSON，~207KB）'],
     ['│'],
     ['├── references/', '参考文档'],
-    ['│   ├── tax_categories.md', '18 税种 × API 参数映射'],
+    ['│   ├── tax_categories.md', '税种 × API 参数映射'],
     ['│   ├── search_strategies.md', '5 意图 × 搜索策略交叉'],
     ['│   └── tax_risk_framework.md', '金税四期 200+ 指标搜索提示'],
     ['│'],
@@ -482,8 +483,19 @@ add_table(doc, ['路径', '说明'],
     ['│   ├── workflows/update-data.yml', '每日自动更新数据'],
     ['│   └── scripts/fetch_tax_data.py', '从 NPC API 采集 20 个搜索集'],
     ['│'],
-    ['├── deploy-vercel/', 'Vercel 部署方案（9 files）'],
-    ['└── cloudflare-deploy/', 'Cloudflare Workers 部署方案（9 files）'],
+    ['├── scripts/', '命令行与本地服务脚本'],
+    ['│   ├── tax_search.py', 'NPC 法规库检索'],
+    ['│   ├── tax_detail.py', '法规详情与 DOCX 全文'],
+    ['│   ├── tax_web_search.py', '税务总局 search5 检索'],
+    ['│   ├── tax_so360.py', '360 站内搜索'],
+    ['│   ├── tax_fgk.py', '税务总局法规库清单'],
+    ['│   ├── tax_shui5.py', '税屋实务解读'],
+    ['│   ├── tax_wechat.py', '微信公众号实务解读'],
+    ['│   ├── tax_aggregator.py', '五源聚合'],
+    ['│   └── tax_server.py', 'Flask 本地服务'],
+    ['├── tests/', '端到端测试'],
+    ['├── docs/', 'GitHub Pages 静态 Demo'],
+    ['└── references/', '风险框架等参考文档'],
 ], col_widths=[8, 8])
 
 doc.add_page_break()
@@ -496,15 +508,15 @@ doc.add_heading('八、技术栈', level=1)
 add_table(doc, ['层级', '技术', '用途'],
 [
     ['后端框架', 'Flask 3.1', 'REST API 服务'],
-    ['HTTP 客户端', 'requests + urllib3', 'NPC API 调用、Bing 搜索、DOCX 下载'],
+    ['HTTP 客户端', 'requests + urllib3', 'NPC API、税务总局 search5、360、搜狗、Jina Reader'],
     ['文档解析', 'Python stdlib (zipfile + ElementTree)', 'DOCX → 纯文本提取（零依赖）'],
-    ['并发', 'concurrent.futures (ThreadPoolExecutor)', '多源并行查询（NPC + chinatax + AnySearch）'],
+    ['并发', 'concurrent.futures (ThreadPoolExecutor)', '多源并行查询（NPC + chinatax + 360 + 税屋 + 微信）'],
     ['前端', '纯 HTML/CSS/JS', '搜索界面 + 引导面板 + 法规弹窗（零框架）'],
     ['AI 解读', 'Claude Code CLI (subprocess)', '法规通俗化解读生成'],
-    ['测试', 'Python unittest 模式', '11 项端到端测试（22/22 通过）'],
-    ['部署 1', 'GitHub Pages', '静态 Demo 部署（docs/ 目录）'],
-    ['部署 2', 'Vercel + @vercel/python', 'Serverless Flask 部署'],
-    ['部署 3', 'Cloudflare Pages + Workers', 'Workers JS 版本部署'],
+    ['测试', 'Python unittest 模式', '端到端测试'],
+    ['运行 1', '命令行', 'python scripts/tax_search.py "<关键词>"'],
+    ['运行 2', 'Flask 本地服务', 'python scripts/tax_server.py → http://127.0.0.1:5080'],
+    ['运行 3', 'GitHub Pages', '静态 Demo 部署（docs/ 目录，只读）'],
     ['CI/CD', 'GitHub Actions', '每日自动从 NPC API 更新搜索数据'],
     ['依赖', 'flask, requests, urllib3', '仅 3 个 pip 包'],
 ], col_widths=[4, 6, 6])
@@ -519,8 +531,8 @@ doc.add_heading('九、常见问题（FAQ）', level=1)
 faqs = [
     ('Q: Demo 页面与本地完整版有什么区别？',
      'A: Demo 页面（GitHub Pages）使用预置数据实现毫秒级搜索，包含全部税种搜索、筛选、智能引导功能，'
-     '数据每日自动更新。本地完整版额外提供法规原文 DOCX 下载、Bing 搜索官方解读、AI 生成解读、'
-     '公众号实务解读的实时搜索功能。'),
+     '数据每日自动更新。本地完整版额外提供法规原文 DOCX 下载、360 搜索官方解读、AI 生成解读、'
+     '税屋与微信公众号实务解读的实时搜索功能。'),
 
     ('Q: 搜索数据多久更新一次？',
      'A: GitHub Actions 每日凌晨 2:00（UTC）自动运行，从 NPC 国家法律法规数据库 API 拉取最新数据，'

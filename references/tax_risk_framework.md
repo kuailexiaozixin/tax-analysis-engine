@@ -118,8 +118,8 @@ When user asks about tax risks:
 
 **Search command template**:
 ```bash
-# NPC search for specific risk indicator
-python scripts/tax_search.py "<risk_keyword>" --scope fulltext --status 3 --size 15
+# NPC search: title-only, look up the statute that carries the indicator
+python scripts/tax_search.py "<风险关键词>" --status 3 --size 15
 
 # chinatax enforcement notices
 python scripts/tax_web_search.py "<risk_keyword> 处罚 稽查" --size 10

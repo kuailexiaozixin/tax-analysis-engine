@@ -2,15 +2,24 @@
 """
 Tax Policy Aggregator — concurrent multi-source search with dedup and ranking.
 
-Data source priority:
-  1. NPC API (flk.npc.gov.cn) — laws, administrative regulations (highest authority)
-  2. chinatax.gov.cn — STA announcements, policy interpretations
-  3. AnySearch legal domain — supplementary web results
+Data source priority (按权威性排序):
+  1. NPC API (flk.npc.gov.cn)       — 法律、行政法规，权威性最高
+  2. chinatax.gov.cn (search5)      — 税务总局公告、解读，覆盖 fgk 法规库
+  3. 360 站内搜索 (m.so.com)        — 省局子站、地方文件
+  4. 税屋 (shui5.cn)                — 实务解读
+  5. 微信公众号 (搜狗微信)          — 实务解读
+
+第 4、5 两源默认开启：实测二者均能稳定取回正文，且补的是前三个源查不到的
+实操层内容。权威性低于法规原文，输出里以 _authority_rank 排在后面。
+
+AnySearch 已移除：本机不存在其 CLI（~/.claude/skills/anysearch/scripts 下
+没有 anysearch_cli.py），原实现永远静默返回空列表。
 
 Usage:
   python tax_aggregator.py "增值税" --size 10
   python tax_aggregator.py "小微企业优惠" --size 10 --json
-  python tax_aggregator.py "加计扣除" --sources npc,chinatax  # NPC + chinatax only
+  python tax_aggregator.py "加计扣除" --sources npc,chinatax
+  python tax_aggregator.py "资本化" --sources npc,chinatax,so360,shui5,wechat
 """
 
 import argparse
@@ -26,55 +35,26 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from tax_search import search_tax
 from tax_web_search import search_chinatax
+from tax_so360 import so360_search
+from tax_shui5 import search_shui5
+from tax_wechat import search_wechat
 
-
-def _anysearch_fallback(keyword: str, size: int = 5) -> list:
-    """
-    Attempt AnySearch via its CLI if available.
-    Falls back gracefully if not configured.
-    """
-    anysearch_dir = Path.home() / ".claude" / "skills" / "anysearch" / "scripts"
-    cli_py = anysearch_dir / "anysearch_cli.py"
-
-    if not cli_py.exists():
-        return []
-
-    import subprocess
-    try:
-        result = subprocess.run(
-            ["python3", str(cli_py), "search", keyword,
-             "--domain", "legal", "--max_results", str(size)],
-            capture_output=True, text=True, timeout=20,
-            cwd=str(anysearch_dir.parent),
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            # Try to parse the output (it's JSON)
-            try:
-                data = json.loads(result.stdout)
-                return _normalize_anysearch(data, keyword)
-            except json.JSONDecodeError:
-                # Return raw output as single pseudo-result
-                lines = result.stdout.strip().split("\n")[:size]
-                return [{"title": l[:100], "url": "", "source": "AnySearch"} for l in lines if l.strip()]
-    except Exception:
-        pass
-
-    return []
-
-
-def _normalize_anysearch(data: dict, keyword: str) -> list:
-    """Normalize AnySearch output to standard format."""
-    results = []
-    items = data.get("results", data.get("data", []))
-    if isinstance(items, list):
-        for item in items[:10]:
-            results.append({
-                "title": item.get("title", item.get("name", str(item)[:80])),
-                "url": item.get("url", item.get("link", "")),
-                "snippet": item.get("snippet", item.get("summary", "")),
-                "source": "AnySearch",
-            })
-    return results
+# 权威性排名，数字越小越权威
+SOURCE_RANK = {
+    "npc": 0,
+    "chinatax": 1,
+    "so360": 2,
+    "shui5": 3,
+    "wechat": 4,
+}
+DEFAULT_SOURCES = ["npc", "chinatax", "so360", "shui5", "wechat"]
+SOURCE_LABELS = {
+    "npc": "📜 NPC法规库",
+    "chinatax": "🏛️ 国家税务总局",
+    "so360": "🔎 360站内搜索",
+    "shui5": "🏠 税屋(实务解读)",
+    "wechat": "💬 微信公众号(实务解读)",
+}
 
 
 def _jaccard_similarity(s1: str, s2: str) -> float:
@@ -116,24 +96,24 @@ def aggregate_search(keyword: str, *,
                      size: int = 10,
                      sources: list = None,
                      status: int = 3,
-                     scope: str = "fulltext") -> dict:
+                     scope: str = "title") -> dict:
     """
     Concurrently search multiple data sources and return deduplicated, ranked results.
 
     Args:
         keyword: search term
         size: results per source
-        sources: list of source names ('npc', 'chinatax', 'anysearch'). Default: all three.
+        sources: 见 DEFAULT_SOURCES；默认五源全开
         status: NPC status filter (default: 3 = effective)
-        scope: NPC search scope (default: fulltext)
+        scope: NPC search scope (default: title；fulltext 不按检索词过滤，默认不用)
     """
     if sources is None:
-        sources = ["npc", "chinatax", "anysearch"]
+        sources = list(DEFAULT_SOURCES)
 
     results = {}
     errors = {}
 
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    with ThreadPoolExecutor(max_workers=5) as pool:
         futures = {}
 
         if "npc" in sources:
@@ -144,47 +124,46 @@ def aggregate_search(keyword: str, *,
             futures["chinatax"] = pool.submit(
                 search_chinatax, keyword, size=size
             )
-        if "anysearch" in sources:
-            futures["anysearch"] = pool.submit(
-                _anysearch_fallback, keyword, min(size, 5)
+        if "so360" in sources:
+            # 全网检索，再由调用方按需收窄站点；此处不带 site:
+            futures["so360"] = pool.submit(
+                so360_search, keyword, site="", size=size
+            )
+        if "shui5" in sources:
+            futures["shui5"] = pool.submit(
+                search_shui5, keyword, min(size, 5)
+            )
+        if "wechat" in sources:
+            futures["wechat"] = pool.submit(
+                search_wechat, keyword, min(size, 5)
             )
 
         for source, future in futures.items():
             try:
-                results[source] = future.result(timeout=20)
+                results[source] = future.result(timeout=30)
             except Exception as e:
                 errors[source] = str(e)
                 results[source] = None
 
-    # Collect all results
+    # Collect all results，按权威性排序
     all_items = []
-    source_order = {"npc": 0, "chinatax": 1, "anysearch": 2}
-
-    # NPC results first (highest authority)
-    npc_data = results.get("npc")
-    if npc_data and npc_data.get("total", 0) > 0:
-        for item in npc_data.get("results", []):
-            item["_source"] = "npc"
-            item["_authority_rank"] = 0
-            all_items.append(item)
-
-    # chinatax results second
-    chinatax_data = results.get("chinatax")
-    if chinatax_data and chinatax_data.get("total", 0) > 0:
-        for item in chinatax_data.get("results", []):
-            item["_source"] = "chinatax"
-            item["_authority_rank"] = 1
-            # Normalize: chinatax uses date not publish_date
-            if "date" in item and "publish_date" not in item:
+    for source, data in results.items():
+        if not data:
+            continue
+        rank = SOURCE_RANK[source]
+        source_low = data.get("_reliability") == "low"
+        source_note = data.get("_reliability_note", "")
+        for item in data.get("results", []):
+            item["_source"] = source
+            item["_authority_rank"] = rank
+            # 各源日期字段不统一，统一到 publish_date 供排序用
+            if item.get("date") and not item.get("publish_date"):
                 item["publish_date"] = item["date"]
-            all_items.append(item)
-
-    # AnySearch results last
-    anysearch_data = results.get("anysearch")
-    if isinstance(anysearch_data, list) and anysearch_data:
-        for item in anysearch_data:
-            item["_source"] = "anysearch"
-            item["_authority_rank"] = 2
+            # 整源被判低可靠时逐条带上，否则聚合输出里这条禁令会失效
+            if source_low:
+                item["_reliability"] = "low"
+                if source_note:
+                    item["_reliability_note"] = source_note
             all_items.append(item)
 
     # Deduplicate across sources
@@ -203,9 +182,8 @@ def aggregate_search(keyword: str, *,
         "total_items": len(all_items),
         "items": all_items[:size * 3],  # Cap total results
         "source_summary": {
-            "npc": npc_data.get("total", 0) if npc_data else 0,
-            "chinatax": chinatax_data.get("total", 0) if chinatax_data else 0,
-            "anysearch": len(anysearch_data) if isinstance(anysearch_data, list) else 0,
+            s: len(results[s].get("results", [])) if results.get(s) else 0
+            for s in sources
         },
         "errors": errors,
         "searched_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -224,11 +202,12 @@ Examples:
     )
     p.add_argument("keyword", help="Search keyword")
     p.add_argument("--size", type=int, default=10)
-    p.add_argument("--sources", default="npc,chinatax,anysearch",
-                   help="Comma-separated source names (default: npc,chinatax,anysearch)")
+    p.add_argument("--sources", default=",".join(DEFAULT_SOURCES),
+                   help=f"Comma-separated source names (default: {','.join(DEFAULT_SOURCES)})")
     p.add_argument("--status", type=int, default=3,
                    help="NPC status filter (3=effective)")
-    p.add_argument("--scope", choices=["title", "fulltext"], default="fulltext")
+    p.add_argument("--scope", choices=["title", "fulltext"], default="title",
+                   help="NPC search scope (default: title)")
     p.add_argument("--json", action="store_true")
 
     args = p.parse_args()
@@ -248,21 +227,24 @@ Examples:
 
     print(f"🔍 多源搜索 \"{args.keyword}\" | {result['searched_at']}")
     print(f"   数据源: {', '.join(sources)}")
-    print(f"   NPC: {result['source_summary'].get('npc', 0)} 条")
-    print(f"   税务总局: {result['source_summary'].get('chinatax', 0)} 条")
-    print(f"   网页补充: {result['source_summary'].get('anysearch', 0)} 条")
+    for src in sources:
+        print(f"   {SOURCE_LABELS.get(src, src)}: {result['source_summary'].get(src, 0)} 条")
     if result.get("errors"):
         for src, err in result["errors"].items():
             print(f"   ⚠️ {src}: {err}")
+    low_items = [i for i in result.get("items", []) if i.get("_reliability") == "low"]
+    if low_items:
+        print(f"   ⚠️ {len(low_items)} 条结果带 _reliability: low，不得作为权威依据引用")
     print()
 
-    source_labels = {"npc": "📜 NPC法规库", "chinatax": "🏛️ 国家税务总局", "anysearch": "🌐 网页补充"}
     for item in result.get("items", [])[:20]:
-        src = item.get("_source", "")
-        label = source_labels.get(src, "")
-        print(f"  {label} {item.get('title', '')[:80]}")
+        label = SOURCE_LABELS.get(item.get("_source", ""), "")
+        flag = "  [_reliability: low]" if item.get("_reliability") == "low" else ""
+        print(f"  {label} {item.get('title', '')[:80]}{flag}")
         if item.get("publish_date"):
             print(f"     日期: {item['publish_date']}")
+        if item.get("document_number"):
+            print(f"     文号: {item['document_number']}")
         if item.get("id"):
             print(f"     NPC ID: {item['id']}")
         if item.get("url"):
@@ -271,4 +253,9 @@ Examples:
 
 
 if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, ValueError):
+            pass
     main()

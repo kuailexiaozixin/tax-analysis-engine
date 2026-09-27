@@ -8,6 +8,7 @@ import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date
 from pathlib import Path
 from urllib.parse import quote
 
@@ -17,6 +18,9 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from tax_search import search_tax, detect_intent, resolve_tax_type
 from tax_detail import fetch_detail, get_download_url, SXX_MAP, _parse_docx_from_bytes
 from tax_web_search import search_chinatax
+from tax_so360 import so360_search
+from tax_shui5 import search_shui5
+from tax_wechat import search_wechat
 from tax_formatter import format_search_response
 from tax_aggregator import aggregate_search
 
@@ -30,12 +34,6 @@ FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 _text_cache = {}
 _interp_cache = {}
-
-HEADERS_WEB = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Accept-Language": "zh-CN,zh;q=0.9",
-    "Accept": "text/html,application/xhtml+xml",
-}
 
 # Trusted tax-practice WeChat public account sources for interpretation/web search
 # ── Content filter: domains/keywords that indicate non-tax garbage results ──
@@ -71,71 +69,64 @@ TAX_PRACTICE_SOURCES = [
     {"name": "税小课",   "query_hint": "税小课服务"},
     {"name": "朴税",     "query_hint": "朴税"},
 ]
+# 官方站点：这些是政策原文来源，不能标成"实务解读"
+OFFICIAL_DOMAINS = [
+    "chinatax.gov.cn", "mof.gov.cn", "gov.cn", "npc.gov.cn",
+    "chinatax.cn", "chinatax.gov",
+]
 # Sources that should be tagged as "实务解读" even if not from .gov.cn
+# 不要用 "tax" 这种裸子串：chinatax.gov.cn 含 tax，会把官方站点误判成实务解读。
 PRACTICE_DOMAIN_KEYWORDS = [
     "小颖言税", "税海涛声", "会计网", "税小课", "朴税",
     "mp.weixin.qq.com", "zhuanlan.zhihu.com", "toutiao.com",
-    "kuaiji", "shuiwu", "tax", "chinaacc",
+    "shui5.cn", "shuiwu", "kuaiji", "chinaacc", "shuilishi", "shuikuai",
 ]
 
 # ── Interpretation Search Engine ─────────────────────────────────────────
 
-def _search_one_source(site: str, query: str, n: int = 5) -> list[dict]:
-    """Search a specific site via Bing for policy interpretations."""
-    full_q = f"site:{site} {query}"
-    url = f"https://www.bing.com/search?q={quote(full_q)}&count={n}"
-    results = []
+def _date_from_url(url: str) -> str:
+    """从 URL 里的日期目录里取发布日期，取不到就返回空串。
+
+    常见形态是 /201904/t20220313_xxx.html 或 /201904/816904caec....shtml。
+    后者那串 32 位哈希紧跟在年份后面，直接正则抓 8 位数字会拼出 "2019-04-81"
+    这种不存在的日期，所以抓到之后要按真实日历校验一遍。
+    """
+    m = re.search(r"(\d{4})[-/]?(\d{2})[-/]?(\d{2})", url)
+    if not m:
+        return ""
+    y, mo, d = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
     try:
-        r = req.get(url, headers=HEADERS_WEB, timeout=10)
-        if r.status_code != 200:
-            return results
+        date(y, mo, d)
+    except ValueError:
+        return ""
+    return f"{y:04d}-{mo:02d}-{d:02d}"
 
-        html = r.text
-        # Bing uses <h2> for result titles, <cite> for URLs
-        # Extract result blocks: each is an <li class="b_algo">
-        block_pattern = re.compile(
-            r'<li class="b_algo"[^>]*>(.*?)</li>', re.DOTALL
-        )
-        blocks = block_pattern.findall(html)
 
-        for block in blocks[:n * 2]:
-            # Extract title from <h2>
-            title_match = re.search(r'<h2[^>]*><a[^>]*href="([^"]*)"[^>]*>(.*?)</a></h2>', block, re.DOTALL)
-            if not title_match:
-                title_match = re.search(r'<a[^>]*href="([^"]*)"[^>]*>(.*?)</a>', block, re.DOTALL)
-            if not title_match:
-                continue
+def _search_one_source(site: str, query: str, n: int = 5) -> list[dict]:
+    """Search a specific site for policy interpretations, via 360 site: search.
 
-            href = title_match.group(1)
-            title = re.sub(r'<[^>]+>', '', title_match.group(2)).strip()
+    Bing was removed here: it returned zero result blocks for site: queries on
+    www.bing.com, and on cn/m.bing.com it intermittently returned blocks whose
+    content had nothing to do with the query (searching chinatax.gov.cn 企业所得税法
+    yielded 元气壁纸 results). 360 returns real target-site links consistently.
+    """
+    found = so360_search(query, site=site, size=n)
+    if found.get("_error"):
+        return []
 
-            # Filter: only keep links containing the target site
-            if site.replace("www.", "") not in href.replace("www.", ""):
-                continue
-            if len(title) < 5:
-                continue
-
-            # Extract date from block
-            date_str = ""
-            dm = re.search(r'(\d{4}[-/]\d{1,2}[-/]\d{1,2})', block)
-            if dm:
-                date_str = dm.group(1)
-
-            # Extract snippet
-            snippet = ""
-            sm = re.search(r'<p[^>]*class="[^"]*b_lineclamp[^"]*"[^>]*>(.*?)</p>', block, re.DOTALL)
-            if sm:
-                snippet = re.sub(r'<[^>]+>', '', sm.group(1)).strip()[:200]
-
-            results.append({
-                "title": title, "url": href, "date": date_str,
-                "source": site, "source_label": _source_label(site),
-                "snippet": snippet,
-            })
-            if len(results) >= n:
-                break
-    except Exception:
-        pass
+    results = []
+    for item in found["results"]:
+        title = item.get("title", "")
+        if len(title) < 5 or _is_garbage_result(item.get("url", ""), title):
+            continue
+        results.append({
+            "title": title,
+            "url": item["url"],
+            "date": _date_from_url(item.get("url", "")),
+            "source": site,
+            "source_label": _source_label(site),
+            "snippet": item.get("snippet", ""),
+        })
     return results
 
 
@@ -171,42 +162,15 @@ def _source_label(site: str) -> str:
     return site
 
 
-def _anysearch_legal(query: str, n: int = 5) -> list[dict]:
-    """Use AnySearch CLI as supplementary legal search."""
-    any_dir = Path.home() / ".claude" / "skills" / "anysearch" / "scripts"
-    cli = any_dir / "anysearch_cli.py"
-    if not cli.exists():
-        return []
-
-    import subprocess
-    try:
-        result = subprocess.run(
-            ["python3", str(cli), "search", query, "--domain", "legal",
-             "--max_results", str(n)],
-            capture_output=True, text=True, timeout=20,
-            cwd=str(any_dir.parent),
-        )
-        if result.returncode != 0:
-            return []
-        items = []
-        lines = [l.strip() for l in result.stdout.strip().split("\n") if l.strip()]
-        for line in lines[:n]:
-            items.append({
-                "title": line[:120],
-                "url": "",
-                "date": "",
-                "source": "AnySearch",
-                "source_label": "网页补充",
-            })
-        return items
-    except Exception:
-        return []
-
-
 def _is_practice_source(label_or_domain: str) -> bool:
     """Check if a source label matches known tax practice outlets."""
+    s = (label_or_domain or "").lower()
+    # 官方站点优先排除：chinatax.gov.cn 里含 "tax"，不先排除会被误判
+    for dom in OFFICIAL_DOMAINS:
+        if dom in s:
+            return False
     for kw in PRACTICE_DOMAIN_KEYWORDS:
-        if kw.lower() in label_or_domain.lower():
+        if kw.lower() in s:
             return True
     return False
 
@@ -221,46 +185,29 @@ def _practice_source_name(domain: str, title: str) -> str:
 
 
 def _search_practice_sources(query: str, n: int = 3) -> list[dict]:
-    """Search trusted WeChat public account sources (小颖言税/税海涛声 etc.)
-    for practical tax-policy analysis.  Uses Bing with quoted source names."""
+    """Practical-interpretation sources: tax.shui5.cn + WeChat public accounts.
+
+    Both were previously routed through Bing site: search, which no longer
+    returns usable results. They are now queried through their own modules.
+    """
     results = []
     seen = set()
-    # Search each trusted source with the query — small N per source to stay fast
-    for src in TAX_PRACTICE_SOURCES:
-        full_q = f'"{src["name"]}" {query}'
-        try:
-            bing_url = f"https://www.bing.com/search?q={quote(full_q)}&count={n}"
-            r = req.get(bing_url, headers=HEADERS_WEB, timeout=8)
-            if r.status_code != 200:
+
+    for name, data in [("税屋", search_shui5(query, size=n)),
+                       ("微信公众号", search_wechat(query, size=n))]:
+        for item in (data or {}).get("results", []):
+            href = item.get("url", "")
+            if not href or href in seen or _is_garbage_result(href, item.get("title", "")):
                 continue
-            blocks = re.findall(r'<li class="b_algo"[^>]*>(.*?)</li>', r.text, re.DOTALL)
-            for block in blocks[:n * 2]:
-                tm = re.search(r'<h2[^>]*><a[^>]*href="([^"]*)"[^>]*>(.*?)</a></h2>', block, re.DOTALL)
-                if not tm:
-                    tm = re.search(r'<a[^>]*href="([^"]*)"[^>]*>(.*?)</a>', block, re.DOTALL)
-                if not tm:
-                    continue
-                href, title_raw = tm.group(1), tm.group(2)
-                title = re.sub(r'<[^>]+>', '', title_raw).strip()
-                if len(title) < 8 or href in seen:
-                    continue
-                if _is_garbage_result(href, title):
-                    continue
-                seen.add(href)
-                dm = re.search(r'(\d{4}[-/]\d{1,2}[-/]\d{1,2})', block)
-                snippet = ""
-                sm = re.search(r'<p[^>]*>(.*?)</p>', block, re.DOTALL)
-                if sm:
-                    snippet = re.sub(r'<[^>]+>', '', sm.group(1)).strip()[:180]
-                results.append({
-                    "title": title, "url": href,
-                    "date": dm.group(1) if dm else "",
-                    "source": src["name"],
-                    "source_label": src["name"],
-                    "snippet": snippet,
-                })
-        except Exception:
-            continue
+            seen.add(href)
+            results.append({
+                "title": item.get("title", ""),
+                "url": href,
+                "date": item.get("date", ""),
+                "source": name,
+                "source_label": name,
+                "snippet": (item.get("snippet") or item.get("content", ""))[:180],
+            })
     return results
 
 
@@ -281,12 +228,10 @@ def search_interpretations(law_title: str, keyword: str = "",
 
     title_short = law_title.replace("中华人民共和国", "").strip()
 
-    # Only site:-restricted official searches — no broad web, no practice sources
+    # 只搜官方站点的解读：每站两条问法，避免 4 站 × 4 问 = 16 次请求
     official_queries = [
         f"{title_short} 政策解读",
-        f"{title_short} 解读",
-        f"{law_title} 答记者问",
-        f"{keyword} 官方解读" if keyword and keyword != law_title else f"{title_short} 官方解读",
+        f"{keyword} 官方解读" if keyword and keyword != law_title else f"{title_short} 解读",
     ]
 
     all_results = []
@@ -557,77 +502,34 @@ def api_interpretations(bbbs_id):
 
 # ── Web-related search (broader, more practical) ──────────────────────────
 def _search_web_broad(query: str, n: int = 8) -> list[dict]:
-    """Search broader web for practical tax policy analysis and interpretations.
-    Uses multiple engines with fallbacks for China accessibility."""
+    """Broader web search for practical tax-policy analysis.
+
+    Engine is 360 (m.so.com). Bing was removed: it returned nothing for site:
+    queries, and Baidu rate-limits this host to a 1,488-byte "百度安全验证"
+    page on nearly every request.
+    """
+    found = so360_search(f"{query} 税收 政策解读", site="", size=n)
+    if found.get("_error"):
+        return []
+
     results = []
-    seen = set()
-
-    # Engine 1: Bing (broader, no site: filter)
-    try:
-        bing_url = f"https://www.bing.com/search?q={quote(query)}+税收+政策解读&count={n}"
-        r = req.get(bing_url, headers=HEADERS_WEB, timeout=10)
-        if r.status_code == 200:
-            blocks = re.findall(r'<li class="b_algo"[^>]*>(.*?)</li>', r.text, re.DOTALL)
-            for block in blocks[:n * 2]:
-                tm = re.search(r'<h2[^>]*><a[^>]*href="([^"]*)"[^>]*>(.*?)</a></h2>', block, re.DOTALL)
-                if not tm:
-                    tm = re.search(r'<a[^>]*href="([^"]*)"[^>]*>(.*?)</a>', block, re.DOTALL)
-                if not tm:
-                    continue
-                href, title_raw = tm.group(1), tm.group(2)
-                title = re.sub(r'<[^>]+>', '', title_raw).strip()
-                if len(title) < 8 or href in seen:
-                    continue
-                if _is_garbage_result(href, title):
-                    continue
-                seen.add(href)
-                dm = re.search(r'(\d{4}[-/]\d{1,2}[-/]\d{1,2})', block)
-                snippet = ""
-                sm = re.search(r'<p[^>]*>(.*?)</p>', block, re.DOTALL)
-                if sm:
-                    snippet = re.sub(r'<[^>]+>', '', sm.group(1)).strip()[:200]
-                # Source label from domain
-                domain = re.search(r'https?://(?:www\.)?([^/]+)', href)
-                domain_label = domain.group(1) if domain else ""
-                results.append({
-                    "title": title, "url": href,
-                    "date": dm.group(1) if dm else "",
-                    "source": domain_label,
-                    "source_label": "官方来源" if ("chinatax" in href or "gov.cn" in href) else (
-                        _practice_source_name(domain_label, title) or "实务解读"
-                    ),
-                    "snippet": snippet,
-                })
-    except Exception:
-        pass
-
-    if len(results) < 3:
-        # Engine 2: Baidu as fallback
-        try:
-            baidu_url = f"https://www.baidu.com/s?wd={quote(query)}+税收政策&rn={n}"
-            r = req.get(baidu_url, headers={**HEADERS_WEB, "Accept": "text/html"}, timeout=10)
-            if r.status_code == 200:
-                link_re = re.compile(
-                    r'<a[^>]*href="(https?://[^"]+)"[^>]*>(.*?)</a>', re.DOTALL
-                )
-                for href, title_raw in link_re.findall(r.text):
-                    if href in seen or "baidu.com" in href:
-                        continue
-                    title = re.sub(r'<[^>]+>', '', title_raw).strip()
-                    if len(title) < 8:
-                        continue
-                    seen.add(href)
-                    domain = re.search(r'https?://(?:www\.)?([^/]+)', href)
-                    results.append({
-                        "title": title, "url": href, "date": "",
-                        "source": domain.group(1) if domain else "",
-                        "source_label": "网络来源",
-                        "snippet": "",
-                    })
-                results = results[:n]
-        except Exception:
-            pass
-
+    for item in found["results"]:
+        href = item.get("url", "")
+        title = item.get("title", "")
+        if not href or len(title) < 8 or _is_garbage_result(href, title):
+            continue
+        domain = re.search(r"https?://(?:www\.)?([^/]+)", href)
+        domain_label = domain.group(1) if domain else ""
+        results.append({
+            "title": title,
+            "url": href,
+            "date": "",
+            "source": domain_label,
+            "source_label": "官方来源" if ("chinatax" in href or "gov.cn" in href) else (
+                _practice_source_name(domain_label, title) or "实务解读"
+            ),
+            "snippet": item.get("snippet", ""),
+        })
     return results
 
 

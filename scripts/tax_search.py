@@ -5,14 +5,12 @@ Tax Policy Search — search China tax laws/regulations via NPC API (flk.npc.gov
 Usage:
   # Title search (default)
   python tax_search.py "增值税" --size 20
-  # Full-text search, effective only
-  python tax_search.py "小微企业优惠" --scope fulltext --status 3
   # Exact title search
   python tax_search.py "中华人民共和国增值税法" --exact
   # Date range + sort by publish date
-  python tax_search.py "企业所得税" --scope fulltext --status 3 --from 2024-01-01 --sort date
+  python tax_search.py "企业所得税" --status 3 --from 2024-01-01 --sort date
   # Verbose output (includes article snippets)
-  python tax_search.py "加计扣除" --scope fulltext --status 3 --verbose
+  python tax_search.py "增值税" --status 3 --verbose
   # Enable cache (5min TTL)
   python tax_search.py "增值税" --cache
   # JSON output for piping
@@ -116,7 +114,9 @@ TAX_TYPE_KEYWORDS = {
     },
     "消费税": {
         "aliases": ["消费税", "卷烟", "成品油", "汽车消费税"],
-        "parent_law": "中华人民共和国消费税法",
+        # 消费税至今没有立法为"消费税法"，NPC 查"中华人民共和国消费税法"返回的是
+        # 宪法等无关法规。实际依据是 2008 年修订、现行有效的暂行条例。
+        "parent_law": "中华人民共和国消费税暂行条例",
         "priority": 2,
     },
     "关税": {
@@ -157,8 +157,15 @@ TAX_TYPE_KEYWORDS = {
         "priority": 4,
     },
     "车船税": {
-        "aliases": ["车船税", "车辆购置税"],
+        "aliases": ["车船税", "车船使用税", "船舶吨税"],
         "parent_law": "中华人民共和国车船税法",
+        "priority": 5,
+    },
+    # 车辆购置税是独立税种、独立立法，不归入车船税：车船税法不含车辆购置税，
+    # 两者是并列关系，混在一处会把"买车缴税"的问题指到错误的法上。
+    "车辆购置税": {
+        "aliases": ["车辆购置税", "车购税", "购车税", "新车购置税"],
+        "parent_law": "中华人民共和国车辆购置税法",
         "priority": 5,
     },
     "印花税": {
@@ -184,7 +191,8 @@ TAX_TYPE_KEYWORDS = {
     },
     # 其他
     "税收征管": {
-        "aliases": ["税收征收管理", "税务登记", "纳税申报", "发票管理", "发票", "税务稽查", "金税四期"],
+        "aliases": ["税收征管", "税收征收管理", "征管", "税务登记", "纳税申报",
+                    "发票管理", "发票", "税务稽查", "金税四期"],
         "parent_law": "中华人民共和国税收征收管理法",
         "priority": 1,
     },
@@ -254,19 +262,65 @@ def detect_intent(query: str) -> str:
 
 
 # ── NPC API Client ──────────────────────────────────────────────────────────
+def _title_match_rank(title: str, keyword: str, parent_law: str = "") -> tuple:
+    """给标题模糊检索的结果排序用，键越小越相关。
+
+    NPC 标题模糊检索按发布时间排，返回的只是"标题里含检索词部分字"的法律。
+    这里按三个维度重排：是否就是该税种的本体法、是否以检索词结尾（"XX法"
+    才是用户要的）、检索词在标题里的位置。命中不到的排到最后。
+    最后一位恒为 0：并列项保持接口返回的次序，不按标题字母排。
+
+    parent_law 是 resolve_tax_type() 认出来的税种对应的本体法名，需要调用方
+    传进来。"税收征管"这类查询靠关键词本身排不出来：本体法全名是"税收征收
+    管理法"，标题里没有"税收征管"四字，而两高的司法解释标题里恰好含这四字，
+    会被判成高分排在前面。有本体法兜底才排得对。
+    """
+    kw = (keyword or "").strip()
+    t = (title or "").replace("中华人民共和国", "")
+    if not kw:
+        return (9, 9, 0)
+    if parent_law and t == parent_law.replace("中华人民共和国", ""):
+        return (0, 0, 0)
+    pos = t.find(kw)
+    if pos < 0:
+        # 检索词被打散命中（"企业所得税" 命中"企业破产法"），排到最后
+        return (3, 8, 0)
+    ends_with = t.endswith(kw) or t.endswith(kw + "法")
+    return (1 if ends_with else 2, pos, 0)
+
+
+_MIN_INTERVAL = 0.6          # NPC 连续请求过快会直接断连，不回 429
+_last_request_at = 0.0
+
+
 def _request(method: str, url: str, **kwargs) -> requests.Response:
-    """Wrapper with retry for 429."""
+    """Wrapper with retry for 429, 5xx and connection drops."""
+    global _last_request_at
     max_retries = 3
+    last_exc = None
     for attempt in range(max_retries):
-        r = requests.request(method, url, verify=VERIFY_SSL, headers=HEADERS, timeout=15, **kwargs)
+        gap = _MIN_INTERVAL - (time.monotonic() - _last_request_at)
+        if gap > 0:
+            time.sleep(gap)
+        try:
+            r = requests.request(method, url, verify=VERIFY_SSL, headers=HEADERS,
+                                 timeout=15, **kwargs)
+        except requests.RequestException as e:
+            # 断连与 429 一样是对方在限流，退避后重试
+            last_exc = e
+            time.sleep(2 ** (attempt + 1))
+            continue
+        finally:
+            _last_request_at = time.monotonic()
         if r.status_code == 429:
-            wait = 2 ** (attempt + 1)
-            time.sleep(wait)
+            time.sleep(2 ** (attempt + 1))
             continue
         if r.status_code in {500, 502, 503} and attempt < max_retries - 1:
             time.sleep(1)
             continue
         return r
+    if last_exc is not None:
+        raise last_exc
     return r
 
 
@@ -284,7 +338,10 @@ def search_tax(keyword: str, *,
 
     Args:
         keyword: search term
-        scope: 'title' (searchRange=1) or 'fulltext' (searchRange=2)
+        scope: 'title' (searchRange=1) or 'fulltext' (searchRange=2). fulltext
+            is NOT filtered by the search term; it is kept only so callers get an
+            explicit _reliability=low marker. Use tax_web_search.py for real
+            body-text search.
         search_type: 1=exact, 2=fuzzy
         status: None=all, 3=effective, or any sxx code
         date_from: ISO date string e.g. '2024-01-01'
@@ -355,6 +412,47 @@ def search_tax(keyword: str, *,
             "category": item.get("flxz", ""),
         })
 
+    # 标题模糊检索按发布时间排序，不按相关度："企业所得税" 首条是企业破产法，
+    # 目标法落在第 5 位。命中的都是"含检索词部分字"的法律，所以按检索词连续
+    # 出现在标题中的位置重排一次，把完整命中的排到前面。相同档次内保持接口
+    # 给的次序（Python 的 sort 稳定），不改动并列项的相对顺序。
+    #
+    # 重排只对取回的这一页有效，页外的条目无论多相关都排不进来。实测 16 个
+    # 税种里有 7 个在 size<=3 时首位是错的（消费税返回消费者权益保护法、
+    # 税收征管返回两高司法解释），所以向接口多要一些再排，排完再截回调用方
+    # 要的条数。取不满时说明总数本来就不足 size，不补。
+    # 翻页（page>1）不做过取：第 2 页的语义是接口原序的第 21 条起，掺入第 1 页
+    # 的条目会让翻页结果失真。
+    if search_type == 2 and scope == "title" and page == 1:
+        fetch_size = min(max(size * 3, 20), 100)
+        if fetch_size != size:
+            extra = _request("POST", f"{BASE_URL}/law-search/search/list",
+                             json={**payload, "pageSize": fetch_size})
+            extra.raise_for_status()
+            extra_outer = extra.json()
+            extra_outer = extra_outer.get("data", extra_outer)
+            extra_rows = extra_outer.get("rows", extra_outer.get("list", []))
+            have = {r.get("bbbs", "") for r in rows}
+            for item in extra_rows:
+                bbbs = item.get("bbbs", "")
+                if bbbs in have:
+                    continue
+                have.add(bbbs)
+                results.append({
+                    "id": bbbs,
+                    "title": clean_html(item.get("flfgname", item.get("title", ""))),
+                    "publish_date": item.get("gbrq", ""),
+                    "effective_date": item.get("sxrq", ""),
+                    "status_code": item.get("sxx", 0),
+                    "status": SXX_MAP.get(item.get("sxx", 0), f"未知({item.get('sxx', 0)})"),
+                    "issuing_authority": item.get("zdjgName", ""),
+                    "category": item.get("flxz", ""),
+                })
+        tax_info = resolve_tax_type(keyword)
+        parent_law = (tax_info or {}).get("parent_law") or ""
+        results.sort(key=lambda it: _title_match_rank(it["title"], keyword, parent_law))
+        del results[size:]
+
     result = {
         "keyword": keyword,
         "scope": scope,
@@ -367,17 +465,19 @@ def search_tax(keyword: str, *,
         "_from_cache": False,
     }
 
+    # 可靠性标记：NPC 的正文模糊检索不按检索词过滤，返回的是与查询无关的法规流
+    # （结果实际按发文时间排列）。实测 "研发费用 资本化" 命中 5,964 条，排在前面的
+    # 却是国防法、香港基本法、公司法；"增值税" 命中 1,070 条，首条是外交特权与豁免
+    # 条例；连无意义词 "紫貂养殖" 都能命中民法典，说明接口根本没在检索。
+    # 标题检索与精确检索不受此影响。
+    if search_type == 2 and scope == "fulltext":
+        result["_reliability"] = "low"
+        result["_reliability_note"] = (
+            "NPC 正文模糊检索不按检索词过滤，结果与查询无关（按发文时间排列）；"
+            "请改用 --scope title 或 --exact 检索条文，需要实务解读请用税务总局/税屋/微信公众号"
+        )
+
     _cache.set(cache_key, result)
-    return result
-
-
-def search_tax_full(keyword: str, **kwargs) -> dict:
-    """Two-phase search: title-first, fallback to fulltext if insufficient."""
-    title_kwargs = {**kwargs, "scope": "title", "size": min(kwargs.get("size", 20), 20)}
-    result = search_tax(keyword, **title_kwargs)
-    if result["total"] == 0:
-        fulltext_kwargs = {**kwargs, "scope": "fulltext"}
-        return search_tax(keyword, **fulltext_kwargs)
     return result
 
 
@@ -389,10 +489,9 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="""
 Examples:
   python tax_search.py "增值税" --size 20
-  python tax_search.py "小微企业优惠" --scope fulltext --status 3
   python tax_search.py "中华人民共和国增值税法" --exact
-  python tax_search.py "企业所得税" --scope fulltext --from 2024-01-01 --sort date
-  python tax_search.py "研发费用加计扣除" --verbose --json
+  python tax_search.py "企业所得税" --status 3 --from 2024-01-01 --sort date
+  python tax_search.py "增值税" --status 3 --verbose
   python tax_search.py "增值税" --cache
   python tax_search.py --cache-clear
   python tax_search.py --cache-stats
@@ -400,7 +499,8 @@ Examples:
     )
     p.add_argument("keyword", nargs="?", help="Search keyword")
     p.add_argument("--scope", choices=["title", "fulltext"], default="title",
-                   help="Search scope (default: title)")
+                   help="Search scope (default: title). fulltext does not filter "
+                        "by the query and is only useful for confirming that")
     p.add_argument("--exact", action="store_true",
                    help="Exact title match (default: fuzzy)")
     p.add_argument("--status", type=int, default=3,
@@ -416,8 +516,6 @@ Examples:
     p.add_argument("--no-cache", action="store_true", help="Disable cache")
     p.add_argument("--cache-stats", action="store_true", help="Show cache stats")
     p.add_argument("--cache-clear", action="store_true", help="Clear cache")
-    p.add_argument("--two-phase", action="store_true",
-                   help="Title-first, fallback to fulltext if no results")
     return p
 
 
@@ -446,8 +544,7 @@ def main():
         parser.print_help()
         return
 
-    search_fn = search_tax_full if args.two_phase else search_tax
-    result = search_fn(
+    result = search_tax(
         args.keyword,
         scope=args.scope if not args.exact else "title",
         search_type=1 if args.exact else 2,
@@ -468,6 +565,8 @@ def main():
     cache_tag = " [缓存]" if result.get("_from_cache") else ""
     print(f"🔍 搜索 \"{args.keyword}\" | {args.scope}/{result['search_type']} | "
           f"共 {result['total']} 条 | {result['searched_at']}{cache_tag}")
+    if result.get("_reliability") == "low":
+        print(f"  ⚠️ _reliability: low — {result['_reliability_note']}")
     print()
 
     for item in result["results"]:
@@ -487,4 +586,9 @@ def main():
 
 
 if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, ValueError):
+            pass
     main()

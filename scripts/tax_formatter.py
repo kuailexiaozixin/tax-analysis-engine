@@ -35,6 +35,17 @@ INTENT_HEADERS = {
     "invoice": "发票处理指引",
 }
 
+PRACTICE_SOURCE_LABELS = {
+    "so360": "360",
+    "shui5": "税屋",
+    "wechat": "公众号",
+}
+
+_RELIABILITY_NOTE = (
+    "NPC 正文模糊检索不按检索词过滤，下列结果与查询无关，"
+    "改用 --scope title 重新检索"
+)
+
 
 def format_source_tag(source: str, searched_at: str) -> str:
     """Generate a source provenance tag."""
@@ -108,14 +119,18 @@ def format_search_response(results: dict, intent: str = "policy_lookup",
 
 
 def merge_aggregated_response(npc_results: dict, chinatax_results: list,
-                              anysearch_results: list, keyword: str,
+                              keyword: str,
+                              practice_results: list | None = None,
                               intent: str = "policy_lookup") -> str:
-    """Format aggregated results from multiple data sources."""
+    """Format aggregated results from multiple data sources.
+
+    practice_results 是 360 / 税屋 / 微信公众号的条目，每条带 _source 标明来源。
+    """
 
     searched_at = time.strftime("%Y-%m-%d %H:%M:%S")
     lines = [
         f"> 🔍 **多源实时查询** | {searched_at}",
-        f"> 数据源: NPC 国家法规库 | 国家税务总局 | 网页补充",
+        f"> 数据源: NPC 国家法规库 | 国家税务总局 | 360 | 税屋 | 微信公众号",
         "",
         f"## \"{keyword}\" — {INTENT_HEADERS.get(intent, '查询结果')}",
         "",
@@ -131,6 +146,9 @@ def merge_aggregated_response(npc_results: dict, chinatax_results: list,
             lines.append(f"  公布: {item['publish_date']} | `{item['id']}`")
         lines.append(f"")
         lines.append(f"> 共 {npc_results['total']} 条，向上按权威度排序")
+        if npc_results.get("_reliability") == "low":
+            lines.append(f"")
+            lines.append(f"> ⚠️ {_RELIABILITY_NOTE}")
         lines.append("")
 
     # chinatax results (secondary)
@@ -145,14 +163,19 @@ def merge_aggregated_response(npc_results: dict, chinatax_results: list,
                 lines.append(f"  链接: {item['url']}")
         lines.append("")
 
-    # anysearch results (supplementary)
-    if anysearch_results:
-        lines.append("### 🌐 相关网页/行业解读")
+    # 360 / 税屋 / 微信公众号：实务解读与地方文件，权威性低于上面两源
+    if practice_results:
+        lines.append("### 🏠 实务解读与地方文件（360 / 税屋 / 微信公众号）")
         lines.append("")
-        for item in anysearch_results[:3]:
-            lines.append(f"- {item.get('title', '')}")
+        for item in practice_results[:8]:
+            src = PRACTICE_SOURCE_LABELS.get(item.get("_source", ""), "网页")
+            lines.append(f"- [{src}] **{item.get('title', '')}**")
+            if item.get("publish_date"):
+                lines.append(f"  日期: {item['publish_date']}")
             if item.get("url"):
-                lines.append(f"  {item['url']}")
+                lines.append(f"  链接: {item['url']}")
+        lines.append("")
+        lines.append("> ⚠️ 以上为实务解读与地方文件，非官方政策原文，引用前须核对发文机关与文号。")
         lines.append("")
 
     lines.append("---")
@@ -181,11 +204,13 @@ def main():
     data = json.loads(raw)
 
     if args.mode == "aggregated":
+        practice = (data.get("so360", []) + data.get("shui5", [])
+                    + data.get("wechat", []))
         output = merge_aggregated_response(
             npc_results=data.get("npc"),
             chinatax_results=data.get("chinatax", []),
-            anysearch_results=data.get("anysearch", []),
             keyword=data.get("keyword", ""),
+            practice_results=practice,
             intent=args.intent,
         )
     else:
@@ -195,4 +220,11 @@ def main():
 
 
 if __name__ == "__main__":
+    # 中文 JSON 从 stdin 进来时，Windows 默认按 GBK 解码会变成乱码，
+    # 读入与打印两处都要固定成 UTF-8。
+    for _stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, ValueError):
+            pass
     main()

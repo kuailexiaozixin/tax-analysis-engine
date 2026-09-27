@@ -472,7 +472,7 @@ body{
 
 <!-- ═══ FILTERS ═══ -->
 <div class="filters-bar" id="filtersBar">
-  <div class="filter-group"><label>范围</label><select id="filterScope"><option value="title">标题</option><option value="fulltext" selected>全文</option></select></div>
+  <div class="filter-group"><label>范围</label><select id="filterScope"><option value="title" selected>标题</option><option value="fulltext">全文（不相关，慎用）</option></select></div>
   <div class="filter-group"><label>匹配</label><select id="filterType"><option value="fuzzy">模糊</option><option value="exact">精确</option></select></div>
   <div class="filter-group"><label>时效</label><select id="filterStatus"><option value="3" selected>现行有效</option><option value="">全部</option></select></div>
   <div class="filter-group"><label>排序</label><select id="filterSort"><option value="relevance">相关度</option><option value="date">日期↓</option></select></div>
@@ -603,8 +603,8 @@ function renderResults(data){
   const c=document.getElementById('resultsContainer'),result=data.result,items=result?.results||result?.items||[];
   const total=result?.total||result?.total_items||items.length,searchedAt=result?.searched_at||'';
   const cacheTag=result?._from_cache?' [缓存]':'';
-  const srcLabels={npc:'NPC国家法规库',chinatax:'国家税务总局',anysearch:'AnySearch'};
-  const srcIcons={npc:'📜',chinatax:'🏛️',anysearch:'🌐'};
+  const srcLabels={npc:'NPC国家法规库',chinatax:'国家税务总局',so360:'360站内搜索',shui5:'税屋(实务解读)',wechat:'微信公众号(实务解读)'};
+  const srcIcons={npc:'📜',chinatax:'🏛️',so360:'🔎',shui5:'🏠',wechat:'💬'};
   const statusMap={1:'s-abolished',2:'s-amended',3:'s-effective',4:'s-pending'};
   const statusIcons={1:'🔴',2:'🟡',3:'🟢',4:'🔵'};
   const statusNames={1:'已废止',2:'已修改',3:'现行有效',4:'尚未生效'};
@@ -619,8 +619,8 @@ function renderResults(data){
     if(searchedAt)h+=`<span class="tag tag-time">🕐 ${searchedAt}${cacheTag}</span>`;
     h+='</div>';
   }
-  if(result?.source_summary){const s=result.source_summary;h+='<div class="meta-bar">';if(s.npc)h+=`<span class="source-label src-npc">📜 NPC ${s.npc}条</span>`;if(s.chinatax)h+=`<span class="source-label src-chinatax">🏛️ 总局 ${s.chinatax}条</span>`;if(s.anysearch)h+=`<span class="source-label src-anysearch">🌐 网页 ${s.anysearch}条</span>`;h+='</div>';}
-  if(items.length===0){h+=`<div class="empty-state"><div style="font-size:28px;margin-bottom:8px">🔍</div><p><b>未找到相关政策</b></p><p style="font-size:13px;color:var(--g400)">关键词:"${esc(data.keyword)}"</p><p style="font-size:12px;margin-top:8px;color:var(--g400)">试试更宽泛的关键词 / 切换到"全文"搜索 / 使用"多源聚合"模式</p></div>`;}
+  if(result?.source_summary){const s=result.source_summary;h+='<div class="meta-bar">';if(s.npc)h+=`<span class="source-label src-npc">📜 NPC ${s.npc}条</span>`;if(s.chinatax)h+=`<span class="source-label src-chinatax">🏛️ 总局 ${s.chinatax}条</span>`;if(s.so360)h+=`<span class="source-label src-anysearch">🔎 360 ${s.so360}条</span>`;if(s.shui5)h+=`<span class="source-label src-anysearch">🏠 税屋 ${s.shui5}条</span>`;if(s.wechat)h+=`<span class="source-label src-anysearch">💬 公众号 ${s.wechat}条</span>`;h+='</div>';}
+  if(items.length===0){h+=`<div class="empty-state"><div style="font-size:28px;margin-bottom:8px">🔍</div><p><b>未找到相关政策</b></p><p style="font-size:13px;color:var(--g400)">关键词:"${esc(data.keyword)}"</p><p style="font-size:12px;margin-top:8px;color:var(--g400)">试试更短的关键词（如"增值税"而非"增值税优惠政策最新规定"） / 切换到"多源聚合"模式覆盖税屋与公众号</p></div>`;}
 
   items.forEach((item,i)=>{
     const sc=statusMap[item.status_code]||'',st=highlightText(item.title,lastKeyword),sid=item.id||'',rawTitle=esc(item.title);

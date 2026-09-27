@@ -12,7 +12,8 @@ os.environ["PYTHONIOENCODING"] = "utf-8"
 SCRIPT_DIR = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from tax_search import search_tax, search_tax_full, resolve_tax_type, detect_intent
+from tax_search import (search_tax, resolve_tax_type, detect_intent,
+                         TAX_TYPE_KEYWORDS)
 from tax_detail import fetch_detail
 from tax_web_search import search_chinatax
 from tax_formatter import format_search_response
@@ -149,17 +150,183 @@ def test_fetch_detail():
 
 
 def test_chinatax_search():
-    """Test chinatax.gov.cn WebFetch."""
-    print("\n[Test] chinatax.gov.cn search: VAT")
-    result = search_chinatax("增值税", size=5)
-    assert "keyword" in result
-    assert "results" in result
-    print(f"  [PASS] Total: {result['total']}, searched_at: {result['searched_at']}")
-    if result.get("_error"):
-        print(f"  [WARN] Chinatax error (non-fatal): {result['_error']}")
-    if result["results"]:
-        print(f"  First: {result['results'][0]['title'][:60]}")
+    """Test chinatax.gov.cn search via the search5 JSON interface."""
+    print("\n[Test] chinatax.gov.cn search: 研发费用加计扣除")
+    result = search_chinatax("研发费用加计扣除", size=5)
+    assert not result.get("_error"), f"Chinatax search failed: {result.get('_error')}"
+    # 之前只断言 key 存在，total=0 也算通过，属于假绿
+    assert result["total"] > 0, "Chinatax should return hits for 研发费用加计扣除"
+    assert len(result["results"]) > 0, "Chinatax should return parsed results"
+    for item in result["results"]:
+        assert item["url"].startswith("http"), f"Bad url: {item['url']}"
+        assert item["title"], "Result must have a title"
+    print(f"  [PASS] Total: {result['total']}, parsed: {len(result['results'])}")
+    print(f"  [PASS] First: {result['results'][0]['title'][:60]}")
     return result
+
+
+def test_fgk_search():
+    """Test the STA regulation library (fgk.chinatax.gov.cn)."""
+    print("\n[Test] fgk regulation library: 研发费用")
+    from tax_fgk import search_fgk
+    result = search_fgk("研发费用", size=4)
+    assert result["total"] > 0, "fgk search should return regulation entries"
+    for item in result["results"]:
+        assert "fgk.chinatax.gov.cn" in item["url"], f"Not an fgk entry: {item['url']}"
+    print(f"  [PASS] fgk entries: {result['total']}")
+    print(f"  [PASS] First: {result['results'][0]['title'][:60]}")
+    return result
+
+
+def test_so360_search():
+    """Test 360 site: search, which replaced the removed Bing channel."""
+    print("\n[Test] 360 site search: chinatax.gov.cn")
+    from tax_so360 import so360_search
+    result = so360_search("研发费用加计扣除", site="chinatax.gov.cn", size=5)
+    assert not result.get("_error"), f"360 search failed: {result.get('_error')}"
+    assert result["total"] > 0, "360 should return chinatax links"
+    for item in result["results"]:
+        assert "chinatax.gov.cn" in item["url"], f"Off-site result: {item['url']}"
+        assert item["title"], "Result must have a title"
+    print(f"  [PASS] 360 hits: {result['total']}")
+    print(f"  [PASS] First: {result['results'][0]['title'][:60]}")
+    return result
+
+
+def test_shui5_search():
+    """Test shui5.cn (360 discovery + Jina Reader body)."""
+    print("\n[Test] shui5.cn: 高新技术企业认定")
+    from tax_shui5 import search_shui5
+    result = search_shui5("高新技术企业认定", size=2)
+    assert not result.get("_error"), f"shui5 search failed: {result.get('_error')}"
+    assert result["total"] > 0, "shui5 should return article links"
+    for item in result["results"]:
+        assert "shui5.cn" in item["url"], f"Off-site result: {item['url']}"
+    print(f"  [PASS] shui5 hits: {result['total']}")
+    print(f"  [PASS] First: {result['results'][0]['title'][:60]}")
+    return result
+
+
+def test_shui5_read_article():
+    """Test reading a shui5 article body through Jina Reader."""
+    print("\n[Test] shui5 article body via Jina Reader")
+    from tax_shui5 import read_article
+    url = "https://www.shui5.cn/article/90/40872.html"
+    content, err = read_article(url)
+    assert not err, f"Reading failed: {err}"
+    assert "Markdown Content:" in content, "Jina response should carry the article body"
+    body = content.split("Markdown Content:", 1)[-1]
+    assert len(body) > 500, f"Body too short: {len(body)} chars"
+    print(f"  [PASS] Body: {len(body)} chars")
+    return body
+
+
+def test_wechat_search():
+    """Test WeChat public-account search through Sogou."""
+    print("\n[Test] WeChat (Sogou): 研发费用加计扣除")
+    from tax_wechat import search_wechat
+    result = search_wechat("研发费用加计扣除", size=3)
+    assert not result.get("_error"), f"WeChat search failed: {result.get('_error')}"
+    assert result["total"] > 0, "WeChat search should return articles"
+    for item in result["results"]:
+        assert item.get("url", "").startswith("https://mp.weixin.qq.com/"), \
+            f"Link not restored: {item.get('url')}"
+    print(f"  [PASS] WeChat hits: {result['total']}")
+    print(f"  [PASS] First: {result['results'][0]['title'][:60]}")
+    return result
+
+
+def test_wechat_read_article():
+    """Test reading a WeChat article body."""
+    print("\n[Test] WeChat article body")
+    from tax_wechat import search_wechat, read_article
+    found = search_wechat("研发费用加计扣除", size=1)
+    assert found["total"] > 0, "Need at least one article to read"
+    url = found["results"][0]["url"]
+    content, err = read_article(url)
+    assert not err, f"Reading failed: {err}"
+    assert len(content) > 200, f"Body too short: {len(content)} chars"
+    print(f"  [PASS] Body: {len(content)} chars")
+    return content
+
+
+def test_npc_reliability_marker():
+    """Any fuzzy fulltext must be flagged low-reliability."""
+    print("\n[Test] NPC reliability marker")
+    fuzzy = search_tax("研发费用 资本化", scope="fulltext", search_type=2, status=3, size=5)
+    assert fuzzy.get("_reliability") == "low", \
+        "Fuzzy fulltext should be marked low reliability"
+    # 单词同样不可信：NPC 正文检索不按检索词过滤，无意义词也能命中民法典
+    single = search_tax("增值税", scope="fulltext", search_type=2, status=3, size=5)
+    assert single.get("_reliability") == "low", \
+        "Single-word fuzzy fulltext must also be marked"
+    exact = search_tax("研发费用加计扣除", scope="fulltext", search_type=1, status=3, size=5)
+    assert exact.get("_reliability") is None, "Exact search should not be marked"
+    print("  [PASS] fuzzy fulltext marked low, exact search unmarked")
+    return fuzzy
+
+
+def test_npc_title_ranking():
+    """标题模糊检索须把本体法排到前面，而不是按发布时间。"""
+    print("\n[Test] NPC title ranking")
+    cases = [
+        ("企业所得税", "中华人民共和国企业所得税法"),
+        ("个人所得税", "中华人民共和国个人所得税法"),
+        ("增值税", "中华人民共和国增值税法"),
+        ("契税", "中华人民共和国契税法"),
+    ]
+    for kw, expected in cases:
+        result = search_tax(kw, scope="title", search_type=2, status=3, size=20)
+        assert result["results"], f"No results for {kw}"
+        top = result["results"][0]["title"]
+        assert top == expected, \
+            f"{kw}: 期望首条 {expected}，实际 {top}"
+    print(f"  [PASS] {len(cases)} 个税种首条均为本体法")
+    return cases
+
+
+def test_parent_law_authenticity():
+    """每个 parent_law 必须真的存在于 NPC 且首条等于查询词。
+
+    NPC 的精确检索不是严格匹配：不存在的名称也返回上千条，所以判据只能是
+    首条标题等于查询词，不能用 total > 0。parent_law 写错一个字，重排就会
+    把司法解释顶到本体法前面。
+    """
+    print("\n[Test] parent_law authenticity")
+    bad = []
+    n = 0
+    for tax_type, info in TAX_TYPE_KEYWORDS.items():
+        parent = info.get("parent_law")
+        if not parent:
+            continue
+        n += 1
+        r = search_tax(parent, scope="title", search_type=1, status=3, size=5)
+        top = r["results"][0]["title"] if r["results"] else "<无结果>"
+        if top != parent:
+            bad.append(f"{tax_type}: 期望 {parent}，实际 {top}")
+    assert not bad, "parent_law 与库中实际标题不符：\n  " + "\n  ".join(bad)
+    print(f"  [PASS] {n}/{n} 个 parent_law 首条均等于查询词")
+    return n
+
+
+def test_ranking_size_insensitivity():
+    """重排只在单页内做，所以先过取再排。size 变化不该改变首条是谁。"""
+    print("\n[Test] Ranking size insensitivity")
+    cases = ["企业所得税", "个人所得税", "增值税", "税收征管", "消费税"]
+    sizes = [1, 3, 20]
+    bad = []
+    for kw in cases:
+        tops = {}
+        for size in sizes:
+            r = search_tax(kw, scope="title", search_type=2, status=3, size=size)
+            assert r["results"], f"{kw} size={size} 无结果"
+            tops[size] = r["results"][0]["title"]
+        if len(set(tops.values())) != 1:
+            bad.append(f"{kw}: {tops}")
+    assert not bad, "首条随 size 变化，说明重排没有在过取后的完整页面上做：\n  " \
+        + "\n  ".join(bad)
+    print(f"  [PASS] {len(cases)} 个查询在 size={sizes} 下首条一致")
+    return cases
 
 
 def test_formatter():
@@ -175,12 +342,15 @@ def test_formatter():
     return md
 
 
-def test_two_phase():
-    """Test two-phase search (title-first, fulltext fallback)."""
-    print("\n[Test] Two-phase search")
-    result = search_tax_full("增值税", status=3, size=5)
+def test_title_only_default():
+    """Default scope must be title. NPC's body-text scope ignores the query, so
+    no code path may fall back to it."""
+    print("\n[Test] Title-only default")
+    result = search_tax("增值税", status=3, size=5)
+    assert result["scope"] == "title", f"expected title, got {result['scope']}"
     assert result["total"] > 0
-    print(f"  [PASS] Two-phase found: {result['total']} results, scope={result['scope']}")
+    assert "_reliability" not in result
+    print(f"  [PASS] scope=title, {result['total']} results, no reliability marker")
     return result
 
 
@@ -198,9 +368,19 @@ def main():
         ("Date Range Filter", test_search_date_range),
         ("Cache", test_search_with_cache),
         ("Fetch Detail", test_fetch_detail),
-        ("chinatax.gov.cn WebFetch", test_chinatax_search),
+        ("chinatax.gov.cn Search5", test_chinatax_search),
+        ("fgk Regulation Library", test_fgk_search),
+        ("360 Site Search", test_so360_search),
+        ("shui5.cn Search", test_shui5_search),
+        ("shui5.cn Article Body", test_shui5_read_article),
+        ("WeChat (Sogou) Search", test_wechat_search),
+        ("WeChat Article Body", test_wechat_read_article),
+        ("NPC Reliability Marker", test_npc_reliability_marker),
+        ("NPC Title Ranking", test_npc_title_ranking),
+        ("parent_law Authenticity", test_parent_law_authenticity),
+        ("Ranking Size Insensitivity", test_ranking_size_insensitivity),
         ("Markdown Formatter", test_formatter),
-        ("Two-Phase Search", test_two_phase),
+        ("Title-Only Default", test_title_only_default),
     ]
 
     all_passed = 0

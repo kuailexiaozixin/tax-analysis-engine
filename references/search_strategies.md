@@ -1,6 +1,10 @@
 # Search Strategies by Intent Type
 
-Five intent types × two-phase search strategy. Always search FIRST, answer SECOND.
+Five intent types × two-source search strategy. Always search FIRST, answer SECOND.
+
+**NPC 的 `--scope fulltext` 不要用**：该接口不按检索词过滤，任何关键词都返回同一批法规
+（"紫貂养殖"命中民法典）。需要"正文里提到某词"的能力时走 chinatax.gov.cn，
+那里是真检索。两个数据源分工：NPC 出法律本体，chinatax 出政策解读与操作口径。
 
 ---
 
@@ -14,8 +18,8 @@ Five intent types × two-phase search strategy. Always search FIRST, answer SECO
 # Phase 1: Title search with keyword
 python scripts/tax_search.py "<keyword>" --status 3 --size 20
 
-# Phase 2 (if Phase 1 returns 0): Fulltext search
-python scripts/tax_search.py "<keyword>" --scope fulltext --status 3 --size 20
+# Phase 2 (if Phase 1 returns 0): chinatax.gov.cn, which really searches body text
+python scripts/tax_web_search.py "<keyword>" --size 20
 
 # When user knows exact regulation name: Exact match
 python scripts/tax_search.py "<exact_name>" --exact --status 3
@@ -50,8 +54,10 @@ python scripts/tax_web_search.py "<keyword> 申报流程" --size 10
 **Trigger**: Keywords about risk, compliance, audit, penalties.
 
 ```bash
-# Fulltext search — risk indicators often appear in body text, not titles
-python scripts/tax_search.py "<risk_keyword>" --scope fulltext --status 3 --size 20
+# NPC has no body-text search. Risk indicators live in the 稽查/处罚 documents
+# themselves, so look them up by the regulation that carries them:
+python scripts/tax_search.py "税务行政处罚" --status 3 --size 20
+python scripts/tax_search.py "税收违法" --status 3 --size 20
 
 # Supplement: chinatax.gov.cn for latest enforcement notices
 python scripts/tax_web_search.py "<keyword> 稽查 处罚" --size 10
@@ -78,7 +84,8 @@ python scripts/tax_web_search.py "<keyword> 稽查 处罚" --size 10
 
 ```bash
 # Exact + fuzzy dual approach
-python scripts/tax_search.py "<policy_name>" --status 3 --scope fulltext --size 20
+python scripts/tax_search.py "<policy_name>" --status 3 --size 20
+python scripts/tax_web_search.py "<policy_name> 条件" --size 20
 ```
 
 **Key data to extract**:
@@ -100,8 +107,8 @@ python scripts/tax_search.py "<policy_name>" --status 3 --scope fulltext --size 
 # Invoice management regulations — title-first
 python scripts/tax_search.py "发票管理办法" --exact --status 3
 
-# Specific invoice issues — fulltext
-python scripts/tax_search.py "<keyword>" --scope fulltext --status 3 --size 15
+# Specific invoice issues — chinatax.gov.cn carries the operational detail
+python scripts/tax_web_search.py "<keyword> 发票" --size 15
 ```
 
 **Key invoice topics**:
@@ -115,7 +122,8 @@ python scripts/tax_search.py "<keyword>" --scope fulltext --status 3 --size 15
 ## Cross-Intent Rules
 
 1. **Always include --status 3 by default**. Only show abolished/amended laws when explicitly requested.
-2. **Prefer title search first**, fallback to fulltext only when title returns 0 results.
+2. **Only ever search NPC by title**. Its body-text scope ignores the query; a second
+   source is `tax_web_search.py` (chinatax.gov.cn), not `--scope fulltext`.
 3. **When uncertain about intent**: run both `policy_lookup` and `eligibility` strategies, let user pick.
 4. **Always include `searched_at` timestamp** in output.
 5. **Never use training data as the primary answer source**. Always cite specific API results with document IDs.
