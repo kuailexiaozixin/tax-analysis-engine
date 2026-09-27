@@ -66,18 +66,72 @@ class _DetailCache:
 
 _detail_cache = _DetailCache()
 
+# 详情接口与检索接口同一套限流策略，最小间隔与重试次数照抄 tax_search
+_MIN_INTERVAL = 0.6
+_last_request_at = 0.0
+
+
+def _is_challenge_page(r) -> bool:
+    """限流时对方回 HTTP 200 + 一份 HTML 挑战页（Please enable JavaScript）。"""
+    ctype = (r.headers.get("Content-Type") or "").lower()
+    if "json" in ctype:
+        return False
+    head = r.text[:600].lower()
+    return "please enable" in head or "<!doctype html" in head
+
+
+def _request(url: str, max_retries: int = 4):
+    """带节流与重试的 GET，覆盖 429、断连、5xx 与挑战页。"""
+    global _last_request_at
+    for attempt in range(max_retries):
+        gap = _MIN_INTERVAL - (time.monotonic() - _last_request_at)
+        if gap > 0:
+            time.sleep(gap)
+        try:
+            r = requests.get(url, headers=HEADERS, verify=VERIFY_SSL, timeout=15)
+        except requests.RequestException as e:
+            if attempt == max_retries - 1:
+                raise
+            time.sleep(2 ** (attempt + 1))
+            continue
+        finally:
+            _last_request_at = time.monotonic()
+        if r.status_code == 429 or r.status_code in {500, 502, 503}:
+            if attempt < max_retries - 1:
+                time.sleep(2 ** (attempt + 1))
+                continue
+        elif _is_challenge_page(r) and attempt < max_retries - 1:
+            time.sleep(2 ** (attempt + 1))
+            continue
+        r.raise_for_status()
+        return r
+    return r
+
 
 def fetch_detail(bbbs_id: str) -> dict:
-    """Get law detail metadata from NPC API."""
+    """Get law detail metadata from NPC API.
+
+    响应里 ossWordPath / ossPdfPath 嵌在 data.ossFile 对象下，不在 data 顶层，
+    按顶层取会静默拿到空串——下载功能因此报"No download URL"之外的问题却
+    毫无提示。content 是单个节点对象而非数组，取 body 时要按节点展开。
+    """
     cached = _detail_cache.get(bbbs_id)
     if cached:
         return cached
 
     url = f"{BASE_URL}/law-search/search/flfgDetails?bbbs={bbbs_id}"
-    r = requests.get(url, headers=HEADERS, verify=VERIFY_SSL, timeout=15)
-    r.raise_for_status()
-    data = r.json()
+    r = _request(url)
+    try:
+        data = r.json()
+    except ValueError as e:
+        # 限流时对方回 HTTP 200 + 一份 HTML 挑战页，.json() 报的是
+        # "Expecting value: line 1 column 1"，看不出真实原因。
+        raise RuntimeError(
+            f"NPC 详情接口返回的不是 JSON（HTTP {r.status_code}，"
+            f"Content-Type {r.headers.get('Content-Type')}，"
+            f"{len(r.content)} 字节）：{r.text[:120]!r}；原异常 {e}") from e
     detail = data.get("data", data)
+    oss = detail.get("ossFile") or {}
 
     result = {
         "id": bbbs_id,
@@ -89,15 +143,46 @@ def fetch_detail(bbbs_id: str) -> dict:
         "status": SXX_MAP.get(detail.get("sxx", 0), "未知"),
         "issuing_authority": detail.get("zdjgName", ""),
         "oss_files": {
-            "docx": detail.get("ossWordPath", ""),
-            "pdf": detail.get("ossPdfPath", ""),
+            "docx": oss.get("ossWordPath", ""),
+            "pdf": oss.get("ossPdfPath", ""),
         },
-        "content_tree": detail.get("contentTree", []),
+        "related": {
+            "amendments": detail.get("xgwj", []),
+            "interpretation": detail.get("lsyg", []),
+            "drafts": detail.get("xgzl", []),
+            "legal_basis": detail.get("flfg", []),
+        },
+        "content_tree": _flatten_content(detail.get("content")),
         "fetched_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
 
     _detail_cache.set(bbbs_id, result)
     return result
+
+
+def _flatten_content(node, out: Optional[list] = None) -> list:
+    """把 content 节点树拍平成 [{level,title,content}...] 列表。
+
+    接口返回的是单个根节点（带 children），不是数组。
+    """
+    if out is None:
+        out = []
+    if isinstance(node, list):
+        for n in node:
+            _flatten_content(n, out)
+        return out
+    if not isinstance(node, dict):
+        return out
+    title = node.get("title") or node.get("name") or ""
+    text = node.get("content") or ""
+    if title or text:
+        out.append({
+            "level": node.get("level", 0),
+            "title": title,
+            "content": text,
+        })
+    _flatten_content(node.get("children") or node.get("childList"), out)
+    return out
 
 
 def get_download_url(bbbs_id: str, fmt: str = "docx") -> Optional[str]:
@@ -237,4 +322,10 @@ def main():
 
 
 if __name__ == "__main__":
+    # Windows 控制台默认 GBK，输出里的 emoji 与法规名会炸 UnicodeEncodeError
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     main()

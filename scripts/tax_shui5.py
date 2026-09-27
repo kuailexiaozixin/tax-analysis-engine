@@ -11,12 +11,15 @@ NPC 法规库里查不到的实操层内容，是三源之外的必要补充。
      （返回 1,488 字节"百度安全验证"），实测 4 次仅 1 次返回结果。
      → 改用 360 移动版 site:shui5.cn 检索，实测 3 组关键词均稳定返回 5 条。
   2. 阅读：税屋前置阿里云 WAF，无 acw_sc__v2 cookie 时所有页面（含 robots.txt）
-     都返回同一份 23,682 字节挑战页。原先判断"无浏览器读不了"不成立：该站
-     挑战算出的 cookie 是固定值（多次取到同一个，不随挑战里的 arg1 变化），
-     带上即可直连，正文在 div.arcContent#tupain。
-     → 直连取正文，实测 6/6 篇成功；直连失败才退回 Jina Reader。
+     都返回同一份 23,682 字节挑战页，页面里带 arg1。
+     → 本模块按公开算法（固定置换表 + 固定异或掩码）由 arg1 算出
+       acw_sc__v2 并用同一 session 重试。正文容器是 div.arcContent#tupain。
+       直连仍失败时退回 Jina Reader。
 
-本模块据此实现：360 检索 + 直连读正文（Jina 兜底）。
+     2026-09-27 实测：算出的 cookie 服务端不再认可（连续 5 次同 session 重试
+     全被拦），Jina Reader 也连接超时。**该站的正文当时取不到**，本模块
+     实际只当链接发现源用，标题与地址照常返回。取正文靠 fgk / 税屋之外的
+     解读渠道补，不要因为"检索有结果"就以为正文也能取到。
 
 Usage:
   python tax_shui5.py "研发费用加计扣除" --size 5
@@ -54,10 +57,21 @@ BROWSER_HEADERS = {
     "Accept-Language": "zh-CN,zh;q=0.9",
 }
 
-# 税屋前置阿里云 WAF（acw_sc__v2 挑战），无 cookie 时所有路径都返回同一份
-# 23,682 字节挑战页。该站挑战算出的 cookie 是固定值，不随 arg1 变化
-# （浏览器连续取到的都是同一个），带上即可直连，实测 6/6 篇正常返回。
-WAF_COOKIE = "1234cf0d46-c16f56006da57ab926d594a71cb09b86d823d6894034557f34"
+# 税屋前置阿里云 WAF：第一次请求一定返回 23,682 字节的挑战页，页面里
+# <textarea id="renderData"> 带 arg1（40 位十六进制），浏览器据此算出
+# acw_sc__v2 _cookie 再请求才放行。
+#
+# 算法是公开的：先用固定置换表把 arg1 重排，再与固定掩码逐字节异或。
+# 置换表与掩码是该挑战的常量，不随 arg1 变。
+#
+# 注意：算对 cookie 仍不必然放行——服务端还会校验 acw_tc 等会话 cookie，
+# 无浏览器执行不了完整的 JS 挑战链。所以直连失败是常态，会退回 Jina Reader。
+# 2026-09 实测：算出的 cookie 服务端一律不认，直连 0/N 成功。
+_UNBOX_POS = [15, 35, 29, 24, 33, 16, 1, 38, 10, 9, 19, 31, 40, 27, 22, 23,
+              25, 13, 6, 11, 39, 18, 20, 8, 14, 21, 32, 26, 2, 30, 7, 4,
+              17, 5, 3, 28, 34, 37, 12, 36]
+_XOR_MASK = "3000176000856006061501533003690027800375"
+_ARG1_RE = re.compile(r"arg1\s*=\s*'([0-9a-fA-F]+)'")
 
 _ARC_RE = re.compile(r'<div class="arcContent"[^>]*>(.*?)'
                      r'(?=<div class="(?:bot-share|left2b|blank20)|\Z)', re.S | re.I)
@@ -78,11 +92,41 @@ def _to_text(fragment: str) -> str:
     return "\n".join(ln for ln in lines if ln)
 
 
+def _solve_waf_challenge(arg1: str) -> str:
+    """按阿里云 WAF 的公开算法由 arg1 算出 acw_sc__v2。
+
+    先按 _UNBOX_POS 重排 40 位十六进制串，再与 _XOR_MASK 逐字节异或。
+    """
+    reordered = "".join(arg1[i - 1] for i in _UNBOX_POS if i - 1 < len(arg1))
+    return "".join(
+        "%02x" % (int(reordered[i:i + 2], 16) ^ int(_XOR_MASK[i:i + 2], 16))
+        for i in range(0, len(reordered) - 1, 2)
+    )
+
+
+def _is_waf_page(page: str) -> bool:
+    return "arg1" in page and "renderData" in page
+
+
 def _make_session() -> requests.Session:
     s = requests.Session()
     s.headers.update(BROWSER_HEADERS)
-    s.cookies.set("acw_sc__v2", WAF_COOKIE, domain=".shui5.cn")
     return s
+
+
+def _get_with_challenge(url: str, session: requests.Session) -> requests.Response:
+    """请求页面，遇挑战页就地解一次并重试。
+
+    用同一个 session 连做两步，让 acw_tc 之类的会话 cookie 一并带上。
+    """
+    r = session.get(url, timeout=TIMEOUT_READ)
+    page = r.content.decode("utf-8", errors="replace")
+    if _is_waf_page(page):
+        m = _ARG1_RE.search(page)
+        if m:
+            session.cookies.set("acw_sc__v2", _solve_waf_challenge(m.group(1)))
+            r = session.get(url, timeout=TIMEOUT_READ)
+    return r
 
 
 def fetch_shui5(url: str) -> dict:
@@ -94,7 +138,7 @@ def fetch_shui5(url: str) -> dict:
     """
     out = {"url": url}
     try:
-        r = _make_session().get(url, timeout=TIMEOUT_READ)
+        r = _get_with_challenge(url, _make_session())
     except requests.RequestException as e:
         out["_error"] = f"请求失败：{e}"
         return out
@@ -103,8 +147,9 @@ def fetch_shui5(url: str) -> dict:
         return out
 
     page = r.content.decode("utf-8", errors="replace")
-    if "arg1" in page and "renderData" in page:
-        out["_error"] = "仍被 WAF 挑战拦截（cookie 可能已失效）"
+    if _is_waf_page(page):
+        out["_error"] = ("阿里云 WAF 挑战未通过：acw_sc__v2 已按公开算法算出，"
+                         "但服务端仍要求浏览器执行完整 JS 挑战链")
         return out
 
     m = _ARC_RE.search(page)
@@ -179,7 +224,10 @@ def search_shui5(keyword: str, size: int = 5, read_body: bool = False) -> dict:
 
 def read_article(url: str) -> tuple[str, str]:
     """
-    取单篇文章正文。优先直连税屋（带 WAF cookie），失败再退回 Jina Reader。
+    取单篇文章正文。优先直连税屋（自动解一次 WAF 挑战），失败再退回 Jina Reader。
+
+    2026-09 实测两条路都不通：算对的 acw_sc__v2 服务端不认，Jina 连接超时。
+    税屋此时只能当"链接发现源"用——标题与地址照常返回，正文靠别处补。
 
     Args:
         url: 税屋文章地址

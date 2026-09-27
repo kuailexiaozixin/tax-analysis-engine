@@ -7,6 +7,12 @@ Five intent types × two-source search strategy. Always search FIRST, answer SEC
 需要"某词在正文里被哪部法规提到"，正文检索确实比标题检索宽，但要拿 `_reliability: medium`
 的结果去核对。两个数据源分工：NPC 出法律本体，chinatax 出政策解读与操作口径。
 
+**先看 `authority` 再决定查哪一源**。`resolve_tax_type()` 的返回值里带 `authority`：
+`"npc"` 就按 `parent_law` 查 NPC；`"sta"` 说明这个专题（转让定价、税收协定、
+非居民企业、税务行政处罚等共 11 项）在 NPC 库里检索无效——搜"反避税"返回 0 条，
+搜"转让定价"返回 10 条全是土地和矿产资源转让条例。见到 `"sta"` 就直接走
+`tax_fgk.py`，不要浪费一轮 NPC 检索再发现结果全是无关法规。
+
 ---
 
 ## Intent → Search Strategy Matrix
@@ -16,17 +22,24 @@ Five intent types × two-source search strategy. Always search FIRST, answer SEC
 **Trigger**: General policy questions without specific filing/risk/eligibility signals.
 
 ```bash
+# 先解析路由：authority=npc 走下面两步，authority=sta 直接跳到 Phase 3
+python -c "import sys;sys.path.insert(0,'scripts');from tax_search import resolve_tax_type;print(resolve_tax_type('<问题>'))"
+
 # Phase 1: Title search with keyword
 python scripts/tax_search.py "<keyword>" --status 3 --size 20
 
 # Phase 2 (if Phase 1 returns 0): chinatax.gov.cn, which really searches body text
 python scripts/tax_web_search.py "<keyword>" --size 20
 
+# Phase 3 (authority=sta): 总局法规库，自带翻页
+python scripts/tax_fgk.py "<关键词>" --size 5
+
 # When user knows exact regulation name: Exact match
 python scripts/tax_search.py "<exact_name>" --exact --status 3
 ```
 
-**Example queries**: "小规模纳税人增值税率多少", "研发费用加计扣除比例"
+**Example queries**: "小规模纳税人增值税率多少", "研发费用加计扣除比例",
+"关联申报表要准备什么资料"（→ 转让定价 → Phase 3）
 
 ---
 

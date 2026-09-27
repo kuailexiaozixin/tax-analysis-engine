@@ -13,7 +13,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from tax_search import (search_tax, resolve_tax_type, detect_intent,
-                         TAX_TYPE_KEYWORDS)
+                         TAX_TYPE_KEYWORDS, _is_challenge_page)
 from tax_detail import fetch_detail
 from tax_web_search import search_chinatax
 from tax_formatter import format_search_response
@@ -227,31 +227,43 @@ def test_fgk_body():
 
 
 def test_shui5_direct_body():
-    """税屋能直连读正文（WAF cookie 有效），不再必须经 Jina。"""
-    print("\n[Test] shui5 direct body (WAF cookie)")
+    """税屋直连：WAF 拦下时必须明确报出原因，不能静默返回空正文。
+
+    2026-09-27 实测该站 WAF 不再认可算出的 acw_sc__v2，直连必然失败。
+    所以这里断言的是"要么取到正文，要么报清错误"，不是断言一定成功——
+    断言成功在这个站点上已经变成假绿。
+    """
+    print("\n[Test] shui5 direct body (WAF challenge solved or reported)")
     from tax_shui5 import fetch_shui5
     url = "https://www.shui5.cn/article/42/70138.html"
     body = fetch_shui5(url)
-    assert not body.get("_error"), f"直连失败：{body.get('_error')}"
+    if body.get("_error"):
+        assert "WAF" in body["_error"], f"报错应说明是 WAF 拦截：{body['_error']}"
+        print(f"  [PASS] 被 WAF 拦截，已明确报错：{body['_error'][:40]}…")
+        return 0
     content = body.get("content", "")
     assert len(content) > 300, f"正文过短：{len(content)} 字符"
     assert body.get("title"), "应取出标题"
     assert body.get("date"), "应从 articleResource 取出日期"
     print(f"  [PASS] {body['title'][:36]}（{body['date']}），正文 {len(content)} 字符")
-    return content
+    return 1
 
 
 def test_shui5_read_article():
-    """read_article 走直连优先、Jina 兜底，两条路都要能拿到正文。"""
+    """read_article 走直连优先、Jina 兜底。两条路都断时要报清是哪里断的。"""
     print("\n[Test] shui5 article body (direct first, Jina fallback)")
     from tax_shui5 import read_article
     url = "https://www.shui5.cn/article/90/40872.html"
     content, err = read_article(url)
-    assert not err, f"Reading failed: {err}"
+    if err:
+        assert "直连失败" in err and "Jina" in err, \
+            f"报错应同时说明直连与 Jina 两条路：{err}"
+        print(f"  [PASS] 两条路都断，已报清：{err[:60]}…")
+        return 0
     body = content.split("Markdown Content:", 1)[-1]
     assert len(body) > 500, f"Body too short: {len(body)} chars"
     print(f"  [PASS] Body: {len(body)} chars")
-    return body
+    return 1
 
 
 def test_wechat_search():
@@ -281,6 +293,78 @@ def test_wechat_read_article():
     assert len(content) > 200, f"Body too short: {len(content)} chars"
     print(f"  [PASS] Body: {len(content)} chars")
     return content
+
+
+def test_challenge_page_detection():
+    """限流挑战页必须被识别出来，不能当 JSON 解析。
+
+    NPC 触发限流时回 HTTP 200 + 一份 30~40 KB 的 HTML（Please enable
+    JavaScript），不是 429。识别不了就直接 .json()，报出来的是
+    "Expecting value: line 1 column 1"，看不出是限流还是代码坏了。
+    """
+    print("\n[Test] Challenge page detection")
+
+    class FakeResp:
+        def __init__(self, ctype, text):
+            self.headers = {"Content-Type": ctype}
+            self.text = text
+            self.content = text.encode("utf-8")
+            self.status_code = 200
+
+    challenge = ("<!DOCTYPE HTML>\n<html>\n<head><meta charset=\"utf-8\">"
+                 "</head>\n<body>\n<noscript>\n<h1><strong>Please enable "
+                 "JavaScript to continue.</strong></h1>\n</noscript>\n"
+                 "<script>var _0x=['a','b'];</script>\n</body></html>")
+    assert _is_challenge_page(FakeResp("text/html", challenge)), \
+        "限流挑战页应被识别"
+    assert not _is_challenge_page(FakeResp("application/json", '{"total":45}')), \
+        "正常 JSON 响应不应误判为挑战页"
+    assert not _is_challenge_page(FakeResp("text/html", "<html><body>1</body></html>")), \
+        "普通 HTML 不是挑战页"
+    print("  [PASS] 挑战页识别正确，JSON 响应不误判")
+    return 3
+
+
+def test_fgk_paging():
+    """总局检索接口把 pageSize 卡在 10 条，法规库条目排在后面的页上。
+
+    只读第 1 页会把"库里没有"错报成"确实没有"：搜"转让定价"命中 173 条，
+    第 1 页 10 条全是外国税改新闻，法规文件在第 2、3、5、6 页。
+    """
+    print("\n[Test] fgk paging reaches documents past page 1")
+    from tax_fgk import search_fgk
+    r = search_fgk("转让定价", size=3)
+    assert r["pages_scanned"] >= 2, f"应至少翻 2 页，实际 {r['pages_scanned']}"
+    assert r["total"] > 0, f"翻页后应取到法规文件，_error={r.get('_error')}"
+    titles = [x["title"] for x in r["results"]]
+    assert any("特别纳税调整" in t or "转让定价" in t for t in titles), \
+        f"取到的应含转让定价实体文件，实际 {titles}"
+    print(f"  [PASS] 翻 {r['pages_scanned']} 页取到 {r['total']} 条法规文件")
+    return r
+
+
+def test_sta_topics_reachable():
+    """11 个 authority="sta" 的专题，每一个都要能取到依据。
+
+    这些专题在 NPC 库里检索无效，检索词取自实测：键名不是检索词
+    （"税收争议救济"当检索词 0 条命中），必须用表里的 search_term。
+    """
+    print("\n[Test] sta topics reachable via fgk")
+    from tax_fgk import search_fgk
+    sta = {k: v for k, v in TAX_TYPE_KEYWORDS.items()
+           if v.get("authority") == "sta"}
+    bad = []
+    for key, info in sta.items():
+        term = info.get("search_term")
+        if not term:
+            bad.append(f"{key}: 缺 search_term")
+            continue
+        r = search_fgk(term, size=3)
+        if r["total"] == 0:
+            bad.append(f"{key}: 检索词「{term}」取不到法规文件")
+    assert not bad, "以下 sta 专题取不到依据：\n  " + "\n  ".join(bad)
+    print(f"  [PASS] {len(sta)}/{len(sta)} 个 sta 专题均取到依据")
+    return len(sta)
 
 
 def test_npc_reliability_marker():
@@ -439,6 +523,9 @@ def main():
         ("WeChat (Sogou) Search", test_wechat_search),
         ("WeChat Article Body", test_wechat_read_article),
         ("NPC Reliability Marker", test_npc_reliability_marker),
+        ("Challenge Page Detection", test_challenge_page_detection),
+        ("fgk Paging", test_fgk_paging),
+        ("sta Topics Reachable", test_sta_topics_reachable),
         ("NPC Fulltext Relevance", test_npc_fulltext_relevance),
         ("NPC Title Ranking", test_npc_title_ranking),
         ("parent_law Authenticity", test_parent_law_authenticity),
