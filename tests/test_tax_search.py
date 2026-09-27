@@ -227,11 +227,11 @@ def test_fgk_body():
 
 
 def test_shui5_direct_body():
-    """税屋直连：WAF 拦下时必须明确报出原因，不能静默返回空正文。
+    """税屋取正文：成功就断言有正文，失败必须报清原因，不许静默返回空。
 
-    2026-09-27 实测该站 WAF 不再认可算出的 acw_sc__v2，直连必然失败。
-    所以这里断言的是"要么取到正文，要么报清错误"，不是断言一定成功——
-    断言成功在这个站点上已经变成假绿。
+    纯 HTTP 直连过不了 WAF（实测 5/5 被拦），正文靠 tax_browser 让本机已装
+    浏览器跑一次挑战后转交 HTTP 会话。两者取不到时报错要指名是 WAF，
+    不能返回空 content 当成功——那会让上层以为有正文可用。
     """
     print("\n[Test] shui5 direct body (WAF challenge solved or reported)")
     from tax_shui5 import fetch_shui5
@@ -250,7 +250,11 @@ def test_shui5_direct_body():
 
 
 def test_shui5_read_article():
-    """read_article 走直连优先、Jina 兜底。两条路都断时要报清是哪里断的。"""
+    """read_article 依次走浏览器过 WAF、纯 HTTP 直连、Jina 兜底。
+
+    三条路都断时报错要同时说明直连与 Jina 两条路，便于判断是站点问题
+    还是 Jina 自身问题。
+    """
     print("\n[Test] shui5 article body (direct first, Jina fallback)")
     from tax_shui5 import read_article
     url = "https://www.shui5.cn/article/90/40872.html"
@@ -499,12 +503,194 @@ def test_title_only_default():
     return result
 
 
+# ── 分析层：问题类型判定 ───────────────────────────────────────────
+def test_analyze_question_types():
+    """判型要能区分两类形态：集合填空与术语填空。
+
+    这两类都含"（ ）"，但答案形式不同——集合要逐项列，术语要定位到条款。
+    靠主题词分不开，只能靠句式。9 条全部对照人工判读结果。
+    """
+    print("[Test] question type classification")
+    import tax_analyze as A
+    cases = [
+        ("转让定价方法包括（ ）。", "option_judge"),
+        ("根据车船税法的规定，车船税的计税单位形式不包括（ ）。", "option_judge"),
+        ("纳税人购买下列车辆时，需要缴纳车辆购置税的是（ ）。", "option_judge"),
+        ("下列各项中，不属于印花税应税凭证的有（ ）。", "option_judge"),
+        ("完税价格以（ ）作为计税依据。", "fill_blank"),
+        ("税务机关有权（ ）。", "fill_blank"),
+        ("外购商誉的支出，在（ ），准予在企业所得税税前扣除。", "fill_blank"),
+        ("公司有500万研发费用，没有高新资质，能享受加计扣除吗", "entitlement"),
+        ("增值税小规模纳税人月销售额10万，应纳增值税多少", "liability"),
+    ]
+    bad = []
+    for q, want in cases:
+        got = A.classify(q)["type"]
+        if got != want:
+            bad.append(f"{q[:26]} 判成 {got}，应为 {want}")
+    assert not bad, "判型不符：\n  " + "\n  ".join(bad)
+    print(f"  [PASS] {len(cases)} 条判型与人工判读一致")
+    return 1
+
+
+def test_analyze_context_axes():
+    """前提轴要认得自然人称谓，否则会把已答完的问题报成缺失。"""
+    print("[Test] context axis detection")
+    import tax_analyze as A
+    q = "白某于2020年7月购入某境内上市公司股票，2021年1月转让并分得红利4000元"
+    gaps = A.detect_context_gaps(q)
+    assert "entity" not in gaps["missing"],         f"白某是已确定的主体，不该报缺失：{gaps['missing']}"
+    assert "time" in gaps["present"], "题面有年月，时点轴应已交代"
+
+    bare = A.detect_context_gaps("研发费用加计扣除比例是多少")
+    assert set(bare["missing"]) == {"time", "entity", "place", "scale"},         f"四根轴都该报缺失：{bare['missing']}"
+    assert bare["probes"], "有缺失就该给出追问句"
+    print("  [PASS] 主体识别正确，缺失轴与追问句均正常")
+    return 1
+
+
+# ── 分析层：依据定级 ───────────────────────────────────────────────
+def test_evidence_rank():
+    """效力位阶要分得开法律、行政法规、部门规章、规范性文件、解读。"""
+    print("[Test] evidence authority ranking")
+    import tax_evidence as E
+    cases = [
+        ("中华人民共和国企业所得税法", "law"),
+        ("中华人民共和国增值税暂行条例", "admin_regulation"),
+        ("中华人民共和国税收征收管理法实施细则", "department_rule"),
+        ("国家税务总局公告2018年第28号", "normative"),
+        ("国家税务总局关于进一步支持小型微利企业发展的税收政策的公告", "normative"),
+        ("广东省地方税务局关于印花税若干事项问题的通知", "local_normative"),
+        ("研发费用加计扣除政策执行指引", "technical"),
+    ]
+    bad = []
+    for title, want in cases:
+        got = E.rank_of(title)["rank"]
+        if got != want:
+            bad.append(f"{title[:30]} 判成 {got}，应为 {want}")
+    assert not bad, "位阶判定不符：\n  " + "\n  ".join(bad)
+
+    # NPC 的法律性质字段比按标题猜准，有它时优先用
+    by_field = E.rank_of("某某规定", category="法律")
+    assert by_field["rank"] == "law", f"应采信 category 字段：{by_field}"
+    print(f"  [PASS] {len(cases)} 条位阶判定正确，且优先采信 NPC 分类字段")
+    return 1
+
+
+def test_evidence_validity_and_primary():
+    """已废止的依据不能被选成主依据，哪怕它位阶更高。"""
+    print("[Test] evidence validity and primary selection")
+    import tax_evidence as E
+    items = [
+        {"title": "中华人民共和国企业所得税法", "category": "法律",
+         "status": "有效", "status_code": 3},
+        {"title": "国家税务总局公告2017年第40号", "status": "已废止",
+         "status_code": 9},
+        {"title": "研发费用加计扣除政策执行指引", "source": "shui5.cn"},
+        {"title": "加计扣除政策的十个常见问题解答", "source": "shui5.cn"},
+    ]
+    graded = E.grade_all(items, at="2026-09-27")
+    primary = E.pick_primary(graded)
+    assert "企业所得税法" in primary["title"],         f"主依据应是现行有效的法律，选成了 {primary['title']}"
+
+    repealed = [g for g in graded if g["validity"] == "repealed"]
+    assert repealed, "已废止那条应被识别出来"
+    assert "不能作为结论依据" in repealed[0]["citation_hint"],         "已废止依据的引用提示要写明不能支撑结论"
+    # 解读类必须落进参考材料
+    interp = [g for g in graded if g["rank"] == "interpretation"]
+    assert interp and interp[0]["score"] < E.PRIMARY_THRESHOLD,         "解读文章不得达到可作主依据的分数"
+    print("  [PASS] 时效与位阶合成正确，主依据未被废止或解读类占据")
+    return 1
+
+
+# ── 分析层：编排 ───────────────────────────────────────────────────
+def test_answer_plan():
+    """编排层要给不同的题不同的轮次，不能一律两轮 NPC。"""
+    print("[Test] analysis orchestration plan")
+    import tax_answer as AN
+    judge = AN.build_plan("转让定价方法包括（ ）。")
+    lookup = AN.build_plan("研发费用加计扣除比例是多少")
+    assert judge["type"]["type"] == "option_judge"
+    assert lookup["type"]["type"] == "lookup"
+    assert len(judge["rounds"]) != len(lookup["rounds"]),         "不同题型应有不同轮次"
+
+    # 本体法名已知时必须给精确检索词，不能把用户原话丢给 NPC
+    terms = AN.search_terms("研发费用加计扣除比例是多少")
+    assert terms["npc"] == "中华人民共和国企业所得税法",         f"npc 检索词应是本体法名，实际 {terms['npc']}"
+    assert terms["npc"].startswith("中华人民共和国"),         "整句丢进标题检索会取回无关法规"
+    # 解读源要用短词
+    assert len(terms["shui5"]) < 15, f"解读源检索词过长：{terms['shui5']}"
+    # sta 专题第 1 轮要改查总局：NPC 库里搜"转让定价"命中的是土地和矿产
+    # 资源转让条例，先查 NPC 会整轮取回无关法规
+    sta_r1 = AN.build_plan("关联申报表要准备什么资料？")["rounds"][0]
+    npc_r1 = AN.build_plan("研发费用加计扣除比例是多少")["rounds"][0]
+    assert sta_r1["sources"][0] == "fgk", f"sta 专题首轮应先查总局：{sta_r1['sources']}"
+    assert npc_r1["sources"][0] == "npc", f"npc 专题首轮应查 NPC：{npc_r1['sources']}"
+    print(f"  [PASS] 轮次随题型变化，检索词正确归类（npc={terms['npc']}），首轮按 authority 换源")
+    return 1
+
+
+def test_search_terms_route():
+    """sta 专题要路由到法规库检索词，npc 专题要路由到本体法。"""
+    print("[Test] search term routing by authority")
+    import tax_answer as AN
+    sta = AN.search_terms("转让定价方法包括哪些")
+    assert sta["authority"] == "sta", f"转让定价应判为 sta：{sta}"
+    assert not sta["parent_law"], "sta 专题本就没有本体法"
+
+    npc = AN.search_terms("增值税小规模纳税人起征点")
+    assert npc["authority"] == "npc", f"增值税应判为 npc：{npc}"
+    assert npc["parent_law"] == "中华人民共和国增值税法"
+    print("  [PASS] sta / npc 两类专题均路由正确")
+    return 1
+
+
+# ── 税屋正文链路 ───────────────────────────────────────────────────
+def test_browser_detection():
+    """必须复用本机已装浏览器，且探测不到时不能偷偷去装。"""
+    print("[Test] installed browser detection")
+    import tax_browser as B
+    found = B.find_installed_browsers()
+    assert found, "本机装有浏览器，应能探测到"
+    for b in found:
+        assert os.path.isfile(b["path"]), f"探测到的路径不存在：{b['path']}"
+    names = [b["name"] for b in found]
+    assert names[0] in ("edge", "chrome", "brave", "360se", "firefox"),         f"探测顺序应按过 WAF 成功率排，实际 {names}"
+    print(f"  [PASS] 探测到 {[b['name'] for b in found]}，均为已装路径")
+    return 1
+
+
+def test_shui5_batch_read():
+    """批量取正文：WAF 只过一次，多篇都要拿到内容。"""
+    print("[Test] shui5 batch body read (one WAF pass)")
+    import tax_shui5 as S5
+    found = S5.search_shui5("研发费用加计扣除", size=3, read_body=False)
+    assert found.get("results"), f"检索本身失败：{found.get('_error')}"
+    urls = [r["url"] for r in found["results"]]
+    rows = S5.read_articles(urls, read_interval=1.0)
+    assert len(rows) == len(urls), "返回条数应与请求一致"
+    ok = [r for r in rows if r.get("content") and not r.get("_error")]
+    assert ok, "应有取到正文的：\n  " + "\n  ".join(
+        str(r.get("_error")) for r in rows)
+    print(f"  [PASS] {len(ok)}/{len(rows)} 篇取到正文，方式：{rows[0].get('_how','')[:40]}")
+    return 1
+
+
+
 def main():
     print("=" * 60)
     print("tax-policy-search: End-to-End Tests")
     print("=" * 60)
 
     tests = [
+        ("Question Type Classification", test_analyze_question_types),
+        ("Context Axis Detection", test_analyze_context_axes),
+        ("Evidence Authority Ranking", test_evidence_rank),
+        ("Evidence Validity and Primary", test_evidence_validity_and_primary),
+        ("Analysis Orchestration Plan", test_answer_plan),
+        ("Search Term Routing", test_search_terms_route),
+        ("Installed Browser Detection", test_browser_detection),
+        ("shui5 Batch Body Read", test_shui5_batch_read),
         ("Intent Detection", test_detect_intent),
         ("Tax Type Resolution", test_resolve_tax_type),
         ("Title Search (NPC API)", test_search_title),

@@ -37,6 +37,9 @@ HEADERS = {
     "Referer": "https://m.so.com/",
 }
 TIMEOUT = 20
+# m.so.com 偶发读超时，实测同一关键词连抓两次至少一次成功。
+# 单次失败就返回空结果，会让上层误判"没搜到"，所以这里重试两次。
+MAX_RETRIES = 2
 
 # 360 的每条结果是 <div class="g-card res-list ...">，真实地址放在 data-pcurl
 _CARD_RE = re.compile(r'data-pcurl="(https?://[^"]+)"[^>]*class="[^"]*res-list', re.DOTALL)
@@ -74,10 +77,19 @@ def so360_search(keyword: str, site: str = "", size: int = 10,
     query = f"site:{site} {keyword}" if site else keyword
     url = f"{SEARCH_URL}?q={quote(query)}&pn={page}"
 
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=TIMEOUT, verify=False)
-    except requests.RequestException as e:
-        return _empty(keyword, site, str(e))
+    r, err = None, ""
+    for attempt in range(MAX_RETRIES):
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=TIMEOUT, verify=False)
+            break
+        except requests.RequestException as e:
+            err = str(e)
+            r = None
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(1.5 * (attempt + 1))
+
+    if r is None:
+        return _empty(keyword, site, f"请求失败：{err}")
 
     if r.status_code != 200:
         return _empty(keyword, site, f"HTTP {r.status_code}")

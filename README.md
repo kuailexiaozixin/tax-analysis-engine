@@ -69,21 +69,28 @@
 
 | 层级 | 文件 | 行数 | 职责 |
 |------|------|------|------|
-| **后端 API** | `tax_server.py` | 617 | Flask 路由、法规原文提取、解读搜索、AI 解读 |
-| **核心搜索** | `tax_search.py` | 500 | 29 项税种与专题映射（含依据源路由）、NPC API 调用、意图识别、缓存 |
-| **法规详情** | `tax_detail.py` | 240 | NPC 详情 API、DOCX 下载、全文提取、章节解析 |
-| **Web 搜索** | `tax_web_search.py` | 184 | 税务总局 search5 JSON 检索（含 fgk 法规库） |
-| **站内搜索** | `tax_so360.py` | 177 | 360 `site:` 检索，定位省局与地方文件 |
-| **法规库目录与正文** | `tax_fgk.py` | 115 | 税务总局法规目录，`--body` 可取正文 |
-| **实务解读** | `tax_shui5.py` | 183 | 税屋：360 检索 + 直连（WAF，正文取不到时退 Jina） |
-| **实务解读** | `tax_wechat.py` | 271 | 微信公众号：搜狗微信 + 移动 UA |
-| **多源聚合** | `tax_aggregator.py` | 244 | 五源并发、Jaccard 去重、权威度排序 |
-| **输出格式化** | `tax_formatter.py` | 198 | 四段式 Markdown、多源聚合输出 |
-| **前端** | `index.html` | 412 | 搜索页 + 智能引导 + 4 Tab 法规弹窗 |
-| **测试** | `test_tax_search.py` | 341 | 端到端测试 |
-| **技能定义** | `SKILL.md` | 292 | AI Agent 操作手册 |
-| **参考文档** | `references/*.md` | 358 | 税种映射、搜索策略、风险框架 |
-| **总计** | **13 文件** | **~3,216 行** | |
+| **分析层** | `tax_analyze.py` | 402 | 9 类问题判定 + 四根前提轴识别（不联网） |
+| **分析层** | `tax_evidence.py` | 315 | 依据效力位阶与时效定级、主依据挑选 |
+| **分析层** | `tax_answer.py` | 444 | 判型→分轮检索→定级→依据分层的编排层 |
+| **核心搜索** | `tax_search.py` | 806 | 30 项税种与专题映射（含依据源路由）、NPC API 调用、意图识别、缓存 |
+| **浏览器** | `tax_browser.py` | 275 | 本机已装浏览器探测 + 过 WAF + 导 cookie（不装内核） |
+| **法规详情** | `tax_detail.py` | 331 | NPC 详情 API、DOCX 下载、全文提取、章节解析 |
+| **Web 搜索** | `tax_web_search.py` | 190 | 税务总局 search5 JSON 检索（含 fgk 法规库） |
+| **站内搜索** | `tax_so360.py` | 195 | 360 `site:` 检索，定位省局与地方文件 |
+| **法规库目录与正文** | `tax_fgk.py` | 255 | 税务总局法规目录，`--body` 可取正文 |
+| **实务解读** | `tax_shui5.py` | 399 | 税屋：360 检索 + 浏览器过 WAF 后 HTTP 连读 |
+| **实务解读** | `tax_wechat.py` | 276 | 微信公众号：搜狗微信 + 移动 UA |
+| **多源聚合** | `tax_aggregator.py` | 270 | 五源并发、Jaccard 去重、权威度排序 |
+| **输出格式化** | `tax_formatter.py` | 231 | 四段式 Markdown、多源聚合输出 |
+| **后端 API** | `tax_server.py` | 614 | Flask 路由、法规原文提取、解读搜索、AI 解读 |
+| **辅助** | `generate_manual.py` | 589 | 手册生成 |
+| **辅助** | `tunnel_daemon.py` | 69 | 隧道守护 |
+| **测试** | `test_tax_search.py` | 746 | 46 项端到端测试 |
+| **评测** | `eval_analysis.py` | 258 | 分析质量四指标评测（200 题样本） |
+| **评测** | `eval_ideafin_tax_law.py` | 268 | 检索命中率评测（465 题） |
+| **技能定义** | `SKILL.md` | 891 | AI Agent 操作手册 |
+| **参考文档** | `references/*.md` | 415 | 税种映射、搜索策略、风险框架 |
+| **总计** | **22 文件** | **~9,363 行** | |
 
 ---
 
@@ -92,7 +99,7 @@
 ### 1. 实时法规检索
 
 ```
-用户输入关键词 → 意图分类（5种）→ 税种识别（29类）→ 按 authority 路由到 NPC 或总局 → 结果结构化输出
+用户输入问题 → 9 类题型判定 → 四根前提轴识别 → 30 项税种与专题路由（按 authority 分派到 NPC 或总局）→ 依据定级与分层 → 分段作答
 ```
 
 | 功能 | 说明 |
@@ -130,7 +137,7 @@ Step 4: 补充条件  →  纳税人类型(小规模/一般/小微/高新) + 时
 | Tab | 功能 | 数据来源 |
 |-----|------|---------|
 | 📖 **法规原文** | 全文展示 + 搜索关键词黄色高亮 + 章节/法条自动分类 | NPC API → DOCX 实时下载解析 |
-| 🔍 **官方解读** | 多源搜索官方政策解读、答记者问、立法说明 | 360 站���检索 chinatax/mof/gov.cn |
+| 🔍 **官方解读** | 多源搜索官方政策解读、答记者问、立法说明 | 360 站内检索 chinatax/mof/gov.cn |
 | 🤖 **AI 解读** | Claude 用通俗语言解读法规（适用主体/核心要点/注意事项） | Claude Code CLI |
 | 🌐 **相关网页** | 行业分析、学术评论、律师解读等补充视角 | 税屋 shui5.cn + 微信公众号 |
 
@@ -257,7 +264,7 @@ GET /api/text/ff808181927b083b0193fd65a0eb02cb
 | **mof.gov.cn** | 财政部公告、财税联合发文 | ⭐⭐⭐⭐ | 实时 | 360 `site:` 搜索 |
 | **fgk.税务总局    .cn** | 税务总局法规库结构化内容。国际税收、转让定价、税务行政处罚的依据都在这里 | ⭐⭐⭐⭐ | 实时 | search5 JSON API 翻页（每页固定 10 条）+ 详情页 |
 | **gov.cn** | 国务院政策发布、答记者问 | ⭐⭐⭐⭐⭐ | 实时 | 360 `site:` 搜索 |
-| **税屋 shui5.cn** | 实务解读、专栏、答疑（正文当时取不到） | ⭐⭐⭐ | 实时 | 360 检索 + 直连/退 Jina |
+| **税屋 shui5.cn** | 实务解读、专栏、答疑（正文可取） | ⭐⭐⭐ | 实时 | 360 检索 + 浏览器过 WAF 后连读 |
 | **微信公众号** | 实务解读、申报实操 | ⭐⭐ | 实时 | 搜狗微信 + 移动 UA |
 
 ### 缓存策略
@@ -297,7 +304,7 @@ GET /api/text/ff808181927b083b0193fd65a0eb02cb
 | **搜索引擎** | 360 (m.so.com) HTML 解析 | .gov.cn 与地方站点检索 |
 | **前端** | 纯 HTML/CSS/JS (零框架) | 搜索界面 + 引导面板 + 法规弹窗 |
 | **AI 解读** | Claude Code CLI (subprocess) | 法规通俗化解读生成 |
-| **测试** | Python unittest 模式 | 11 项端到端测试 |
+| **测试** | Python unittest 模式 | 46 项端到端测试 |
 | **依赖** | requests, urllib3, flask | 仅 3 个 pip 包 |
 
 ---
@@ -364,12 +371,12 @@ tax-policy-search/
 │   ├── 5 种意图 → 搜索策略映射
 │   ├── 命令速查表（Agent 直接执行）
 │   ├── 四段式输出模板
-│   ├── 29 项税种与专题映射表
+│   ├── 30 项税种与专题映射表
 │   └── 8 条禁止行为 + 免责声明
 │
 ├── scripts/
 │   ├── tax_search.py               # NPC API 核心搜索（492行）
-│   │   ├── 29 项税种与专题映射
+│   │   ├── 30 项税种与专题映射
 │   │   ├── searchRange/searchType/sxx/flfgCodeId
 │   │   ├── 意图分类 detect_intent()
 │   │   ├── 税种解析 resolve_tax_type()
@@ -421,7 +428,7 @@ tax-policy-search/
 │   └── tax_risk_framework.md       # 金税四期 200+ 指标搜索提示
 │
 ├── tests/
-│   └── test_tax_search.py          # 11 项端到端测试
+│   └── test_tax_search.py          # 46 项端到端测试
 │       ├── 意图识别（7 种测试句）
 │       ├── 税种识别（6 种测试句）
 │       ├── 标题/全文/精确搜索
@@ -465,19 +472,36 @@ $ python tests/test_tax_search.py
 ============================================================
 tax-policy-search: End-to-End Tests
 ============================================================
-> Intent Detection          [7/7] ✅
-> Tax Type Resolution       [6/6] ✅
-> Title Search (NPC API)    ✅ 45 results
-> Fulltext Search           ✅ 3,846 results
-> Exact Search              ✅ 2 matches
-> Date Range Filter         ✅ 3,060 results in 2024-2026
-> Cache                     ✅ 1st uncached / 2nd cached
-> Fetch Detail              ✅ 增值税法
-> 税务总局    .cn WebFetch  ✅
-> Markdown Formatter        ✅ 920 chars
-> Two-Phase Search          ✅ 45 results, scope=title
+> Question Type Classification   [9/9] ✅
+> Context Axis Detection        ✅
+> Evidence Authority Ranking    [7/7] ✅
+> Evidence Validity and Primary  ✅  未废止/未解读类占据主依据
+> Analysis Orchestration Plan   ✅  轮次随题型变化
+> Search Term Routing           ✅  sta / npc 两类专题均正确
+> Installed Browser Detection   ✅  ['edge']，均为已装路径
+> shui5 Batch Body Read         ✅  3/3 篇取到正文
+> Intent Detection              [7/7] ✅
+> Tax Type Resolution           [6/6] ✅
+> Title Search (NPC API)        ✅ 45 results
+> Fulltext Search               ✅ 3829 results
+> Exact Search                  ✅ 2 matches
+> Date Range Filter             ✅ 3847 results in 2024-2026
+> Cache                         ✅ 两次检索命中同一缓存
+> Fetch Detail                  ✅ 增值税法
+> chinatax.gov.cn Search5        ✅ Total: 2955
+> fgk Regulation Library         ✅ 4 entries
+> fgk Article Body               ✅ 5107 chars
+> 360 Site Search               ✅ 5 hits
+> shui5.cn Search               ✅ 2 hits
+> shui5 Article Body             ✅ 6703 chars
+> WeChat (Sogou) Search          ✅ 3 hits
+> NPC Reliability Marker        ✅
+> fgk Paging                    ✅ 5 页取到 3 份检索条件
+> sta Topics Reachable          [13/13] ✅
+> parent_law Authenticity       [17/17] ✅
+> Ranking Size Insensitivity    ✅  size=[1,3,20] 首条一致
 ============================================================
-Results: 22/22 passed
+Results: 46/46 passed
 ============================================================
 ```
 

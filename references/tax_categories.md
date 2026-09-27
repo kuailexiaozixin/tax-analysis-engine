@@ -1,6 +1,6 @@
 # Tax Categories & Search Parameter Reference
 
-## 29 项税种与专题 — Keyword → 检索策略映射
+## 30 项税种与专题 — Keyword → 检索策略映射
 
 When the user's query matches a tax type, use the corresponding search keywords and strategies.
 
@@ -123,3 +123,18 @@ Tax laws are typically under "法律" (national laws) or "行政法规" (adminis
 | auto (default) | Small tasks unlimited, medium 5rps, large adaptive |
 | fixed | For programs: steady 5 req/s |
 | adaptive | For collections >100 items: auto-adjusts 1-8 req/s |
+
+---
+
+## 新增于分析层的两项判定
+
+分类表解决"归到哪个税种"，另两个问题由 `tax_analyze.py` 解决：
+
+- **问题类型**：同样问企业所得税，`lookup` 一轮标题检索就够，
+  `option_judge` 要那部法全文逐条比对，`entitlement` 要本体法 + 总局文件 +
+  实操口径三轮。走错取证方式，检索命中再高也答不对。
+- **前提缺口**：时点、主体、地区、金额四根轴。题面没交代就下具体结论，
+  等于把猜测写成答案。
+
+两项都不在分类表里，因为它们量的不是"哪个税种"，而是"要什么形式的答案"
+和"还缺什么信息"。
