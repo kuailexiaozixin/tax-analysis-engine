@@ -105,7 +105,7 @@ def aggregate_search(keyword: str, *,
         size: results per source
         sources: 见 DEFAULT_SOURCES；默认五源全开
         status: NPC status filter (default: 3 = effective)
-        scope: NPC search scope (default: title；fulltext 不按检索词过滤，默认不用)
+        scope: NPC search scope (default: title；fulltext 已按相关度排序但可能偏题)
     """
     if sources is None:
         sources = list(DEFAULT_SOURCES)
@@ -151,7 +151,7 @@ def aggregate_search(keyword: str, *,
         if not data:
             continue
         rank = SOURCE_RANK[source]
-        source_low = data.get("_reliability") == "low"
+        source_rel = data.get("_reliability")
         source_note = data.get("_reliability_note", "")
         for item in data.get("results", []):
             item["_source"] = source
@@ -160,8 +160,8 @@ def aggregate_search(keyword: str, *,
             if item.get("date") and not item.get("publish_date"):
                 item["publish_date"] = item["date"]
             # 整源被判低可靠时逐条带上，否则聚合输出里这条禁令会失效
-            if source_low:
-                item["_reliability"] = "low"
+            if source_rel:
+                item["_reliability"] = source_rel
                 if source_note:
                     item["_reliability_note"] = source_note
             all_items.append(item)
@@ -232,14 +232,19 @@ Examples:
     if result.get("errors"):
         for src, err in result["errors"].items():
             print(f"   ⚠️ {src}: {err}")
-    low_items = [i for i in result.get("items", []) if i.get("_reliability") == "low"]
-    if low_items:
-        print(f"   ⚠️ {len(low_items)} 条结果带 _reliability: low，不得作为权威依据引用")
+    flagged = [i for i in result.get("items", []) if i.get("_reliability")]
+    if flagged:
+        for lvl in ("low", "medium"):
+            n = sum(1 for i in flagged if i["_reliability"] == lvl)
+            if n:
+                hint = ("不得作为权威依据引用" if lvl == "low"
+                        else "可用于定位法规，确定条文归属请改用标题检索")
+                print(f"   ⚠️ {n} 条结果带 _reliability: {lvl}，{hint}")
     print()
 
     for item in result.get("items", [])[:20]:
         label = SOURCE_LABELS.get(item.get("_source", ""), "")
-        flag = "  [_reliability: low]" if item.get("_reliability") == "low" else ""
+        flag = f"  [_reliability: {item['_reliability']}]" if item.get("_reliability") else ""
         print(f"  {label} {item.get('title', '')[:80]}{flag}")
         if item.get("publish_date"):
             print(f"     日期: {item['publish_date']}")

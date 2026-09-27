@@ -289,8 +289,34 @@ def _title_match_rank(title: str, keyword: str, parent_law: str = "") -> tuple:
     return (1 if ends_with else 2, pos, 0)
 
 
+RELIABILITY_NOTES = {
+    "low": "结果与查询无关，不得作为依据引用；请换检索方式或换数据源。",
+    "medium": "结果已排序但可能偏题（全文分词匹配）；可用于定位法规，"
+              "确定条文归属请回到标题检索。",
+}
+
 _MIN_INTERVAL = 0.6          # NPC 连续请求过快会直接断连，不回 429
 _last_request_at = 0.0
+
+
+def _fulltext_match_rank(title: str, keyword: str, parent_law: str, score: float) -> tuple:
+    """给正文检索的结果重排用，键越小越相关。
+
+    NPC 的 sort=score 是按全文分词打分，通用词会把无关法规拉高——搜"研发费用
+    加计扣除"时《诉讼费用交纳办法》（只命中"费用"）排在《企业所得税法》前面。
+    这里只认两种命中：检索词整段出现在标题里，或标题是该税种的本体法。
+    两者都没有时按接口给的 score 排，让标题没提到但正文确实相关的法规仍能
+    浮上来，score 相同则保持接口次序。
+    """
+    kw = (keyword or "").strip()
+    t = (title or "").replace("中华人民共和国", "")
+    if not kw:
+        return (9, 0.0, 0)
+    if kw in t:
+        return (0, 0.0, 0)
+    if parent_law and t == parent_law.replace("中华人民共和国", ""):
+        return (0, 0.0, 0)
+    return (1, -score, 0)
 
 
 def _request(method: str, url: str, **kwargs) -> requests.Response:
@@ -361,6 +387,11 @@ def search_tax(keyword: str, *,
     sort_param = {"order": "", "sort": ""}
     if sort == "date":
         sort_param = {"order": "-1", "sort": "gbrq"}
+    elif search_range == 2:
+        # 正文检索不给排序参数时按发文时间返回："增值税"首条是《外交特权与
+        # 豁免条例》（1986 年）。接口每条都带 score 字段并支持按它降序，
+        # 加上后同一查询首条变成《土地增值税法》。
+        sort_param = {"order": "-1", "sort": "score"}
 
     cache_key = _cache._key(
         "search", keyword, str(search_range), str(search_type),
@@ -423,6 +454,19 @@ def search_tax(keyword: str, *,
     # 要的条数。取不满时说明总数本来就不足 size，不补。
     # 翻页（page>1）不做过取：第 2 页的语义是接口原序的第 21 条起，掺入第 1 页
     # 的条目会让翻页结果失真。
+    if search_type == 2 and scope == "fulltext" and page == 1:
+        # 正文检索默认按发文时间排，"增值税" 首条是《外交特权与豁免条例》。
+        # 接口其实算出了相关度（每条带 score 字段）并支持 sort=score 降序，
+        # 加上后首条变成《土地增值税法》。这里再按"检索词整段出现在标题"重排
+        # 一次：sort=score 是全文分词打分，"研发费用加计扣除" 会把命中"费用"
+        # 的《诉讼费用交纳办法》顶到第一，而《企业所得税法》才真正规定加计扣除。
+        scores = [src.get("score") or 0.0 for src in rows]
+        parent_law = (resolve_tax_type(keyword) or {}).get("parent_law") or ""
+        results = [it for _, it in sorted(
+            zip(scores, results),
+            key=lambda p: _fulltext_match_rank(p[1]["title"], keyword, parent_law, p[0]))]
+        del results[size:]
+
     if search_type == 2 and scope == "title" and page == 1:
         fetch_size = min(max(size * 3, 20), 100)
         if fetch_size != size:
@@ -465,17 +509,15 @@ def search_tax(keyword: str, *,
         "_from_cache": False,
     }
 
-    # 可靠性标记：NPC 的正文模糊检索不按检索词过滤，返回的是与查询无关的法规流
-    # （结果实际按发文时间排列）。实测 "研发费用 资本化" 命中 5,964 条，排在前面的
-    # 却是国防法、香港基本法、公司法；"增值税" 命中 1,070 条，首条是外交特权与豁免
-    # 条例；连无意义词 "紫貂养殖" 都能命中民法典，说明接口根本没在检索。
-    # 标题检索与精确检索不受此影响。
+    # 可靠性标记。NPC 正文检索确实是按词过滤的（"紫貂养殖" 2,415 条、"zzzqqq123"
+    # 只有 7 条，两者条数不同），原先的判断是错的；真实缺陷是它默认按发文时间
+    # 排序。加 sort=score 降序并按整段命中重排后已可用于取依据，但命中的是
+    # 全文分词，短词仍会被通用词带偏（"研发费用加计扣除"会带到《诉讼费用
+    # 交纳办法》），所以标记为 medium 而不是 high：能用，但查具体条文要回到
+    # 标题检索。
     if search_type == 2 and scope == "fulltext":
-        result["_reliability"] = "low"
-        result["_reliability_note"] = (
-            "NPC 正文模糊检索不按检索词过滤，结果与查询无关（按发文时间排列）；"
-            "请改用 --scope title 或 --exact 检索条文，需要实务解读请用税务总局/税屋/微信公众号"
-        )
+        result["_reliability"] = "medium"
+        result["_reliability_note"] = RELIABILITY_NOTES["medium"]
 
     _cache.set(cache_key, result)
     return result
@@ -565,8 +607,9 @@ def main():
     cache_tag = " [缓存]" if result.get("_from_cache") else ""
     print(f"🔍 搜索 \"{args.keyword}\" | {args.scope}/{result['search_type']} | "
           f"共 {result['total']} 条 | {result['searched_at']}{cache_tag}")
-    if result.get("_reliability") == "low":
-        print(f"  ⚠️ _reliability: low — {result['_reliability_note']}")
+    if result.get("_reliability"):
+        print(f"  ⚠️ _reliability: {result['_reliability']} — "
+              f"{result['_reliability_note']}")
     print()
 
     for item in result["results"]:

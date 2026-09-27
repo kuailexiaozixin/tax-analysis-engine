@@ -42,8 +42,8 @@ PRACTICE_SOURCE_LABELS = {
 }
 
 _RELIABILITY_NOTE = (
-    "NPC 正文模糊检索不按检索词过滤，下列结果与查询无关，"
-    "改用 --scope title 重新检索"
+    "下列结果来自 NPC 正文检索，已按相关度排序但可能偏题；"
+    "确定条文归属请用 --scope title 重新检索"
 )
 
 
@@ -146,9 +146,10 @@ def merge_aggregated_response(npc_results: dict, chinatax_results: list,
             lines.append(f"  公布: {item['publish_date']} | `{item['id']}`")
         lines.append(f"")
         lines.append(f"> 共 {npc_results['total']} 条，向上按权威度排序")
-        if npc_results.get("_reliability") == "low":
+        if npc_results.get("_reliability"):
             lines.append(f"")
-            lines.append(f"> ⚠️ {_RELIABILITY_NOTE}")
+            lines.append(f"> ⚠️ 可靠性 {npc_results['_reliability']} — "
+                         f"{npc_results.get('_reliability_note') or _RELIABILITY_NOTE}")
         lines.append("")
 
     # chinatax results (secondary)

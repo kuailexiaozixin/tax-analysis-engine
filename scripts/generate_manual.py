@@ -211,7 +211,7 @@ doc.add_paragraph(
 )
 add_table(doc, ['参数', '选项', '说明'],
 [
-    ['搜索范围 (scope)', 'title / fulltext', '默认 title。fulltext 不按检索词过滤，返回结果与查询无关，不要用于取答案'],
+    ['搜索范围 (scope)', 'title / fulltext', '默认 title。fulltext 按相关度排序，可定位法规但可能偏题'],
     ['匹配方式 (search_type)', 'exact / fuzzy', '精确匹配用于已知法规名，模糊匹配用于宽泛主题'],
     ['时效性 (status)', '1=已废止, 2=已修改, 3=现行有效, 4=尚未生效', '默认仅查现行有效 (sxx=3)'],
     ['排序 (sort)', 'relevance / date', '日期排序支持按公布日期降序查看最新政策'],

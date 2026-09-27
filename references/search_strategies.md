@@ -2,9 +2,10 @@
 
 Five intent types × two-source search strategy. Always search FIRST, answer SECOND.
 
-**NPC 的 `--scope fulltext` 不要用**：该接口不按检索词过滤，任何关键词都返回同一批法规
-（"紫貂养殖"命中民法典）。需要"正文里提到某词"的能力时走 chinatax.gov.cn，
-那里是真检索。两个数据源分工：NPC 出法律本体，chinatax 出政策解读与操作口径。
+**NPC 的 `--scope fulltext` 可用但别当主入口**：它按全文分词匹配，短词会被通用词带偏
+（"研发费用加计扣除"会带到《诉讼费用交纳办法》）。要确定条文归属仍以标题检索为准。
+需要"某词在正文里被哪部法规提到"，正文检索确实比标题检索宽，但要拿 `_reliability: medium`
+的结果去核对。两个数据源分工：NPC 出法律本体，chinatax 出政策解读与操作口径。
 
 ---
 
@@ -122,8 +123,8 @@ python scripts/tax_web_search.py "<keyword> 发票" --size 15
 ## Cross-Intent Rules
 
 1. **Always include --status 3 by default**. Only show abolished/amended laws when explicitly requested.
-2. **Only ever search NPC by title**. Its body-text scope ignores the query; a second
-   source is `tax_web_search.py` (chinatax.gov.cn), not `--scope fulltext`.
+2. **Search NPC by title first**. `--scope fulltext` is now relevance-sorted and is fine
+   for locating candidate laws, but confirm the exact article via title or `--exact`.
 3. **When uncertain about intent**: run both `policy_lookup` and `eligibility` strategies, let user pick.
 4. **Always include `searched_at` timestamp** in output.
 5. **Never use training data as the primary answer source**. Always cite specific API results with document IDs.

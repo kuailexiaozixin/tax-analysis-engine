@@ -207,14 +207,47 @@ def test_shui5_search():
     return result
 
 
+def test_fgk_body():
+    """fgk 详情页能取正文——原先判断"JS 渲染取不到"是编码问题，已修。
+
+    该站不声明 charset，requests 按 HTTP 头的 ISO-8859-1 解码会把中文变乱码，
+    看起来像正文不在 HTML 里。显式按 UTF-8 解码即可，正文在 div.zscont/arc_cont。
+    """
+    print("\n[Test] fgk article body")
+    from tax_fgk import fetch_fgk_body
+    url = "http://fgk.chinatax.gov.cn/zcfgk/c102416/c5207148/content.html"
+    body = fetch_fgk_body(url)
+    assert not body.get("_error"), f"取正文失败：{body.get('_error')}"
+    content = body.get("content", "")
+    assert len(content) > 1000, f"正文过短：{len(content)} 字符"
+    assert "第一条" in content, "《增值税暂行条例实施细则》应含条文编号"
+    assert body.get("title"), "应从 meta 取出标题"
+    print(f"  [PASS] {body['title'][:36]}，正文 {len(content)} 字符，含条文编号")
+    return content
+
+
+def test_shui5_direct_body():
+    """税屋能直连读正文（WAF cookie 有效），不再必须经 Jina。"""
+    print("\n[Test] shui5 direct body (WAF cookie)")
+    from tax_shui5 import fetch_shui5
+    url = "https://www.shui5.cn/article/42/70138.html"
+    body = fetch_shui5(url)
+    assert not body.get("_error"), f"直连失败：{body.get('_error')}"
+    content = body.get("content", "")
+    assert len(content) > 300, f"正文过短：{len(content)} 字符"
+    assert body.get("title"), "应取出标题"
+    assert body.get("date"), "应从 articleResource 取出日期"
+    print(f"  [PASS] {body['title'][:36]}（{body['date']}），正文 {len(content)} 字符")
+    return content
+
+
 def test_shui5_read_article():
-    """Test reading a shui5 article body through Jina Reader."""
-    print("\n[Test] shui5 article body via Jina Reader")
+    """read_article 走直连优先、Jina 兜底，两条路都要能拿到正文。"""
+    print("\n[Test] shui5 article body (direct first, Jina fallback)")
     from tax_shui5 import read_article
     url = "https://www.shui5.cn/article/90/40872.html"
     content, err = read_article(url)
     assert not err, f"Reading failed: {err}"
-    assert "Markdown Content:" in content, "Jina response should carry the article body"
     body = content.split("Markdown Content:", 1)[-1]
     assert len(body) > 500, f"Body too short: {len(body)} chars"
     print(f"  [PASS] Body: {len(body)} chars")
@@ -251,19 +284,47 @@ def test_wechat_read_article():
 
 
 def test_npc_reliability_marker():
-    """Any fuzzy fulltext must be flagged low-reliability."""
+    """模糊全文检索标 medium（已排序但可能偏题），精确检索不标。"""
     print("\n[Test] NPC reliability marker")
     fuzzy = search_tax("研发费用 资本化", scope="fulltext", search_type=2, status=3, size=5)
-    assert fuzzy.get("_reliability") == "low", \
-        "Fuzzy fulltext should be marked low reliability"
-    # 单词同样不可信：NPC 正文检索不按检索词过滤，无意义词也能命中民法典
+    assert fuzzy.get("_reliability") == "medium", \
+        f"fuzzy fulltext 应标 medium，实际 {fuzzy.get('_reliability')}"
+    assert fuzzy.get("_reliability_note"), "标了等级必须同时给处置说明"
     single = search_tax("增值税", scope="fulltext", search_type=2, status=3, size=5)
-    assert single.get("_reliability") == "low", \
-        "Single-word fuzzy fulltext must also be marked"
+    assert single.get("_reliability") == "medium"
     exact = search_tax("研发费用加计扣除", scope="fulltext", search_type=1, status=3, size=5)
     assert exact.get("_reliability") is None, "Exact search should not be marked"
-    print("  [PASS] fuzzy fulltext marked low, exact search unmarked")
+    print("  [PASS] fuzzy fulltext marked medium, exact search unmarked")
     return fuzzy
+
+
+def test_npc_fulltext_relevance():
+    """正文检索加 sort=score 后必须按相关度返回，而不是按发文时间。
+
+    这是本次修复的核心断言：加 sort 之前，"增值税" 首条是 1986 年的
+    《外交特权与豁免条例》，因为默认按发文时间排。
+    """
+    print("\n[Test] NPC fulltext relevance ordering")
+    cases = [
+        ("增值税", "中华人民共和国增值税法"),
+        ("虚开发票", "中华人民共和国发票管理办法"),
+        ("加计扣除", "中华人民共和国企业所得税法"),
+    ]
+    for kw, expected in cases:
+        r = search_tax(kw, scope="fulltext", search_type=2, status=3, size=5)
+        assert r["results"], f"{kw} 无结果"
+        top = r["results"][0]["title"]
+        assert top == expected, f"{kw}: 期望首条 {expected}，实际 {top}"
+    # 整段命中必须排在仅分词命中之前：《诉讼费用交纳办法》只命中"费用"
+    r = search_tax("研发费用加计扣除", scope="fulltext", search_type=2, status=3, size=5)
+    titles = [x["title"] for x in r["results"]]
+    assert "中华人民共和国企业所得税法" in titles, \
+        f"整段命中加计扣除的《企业所得税法》应进入前 5，实际 {titles}"
+    assert titles.index("中华人民共和国企业所得税法") < \
+        titles.index("诉讼费用交纳办法"), \
+        f"整段命中应排在仅分词命中之前，实际 {titles}"
+    print(f"  [PASS] {len(cases)} 个查询首条为对应法规，且整段命中优先于分词命中")
+    return cases
 
 
 def test_npc_title_ranking():
@@ -370,12 +431,15 @@ def main():
         ("Fetch Detail", test_fetch_detail),
         ("chinatax.gov.cn Search5", test_chinatax_search),
         ("fgk Regulation Library", test_fgk_search),
+        ("fgk Article Body", test_fgk_body),
         ("360 Site Search", test_so360_search),
         ("shui5.cn Search", test_shui5_search),
         ("shui5.cn Article Body", test_shui5_read_article),
+        ("shui5.cn Direct Body", test_shui5_direct_body),
         ("WeChat (Sogou) Search", test_wechat_search),
         ("WeChat Article Body", test_wechat_read_article),
         ("NPC Reliability Marker", test_npc_reliability_marker),
+        ("NPC Fulltext Relevance", test_npc_fulltext_relevance),
         ("NPC Title Ranking", test_npc_title_ranking),
         ("parent_law Authenticity", test_parent_law_authenticity),
         ("Ranking Size Insensitivity", test_ranking_size_insensitivity),

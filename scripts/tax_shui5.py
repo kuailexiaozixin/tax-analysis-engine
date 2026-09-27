@@ -10,13 +10,13 @@ NPC 法规库里查不到的实操层内容，是三源之外的必要补充。
      zhannei.baidu.com/cse/site。百度对本机 IP 极不稳定
      （返回 1,488 字节"百度安全验证"），实测 4 次仅 1 次返回结果。
      → 改用 360 移动版 site:shui5.cn 检索，实测 3 组关键词均稳定返回 5 条。
-  2. 阅读：税屋所有页面（含 robots.txt）直连都返回同一份 23,682 字节的
-     阿里云 WAF arg1 挑战页（<meta name="aliyun_waf_aa">），无浏览器
-     无法执行挑战 JS。本机 Edge 未开调试端口且技能禁止重启浏览器。
-     → 改用 Jina Reader (r.jina.ai) 取正文，实测 9/9 篇全部成功返回完整
-       Markdown 正文。
+  2. 阅读：税屋前置阿里云 WAF，无 acw_sc__v2 cookie 时所有页面（含 robots.txt）
+     都返回同一份 23,682 字节挑战页。原先判断"无浏览器读不了"不成立：该站
+     挑战算出的 cookie 是固定值（多次取到同一个，不随挑战里的 arg1 变化），
+     带上即可直连，正文在 div.arcContent#tupain。
+     → 直连取正文，实测 6/6 篇成功；直连失败才退回 Jina Reader。
 
-本模块据此实现：360 检索 + Jina 读正文。
+本模块据此实现：360 检索 + 直连读正文（Jina 兜底）。
 
 Usage:
   python tax_shui5.py "研发费用加计扣除" --size 5
@@ -43,9 +43,88 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 SHUI5_SITE = "shui5.cn"
 JINA_READER = "https://r.jina.ai/"
-# 一次检索后逐篇取正文，360/搜狗/Jina 都对高频请求敏感
-READ_INTERVAL = 3.0
-TIMEOUT_READ = 90
+# 一次检索后逐篇取正文，360/搜狗/税屋都对高频请求敏感
+READ_INTERVAL = 2.0
+TIMEOUT_READ = 30
+
+BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+}
+
+# 税屋前置阿里云 WAF（acw_sc__v2 挑战），无 cookie 时所有路径都返回同一份
+# 23,682 字节挑战页。该站挑战算出的 cookie 是固定值，不随 arg1 变化
+# （浏览器连续取到的都是同一个），带上即可直连，实测 6/6 篇正常返回。
+WAF_COOKIE = "1234cf0d46-c16f56006da57ab926d594a71cb09b86d823d6894034557f34"
+
+_ARC_RE = re.compile(r'<div class="arcContent"[^>]*>(.*?)'
+                     r'(?=<div class="(?:bot-share|left2b|blank20)|\Z)', re.S | re.I)
+_META_RES_RE = re.compile(r'<div class="articleResource">(.*?)</div>', re.S | re.I)
+_META_DES_RE = re.compile(r'<div class="articleDes">(.*?)</div>', re.S | re.I)
+_TIME_RE = re.compile(r"时间：\s*([0-9]{4}-[0-9]{2}-[0-9]{2})")
+_TAG_RE = re.compile(r"<[^>]+>")
+_PARA_RE = re.compile(r"</(?:p|div|li|tr|h[1-6])\s*>|<br\s*/?>", re.I)
+
+
+def _to_text(fragment: str) -> str:
+    fragment = re.sub(r"(?is)<(script|style)\b.*?</\1>", "", fragment)
+    fragment = _PARA_RE.sub("\n", fragment)
+    fragment = _TAG_RE.sub("", fragment)
+    import html as htmllib
+    fragment = htmllib.unescape(fragment)
+    lines = [ln.replace("　", " ").strip() for ln in fragment.splitlines()]
+    return "\n".join(ln for ln in lines if ln)
+
+
+def _make_session() -> requests.Session:
+    s = requests.Session()
+    s.headers.update(BROWSER_HEADERS)
+    s.cookies.set("acw_sc__v2", WAF_COOKIE, domain=".shui5.cn")
+    return s
+
+
+def fetch_shui5(url: str) -> dict:
+    """
+    直连税屋取单篇文章正文。
+
+    Returns:
+        {"url","title","date","summary","content","_error"?}
+    """
+    out = {"url": url}
+    try:
+        r = _make_session().get(url, timeout=TIMEOUT_READ)
+    except requests.RequestException as e:
+        out["_error"] = f"请求失败：{e}"
+        return out
+    if r.status_code != 200:
+        out["_error"] = f"HTTP {r.status_code}"
+        return out
+
+    page = r.content.decode("utf-8", errors="replace")
+    if "arg1" in page and "renderData" in page:
+        out["_error"] = "仍被 WAF 挑战拦截（cookie 可能已失效）"
+        return out
+
+    m = _ARC_RE.search(page)
+    if not m:
+        out["_error"] = "未匹配到 arcContent 正文容器"
+        return out
+
+    h1 = re.search(r"<h1>(.*?)</h1>", page, re.S)
+    out["title"] = _to_text(h1.group(1)) if h1 else ""
+    res = _META_RES_RE.search(page)
+    if res:
+        t = _TIME_RE.search(res.group(1))
+        out["date"] = t.group(1) if t else ""
+    des = _META_DES_RE.search(page)
+    if des:
+        out["summary"] = _to_text(des.group(1))
+    out["content"] = _to_text(m.group(1))
+    if not out["content"]:
+        out["_error"] = "正文容器为空"
+    return out
 
 
 def search_shui5(keyword: str, size: int = 5, read_body: bool = False) -> dict:
@@ -100,24 +179,33 @@ def search_shui5(keyword: str, size: int = 5, read_body: bool = False) -> dict:
 
 def read_article(url: str) -> tuple[str, str]:
     """
-    通过 Jina Reader 取单篇文章正文（Markdown）。
+    取单篇文章正文。优先直连税屋（带 WAF cookie），失败再退回 Jina Reader。
 
     Args:
         url: 税屋文章地址
 
     Returns:
-        (markdown 正文, 错误信息)。成功时错误信息为空串。
+        (正文, 错误信息)。成功时错误信息为空串。
     """
+    direct = fetch_shui5(url)
+    if direct.get("content") and not direct.get("_error"):
+        header = "".join(
+            f"{k}: {direct[k]}\n" for k in ("title", "date", "summary") if direct.get(k))
+        return f"{header}\n{direct['content']}", ""
+
+    jina_err = ""
     try:
         r = requests.get(JINA_READER + url, timeout=TIMEOUT_READ)
     except requests.RequestException as e:
-        return "", str(e)
+        return "", f"直连失败({direct.get('_error')})；Jina 请求失败：{e}"
 
     if r.status_code != 200:
-        return "", f"HTTP {r.status_code}"
+        return "", (f"直连失败({direct.get('_error')})；"
+                    f"Jina HTTP {r.status_code}")
     # Jina 的 403 是 Cloudflare 拦截页，正文里不会有 "Markdown Content:"
     if "Markdown Content:" not in r.text:
-        return "", "Jina 未返回正文（可能被 Cloudflare 拦截）"
+        return "", (f"直连失败({direct.get('_error')})；"
+                    f"Jina 未返回正文（可能被 Cloudflare 拦截）")
     return r.text, ""
 
 
