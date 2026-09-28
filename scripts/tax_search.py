@@ -321,9 +321,15 @@ TAX_TYPE_KEYWORDS = {
     # priority 更低的 sta 项），故不采用。
     "税收立法权": {
         "aliases": ["税收立法权", "税收立法", "税收法定", "税收法定性",
-                    "税收基本法", "税收管理权限", "开征税收", "税种设立"],
-        "parent_law": None,
-        "authority": "sta",
+                    "税收基本法", "税收管理权限", "开征税收", "税种设立",
+                    "税种的设立", "税率的确定", "税收基本制度", "授权立法"],
+        # 上位法就是《立法法》第十一条：税种的设立、税率的确定和税收征收管理等
+        # 税收基本制度只能制定法律。原来配的是 authority=sta 加检索词"税收法定"，
+        # 总局法规库走全文检索，搜"税收法定"取回的四条里第一条是"开学第一课：
+        # 与税童行"这类顺带提到该词的解读稿，没有一条能当依据。改查人大库
+        # 精确检索，首条即《中华人民共和国立法法》。
+        "parent_law": "中华人民共和国立法法",
+        "authority": "npc",
         "search_term": "税收法定",
         "priority": 2,
     },
@@ -624,7 +630,12 @@ def search_tax(keyword: str, *,
     # 要的条数。取不满时说明总数本来就不足 size，不补。
     # 翻页（page>1）不做过取：第 2 页的语义是接口原序的第 21 条起，掺入第 1 页
     # 的条目会让翻页结果失真。
-    if search_type == 2 and scope == "fulltext" and page == 1:
+    #
+    # sort=date 单独处理：接口收到 orderByParam={order:-1,sort:gbrq} 也不真按发文
+    # 时间排（实测标题检索"增值税"回 2024-12-25、2011-01-08、1994-02-22、
+    # 2025-12-25……），不传排序参数时同样乱。所以时间序只能在本地对取回的窗口
+    # 排一次；同时跳过按标题命中的相关度重排，那层重排会把时间序再次打散。
+    if sort != "date" and search_type == 2 and scope == "fulltext" and page == 1:
         # 正文检索默认按发文时间排，"增值税" 首条是《外交特权与豁免条例》。
         # 接口其实算出了相关度（每条带 score 字段）并支持 sort=score 降序，
         # 加上后首条变成《土地增值税法》。这里再按"检索词整段出现在标题"重排
@@ -664,8 +675,16 @@ def search_tax(keyword: str, *,
                 })
         tax_info = resolve_tax_type(keyword)
         parent_law = (tax_info or {}).get("parent_law") or ""
-        results.sort(key=lambda it: _title_match_rank(it["title"], keyword, parent_law))
+        if sort == "date":
+            results.sort(key=lambda it: it.get("publish_date") or "", reverse=True)
+        else:
+            results.sort(key=lambda it: _title_match_rank(it["title"], keyword, parent_law))
         del results[size:]
+
+    if sort == "date":
+        # 标题模糊路径已在截断前排过（必须先排才不会被 size 截掉新文件），
+        # 这里补精确检索与正文检索两条路径
+        results.sort(key=lambda it: it.get("publish_date") or "", reverse=True)
 
     result = {
         "keyword": keyword,

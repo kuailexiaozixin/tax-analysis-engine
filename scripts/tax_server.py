@@ -69,6 +69,10 @@ TAX_PRACTICE_SOURCES = [
     {"name": "会计网",   "query_hint": "会计网"},
     {"name": "税小课",   "query_hint": "税小课服务"},
     {"name": "朴税",     "query_hint": "朴税"},
+    # 这两个是 /api/web-related 实际会直连的源，不列进来的话，
+    # 税屋和公众号的条目会被打成"实务解读"以外的泛标签。
+    {"name": "税屋",     "query_hint": "shui5.cn"},
+    {"name": "微信公众号", "query_hint": "mp.weixin.qq.com"},
 ]
 # 官方站点：这些是政策原文来源，不能标成"实务解读"
 OFFICIAL_DOMAINS = [
@@ -103,17 +107,19 @@ def _date_from_url(url: str) -> str:
     return f"{y:04d}-{mo:02d}-{d:02d}"
 
 
-def _search_one_source(site: str, query: str, n: int = 5) -> list[dict]:
+def _search_one_source(site: str, query: str, n: int = 5) -> tuple[list, str]:
     """Search a specific site for policy interpretations, via 360 site: search.
 
-    Bing was removed here: it returned zero result blocks for site: queries on
-    www.bing.com, and on cn/m.bing.com it intermittently returned blocks whose
-    content had nothing to do with the query (searching chinatax.gov.cn 企业所得税法
-    yielded 元气壁纸 results). 360 returns real target-site links consistently.
+    返回 (结果, 拦截说明)。说明非空表示这一路根本没取到数据，调用方不能把
+    0 条当成"该站点没有解读"。
+
+    Bing 在此处已被移除：www.bing.com 对 site: 查询返回 0 个结果块，
+    cn/m.bing.com 虽偶发返回 10 个 <li class="b_algo">，但内容与查询无关
+    （查 chinatax.gov.cn 企业所得税法 返回"元气壁纸"），属于不可信降级。
     """
     found = so360_search(query, site=site, size=n)
     if found.get("_error"):
-        return []
+        return [], found["_error"]
 
     results = []
     for item in found["results"]:
@@ -128,7 +134,7 @@ def _search_one_source(site: str, query: str, n: int = 5) -> list[dict]:
             "source_label": _source_label(site),
             "snippet": item.get("snippet", ""),
         })
-    return results
+    return results, ""
 
 
 def _source_label(site: str) -> str:
@@ -237,6 +243,7 @@ def search_interpretations(law_title: str, keyword: str = "",
 
     all_results = []
     seen_urls = set()
+    blocked = []
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         futures = {}
@@ -248,7 +255,9 @@ def search_interpretations(law_title: str, keyword: str = "",
 
         for (site, q_text), future in futures.items():
             try:
-                items = future.result(timeout=15)
+                items, why = future.result(timeout=15)
+                if why:
+                    blocked.append(why)
                 for item in items:
                     if isinstance(item, dict) and item.get("url"):
                         if item["url"] not in seen_urls:
@@ -264,6 +273,14 @@ def search_interpretations(law_title: str, keyword: str = "",
         "sources": all_results[:15],
         "searched_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
+    # 一条站点都没取到时必须说清是"被拦"还是"确实没有"：前端空态文案
+    # "该法规可能暂无公开的政策解读文件"只有在搜索引擎正常工作时才成立。
+    # 被拦的这种结果不进缓存，否则限流恢复后仍会一直回空。
+    if not all_results and blocked:
+        result["engine_error"] = blocked[0]
+        result["queries_blocked"] = f"{len(blocked)}/{len(futures)}"
+        return result
+
     _interp_cache[cache_key] = result
     return result
 
@@ -310,6 +327,9 @@ def api_search():
     size = min(data.get("size", 20), 50)
     sort = data.get("sort", "relevance")
     source = data.get("source", "npc")
+    # province 只回填给调用方，不参与本接口的检索：NPC 库是全国性法规，没有
+    # 省级维度；地方口径要靠 /api/interpretations 的 province 参数换站点。
+    # 前端"省份"下拉因此对搜索结果没有过滤作用，别让它看起来是生效的。
     province = data.get("province", "")
 
     intent = detect_intent(keyword)
@@ -327,13 +347,13 @@ def api_search():
             agg_kw = (tax_type_info or {}).get("search_term") or keyword
             agg_sources = [s for s in DEFAULT_SOURCES if s != "npc"]
             result = aggregate_search(agg_kw, size=size, status=status,
-                                      scope=scope, sources=agg_sources)
+                                      scope=scope, sources=agg_sources, sort=sort)
             result["_routed"] = f"{tax_type_info['type']}属总局专题，已改查法规库：{agg_kw}"
         else:
             if parent_law:
                 agg_kw = parent_law
             result = aggregate_search(agg_kw, size=size, status=status, scope=scope,
-                                      exact=bool(parent_law))
+                                      exact=bool(parent_law), sort=sort)
             if parent_law:
                 result["_routed"] = f"按{tax_type_info['type']}的本体法检索：{parent_law}"
     elif source == "chinatax":
@@ -348,7 +368,7 @@ def api_search():
         if parent_law:
             keyword = parent_law
             search_type = 1
-        # sta 专题（转让定价、税收优惠、税收立法权等）在 NPC 库里检索无效，
+        # sta 专题（转让定价、税收优惠、税收协定等）在 NPC 库里检索无效，
         # 搜"转让定价"命中的是国有土地使用权出让和转让暂行条例。这类题
         # 改查总局法规库，用条目自带的 search_term 而不是原话。
         if authority == "sta":
@@ -542,16 +562,15 @@ def api_interpretations(bbbs_id):
 
 
 # ── Web-related search (broader, more practical) ──────────────────────────
-def _search_web_broad(query: str, n: int = 8) -> list[dict]:
+def _search_web_broad(query: str, n: int = 8) -> tuple[list, str]:
     """Broader web search for practical tax-policy analysis.
 
-    Engine is 360 (m.so.com). Bing was removed: it returned nothing for site:
-    queries, and Baidu rate-limits this host to a 1,488-byte "百度安全验证"
-    page on nearly every request.
+    引擎是 360（m.so.com），返回 (结果, 拦截说明)。Bing 已移除：它对 site:
+    查询返回空结果块；百度也移除：本主机几乎每次都被打成"百度安全验证"页。
     """
     found = so360_search(f"{query} 税收 政策解读", site="", size=n)
     if found.get("_error"):
-        return []
+        return [], found["_error"]
 
     results = []
     for item in found["results"]:
@@ -590,32 +609,40 @@ def api_web_related(bbbs_id):
         # ── Concurrent: practice sources + broad web ──
         all_sources = []
         seen = set()
+        web_error = ""
 
         with ThreadPoolExecutor(max_workers=2) as pool:
             f_practice = pool.submit(_search_practice_sources, search_query, 3)
             f_web = pool.submit(_search_web_broad, search_query, 8)
+            try:
+                web_items, web_error = f_web.result(timeout=20)
+            except Exception:
+                web_items = []
+            try:
+                practice_items = f_practice.result(timeout=20)
+            except Exception:
+                practice_items = []
 
-            for future in [f_practice, f_web]:
-                try:
-                    items = future.result(timeout=20)
-                    for item in items:
-                        if item.get("url"):
-                            if item["url"] not in seen and not _is_garbage_result(item.get("url", ""), item.get("title", "")):
-                                seen.add(item["url"])
-                                all_sources.append(item)
-                        elif isinstance(item, dict):
-                            all_sources.append(item)
-                except Exception:
-                    pass
+        for item in list(practice_items) + list(web_items):
+            if not item.get("url"):
+                continue
+            if item["url"] in seen or _is_garbage_result(item["url"], item.get("title", "")):
+                continue
+            seen.add(item["url"])
+            all_sources.append(item)
 
-        return jsonify({
+        payload = {
             "law_id": bbbs_id,
             "law_title": title,
             "keyword": keyword,
             "total": len(all_sources),
             "sources": all_sources,
             "searched_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        })
+        }
+        # 全网这一路被拦时说明原因，避免空列表被读成"网上没有相关解读"
+        if web_error:
+            payload["engine_error"] = web_error
+        return jsonify(payload)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

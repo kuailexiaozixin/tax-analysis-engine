@@ -101,7 +101,8 @@ def aggregate_search(keyword: str, *,
                      sources: list = None,
                      status: int = 3,
                      scope: str = "title",
-                     exact: bool = False) -> dict:
+                     exact: bool = False,
+                     sort: str = "relevance") -> dict:
     """
     Concurrently search multiple data sources and return deduplicated, ranked results.
 
@@ -113,6 +114,9 @@ def aggregate_search(keyword: str, *,
         scope: NPC search scope (default: title；fulltext 已按相关度排序但可能偏题)
         exact: NPC 精确检索。检索词是本体法名时必须为 True，否则模糊检索
                按发布时间排，宪法会顶掉本该在首位的本体法。
+        sort: "relevance"（默认）按权威度分层；"date" 时跨源按公布日期降序，
+              不再按权威度分层——"只看最新"要的正是时间序，把 NPC 整源顶在
+              前面会让总局 2026 年的公告排在 NPC 2024 年的法律之后。
     """
     if sources is None:
         sources = list(DEFAULT_SOURCES)
@@ -124,9 +128,11 @@ def aggregate_search(keyword: str, *,
         futures = {}
 
         if "npc" in sources:
+            # sort 要传到 NPC 这一路：不传的话取回的窗口是按接口自己那套序排的，
+            # 后面只在窗口内按日期重排，"最新"的那批根本没能进窗口。
             futures["npc"] = pool.submit(
                 search_tax, keyword, scope=scope, status=status, size=size,
-                search_type=1 if exact else 2,
+                search_type=1 if exact else 2, sort=sort,
             )
         if "chinatax" in sources:
             futures["chinatax"] = pool.submit(
@@ -158,6 +164,10 @@ def aggregate_search(keyword: str, *,
     for source, data in results.items():
         if not data:
             continue
+        # 源自己回报"取不到"（被拦、接口异常）时要进 errors：
+        # source_summary 里的 0 条只说明没拿到，不说明该源没有内容。
+        if data.get("_error"):
+            errors[source] = data["_error"]
         rank = SOURCE_RANK[source]
         source_rel = data.get("_reliability")
         source_note = data.get("_reliability_note", "")
@@ -178,11 +188,14 @@ def aggregate_search(keyword: str, *,
     all_items = deduplicate(all_items)
 
     # Sort: authority rank first, then by date
-    all_items.sort(key=lambda x: (
-        x.get("_authority_rank", 99),
-        # Put items with dates before those without
-        0 if x.get("publish_date") else 1,
-    ))
+    if sort == "date":
+        all_items.sort(key=lambda x: x.get("publish_date") or "", reverse=True)
+    else:
+        all_items.sort(key=lambda x: (
+            x.get("_authority_rank", 99),
+            # Put items with dates before those without
+            0 if x.get("publish_date") else 1,
+        ))
 
     return {
         "keyword": keyword,
@@ -216,6 +229,8 @@ Examples:
                    help="NPC status filter (3=effective)")
     p.add_argument("--scope", choices=["title", "fulltext"], default="title",
                    help="NPC search scope (default: title)")
+    p.add_argument("--sort", choices=["relevance", "date"], default="relevance",
+                   help="relevance=按权威度分层；date=跨源按公布日期降序（不再分层）")
     p.add_argument("--json", action="store_true")
 
     args = p.parse_args()
@@ -227,6 +242,7 @@ Examples:
         sources=sources,
         status=args.status,
         scope=args.scope,
+        sort=args.sort,
     )
 
     if args.json:

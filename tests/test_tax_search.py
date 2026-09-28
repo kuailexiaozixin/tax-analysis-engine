@@ -115,6 +115,37 @@ def test_search_date_range():
     return result
 
 
+def test_search_sort_date():
+    """sort=date 必须真的按发布时间降序——三条检索路径都要查。
+
+    NPC 收到 orderByParam={order:-1,sort:gbrq} 并不按时间排（实测标题检索
+    "增值税"回 2024-12-25、2011-01-08、1994-02-22、2025-12-25），所以排序在本地
+    做。同时默认路径的首条仍必须是本体法，防止为了时间序把相关度排掉。
+    """
+    print("\n[Test] sort=date 在标题模糊 / 标题精确 / 正文三条路径都生效")
+    cases = [
+        ("增值税", "title", 2),
+        ("税收优惠", "title", 2),
+        ("增值税法", "title", 1),
+        ("增值税", "fulltext", 2),
+    ]
+    passed = 0
+    for kw, scope, st in cases:
+        r = search_tax(kw, scope=scope, search_type=st, status=3, size=8, sort="date")
+        dates = [it["publish_date"] or "" for it in r["results"]]
+        assert dates, f"{kw}/{scope}/{st} 没取到条目，无法判排序"
+        assert dates == sorted(dates, reverse=True), \
+            f"{kw}/{scope}/{'exact' if st == 1 else 'fuzzy'} 未按时间降序：{dates}"
+        passed += 1
+        print(f"  [PASS] {kw}/{scope}/{'exact' if st == 1 else 'fuzzy'} → {dates[:3]}")
+    # 默认排序仍要把本体法放首位
+    r = search_tax("增值税", scope="title", search_type=2, status=3, size=8)
+    assert r["results"][0]["title"] == "中华人民共和国增值税法", \
+        f"默认相关度首位被换掉了：{r['results'][0]['title']}"
+    print(f"  [PASS] 默认相关度首位仍是《{r['results'][0]['title']}》")
+    return passed + 1, passed + 1
+
+
 def test_search_with_cache():
     """Test cache functionality."""
     print("\n[Test] Cache: two sequential searches")
@@ -193,8 +224,82 @@ def test_so360_search():
     return result
 
 
+def test_so360_block_page():
+    """离线：360 的"访问异常出错"页必须报成 _error，不能当成 0 条命中。
+
+    这份页面是 HTTP 200 + 约 5KB，一张结果卡都没有。若不识别，
+    /api/interpretations 会回空列表，前端据此写出"该法规可能暂无公开的政策
+    解读文件"——把限流说成了法规属性。
+    """
+    import tax_so360
+    saved = tax_so360.requests.get
+    calls = {"n": 0}
+
+    class FakeResp:
+        status_code = 200
+        text = ('<!doctype html><title>360</title>'
+                '<div class="tip">访问异常出错</div>'
+                '<script src="https://s5.ssl.qhres2.com/static/x.js"></script>')
+
+    def fake_get(url, **kw):
+        calls["n"] += 1
+        return FakeResp()
+
+    tax_so360.requests.get = fake_get
+    try:
+        r = tax_so360.so360_search("增值税法 政策解读", site="chinatax.gov.cn", size=5)
+    finally:
+        tax_so360.requests.get = saved
+
+    assert r["total"] == 0 and not r["results"], "拦截页不该产出任何结果"
+    assert r.get("_error"), "拦截页必须带 _error，否则上层无法与'真的没搜到'区分"
+    assert "访问异常" in r["_error"], f"_error 要说明是被拦：{r.get('_error')}"
+    print(f"  [PASS] 拦截页识别为 _error：{r['_error']}")
+    print(f"  [PASS] 重试次数 {calls['n']}（<= MAX_RETRIES {tax_so360.MAX_RETRIES}）")
+    assert calls["n"] <= tax_so360.MAX_RETRIES, "拦截页是 200，不该无限重试"
+    return True
+
+
+def test_interpretations_distinguish_blocked_from_empty():
+    """离线：search_interpretations 在全站被拦时要给 engine_error，且不进缓存。"""
+    import tax_server
+
+    saved = tax_server._search_one_source
+    saved_cache = dict(tax_server._interp_cache)
+    tax_server._interp_cache.clear()
+
+    def blocked(site, query, n=5):
+        return [], "360 返回访问异常页（本机 IP 被限流），0 条不代表没有匹配结果"
+
+    tax_server._search_one_source = blocked
+    try:
+        r = tax_server.search_interpretations("中华人民共和国增值税法", "增值税")
+        cached_after_block = dict(tax_server._interp_cache)
+    finally:
+        tax_server._search_one_source = saved
+
+    assert r["total"] == 0
+    assert r.get("engine_error"), "被拦时必须给出原因"
+    assert r["queries_blocked"].endswith("/8"), f"要给出被拦次数/总查询数：{r.get('queries_blocked')}"
+    assert not cached_after_block, "被拦的空结果不能进缓存，否则限流恢复后仍一直回空"
+    print(f"  [PASS] engine_error={r['engine_error']} / 未写缓存")
+
+    # 搜索引擎正常时同样允许"真的没有解读"，此时才该给空态文案
+    tax_server._interp_cache.clear()
+    tax_server._search_one_source = lambda site, query, n=5: ([], "")
+    try:
+        r2 = tax_server.search_interpretations("中华人民共和国增值税法", "增值税")
+    finally:
+        tax_server._search_one_source = saved
+        tax_server._interp_cache.clear()
+        tax_server._interp_cache.update(saved_cache)
+    assert not r2.get("engine_error"), "正常返回 0 条时不应误报被拦"
+    assert r2.get("total") == 0
+    print("  [PASS] 正常 0 条不带 engine_error")
+    return True
+
+
 def test_shui5_search():
-    """Test shui5.cn (360 discovery + Jina Reader body)."""
     print("\n[Test] shui5.cn: 高新技术企业认定")
     from tax_shui5 import search_shui5
     result = search_shui5("高新技术企业认定", size=2)
@@ -348,10 +453,11 @@ def test_fgk_paging():
 
 
 def test_sta_topics_reachable():
-    """11 个 authority="sta" 的专题，每一个都要能取到依据。
+    """所有 authority="sta" 的专题，每一个都要能取到依据。
 
     这些专题在 NPC 库里检索无效，检索词取自实测：键名不是检索词
     （"税收争议救济"当检索词 0 条命中），必须用表里的 search_term。
+    数量随 ⑨ 的映射表变，所以用例自己从表里数，不写死条数。
     """
     print("\n[Test] sta topics reachable via fgk")
     from tax_fgk import search_fgk
@@ -689,6 +795,59 @@ def test_aggregated_exact_flag():
     return 1
 
 
+def test_aggregated_sort_date():
+    """离线：sort=date 时聚合结果跨源按公布日期降序，不再按权威度分层。
+
+    默认那层排序把 NPC 整源顶在前面，用户勾了"只看最新"仍会拿到
+    2024 年的法律排在 2026 年的总局公告之前——时间序必须真的生效。
+    """
+    print("[Test] aggregated sort=date crosses sources")
+    import tax_aggregator as agg
+
+    npc_item = {"id": "n1", "title": "中华人民共和国增值税法", "publish_date": "2024-12-25"}
+    sta_item = {"id": "s1", "title": "国家税务总局公告2026年第1号", "date": "2026-01-30",
+                "url": "https://www.chinatax.gov.cn/x1"}
+    web_item = {"id": "w1", "title": "某省税务局关于增值税征管有关事项的通告",
+                "date": "2026-09-03", "url": "https://x.chinatax.gov.cn/y"}
+
+    stubs = {
+        "search_tax": lambda *a, **k: {"results": [dict(npc_item)]},
+        "search_chinatax": lambda *a, **k: {"results": [dict(sta_item)]},
+        "so360_search": lambda *a, **k: {"results": [dict(web_item)]},
+        "search_shui5": lambda *a, **k: {"results": []},
+        "search_wechat": lambda *a, **k: {"results": []},
+    }
+    saved = {name: getattr(agg, name) for name in stubs}
+    seen_kwargs = {}
+    try:
+        for name, fn in stubs.items():
+            setattr(agg, name, fn)
+
+        r = agg.aggregate_search("增值税", sort="date")
+        dates = [it.get("publish_date") or "" for it in r["items"]]
+        assert len(dates) == 3, f"三条源各一条，应回 3 条：{dates}"
+        assert dates == sorted(dates, reverse=True), f"未按时间降序：{dates}"
+        print(f"  [PASS] sort=date → {dates}")
+
+        r2 = agg.aggregate_search("增值税")
+        assert r2["items"][0]["_source"] == "npc", \
+            f"默认排序仍应按权威度把 NPC 放首位：{r2['items'][0]['_source']}"
+        print("  [PASS] 默认路径仍按权威度分层，NPC 居首")
+
+        def spy(*a, **k):
+            seen_kwargs.update(k)
+            return {"results": [dict(npc_item)]}
+        agg.search_tax = spy
+        agg.aggregate_search("增值税", sort="date")
+        assert seen_kwargs.get("sort") == "date", \
+            f"sort 没传给 NPC 那一路，取回的窗口仍是相关度序：{seen_kwargs}"
+        print("  [PASS] sort 已透传给 NPC 检索，窗口按时间取")
+        return 3, 3
+    finally:
+        for name, fn in saved.items():
+            setattr(agg, name, fn)
+
+
 def test_server_routing_all_sources():
     """网页每条检索路径都要按 authority 换源，不能只改默认那条。"""
     print("[Test] server routes every source by authority")
@@ -721,6 +880,7 @@ def main():
         ("Analysis Orchestration Plan", test_answer_plan),
         ("Search Term Routing", test_search_terms_route),
         ("Aggregated Exact Flag", test_aggregated_exact_flag),
+        ("Aggregated Sort Date", test_aggregated_sort_date),
         ("Server Routing All Sources", test_server_routing_all_sources),
         ("Installed Browser Detection", test_browser_detection),
         ("shui5 Batch Body Read", test_shui5_batch_read),
@@ -730,12 +890,15 @@ def main():
         ("Fulltext Search (NPC API)", test_search_fulltext),
         ("Exact Search", test_search_exact),
         ("Date Range Filter", test_search_date_range),
+        ("Sort By Date", test_search_sort_date),
         ("Cache", test_search_with_cache),
         ("Fetch Detail", test_fetch_detail),
         ("chinatax.gov.cn Search5", test_chinatax_search),
         ("fgk Regulation Library", test_fgk_search),
         ("fgk Article Body", test_fgk_body),
         ("360 Site Search", test_so360_search),
+        ("360 Block Page Detection", test_so360_block_page),
+        ("Interpretations Blocked vs Empty", test_interpretations_distinguish_blocked_from_empty),
         ("shui5.cn Search", test_shui5_search),
         ("shui5.cn Article Body", test_shui5_read_article),
         ("shui5.cn Direct Body", test_shui5_direct_body),

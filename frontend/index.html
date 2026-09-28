@@ -245,6 +245,7 @@ body{
 .s-amended{border-color:var(--g300);color:var(--g600)}
 .s-abolished{border-color:var(--g300);color:var(--g500)}
 .s-pending{border-color:var(--g300);color:var(--g600)}
+.s-unknown{border-color:var(--g400);color:var(--g700);font-weight:600}
 
 .empty-state,.loading-state{text-align:center;padding:60px 20px;color:var(--g500)}
 .empty-state p{color:var(--g400)}
@@ -476,7 +477,7 @@ body{
   <div class="filter-group"><label>匹配</label><select id="filterType"><option value="fuzzy">模糊</option><option value="exact">精确</option></select></div>
   <div class="filter-group"><label>时效</label><select id="filterStatus"><option value="3" selected>现行有效</option><option value="">全部</option></select></div>
   <div class="filter-group"><label>排序</label><select id="filterSort"><option value="relevance">相关度</option><option value="date">日期↓</option></select></div>
-  <div class="filter-group"><label>数据源</label><select id="filterSource"><option value="npc">NPC法规库</option><option value="aggregated">多源聚合</option><option value="chinatax">税务总局</option></select></div>
+  <div class="filter-group"><label>数据源</label><select id="filterSource"><option value="npc">NPC法规库</option><option value="aggregated">多源聚合</option><option value="chinatax">税务总局</option><option value="fgk">税务法规库</option></select></div>
   <div class="filter-group"><label>省份</label><select id="filterProvince"><option value="">全国</option></select></div>
   <div class="filter-group"><label>日期</label><input type="date" id="filterDateFrom">—<input type="date" id="filterDateTo"></div>
 </div>
@@ -623,11 +624,21 @@ function renderResults(data){
   if(items.length===0){h+=`<div class="empty-state"><div style="font-size:28px;margin-bottom:8px">🔍</div><p><b>未找到相关政策</b></p><p style="font-size:13px;color:var(--g400)">关键词:"${esc(data.keyword)}"</p><p style="font-size:12px;margin-top:8px;color:var(--g400)">试试更短的关键词（如"增值税"而非"增值税优惠政策最新规定"） / 切换到"多源聚合"模式覆盖税屋与公众号</p></div>`;}
 
   items.forEach((item,i)=>{
-    const sc=statusMap[item.status_code]||'',st=highlightText(item.title,lastKeyword),sid=item.id||'',rawTitle=esc(item.title);
-    h+=`<div class="result-card" onclick="viewLaw('${sid}','${rawTitle.replace(/'/g,"\\'")}')">
+    const st=highlightText(item.title,lastKeyword),sid=item.id||'',rawTitle=esc(item.title);
+    // 弹窗四个标签页全靠 NPC 的 bbbs_id 取原文与元信息；总局、公众号、税屋的条目
+    // 没有这个 ID，挂上 viewLaw 点开只会得到"获取全文失败"。这类卡片不接弹窗，
+    // 直接给条目自带的原文链接，并把"弹窗取不到"这件事写在卡面上。
+    const url=item.url||'';
+    // esc() 走的是 textContent→innerHTML，不转义引号；URL 来自外部检索结果，
+    // 要拼进 href="..." 就必须先确认它是干净的 http(s) 地址，否则属性会被截断。
+    const safeUrl=/^https?:\/\/[^\s"'<>\\]+$/.test(url)?url:'';
+    const openTag=sid?`<div class="result-card" onclick="viewLaw('${sid}','${rawTitle.replace(/'/g,"\\'")}')">`:`<div class="result-card" style="cursor:default">`;
+    const idRow=sid?`<div class="id-row">NPC ID: ${sid}</div>`
+      :`<div class="id-row">${safeUrl?`🔗 原文：<a href="${esc(safeUrl)}" target="_blank" rel="noopener">${esc((safeUrl.match(/https?:\/\/(?:www\.)?([^/]+)/)||[,'非本库链接'])[1])}</a> · 非 NPC 库条目，点开无弹窗`:'非 NPC 库条目，点开无弹窗'}</div>`;
+    h+=`${openTag}
       <div class="title"><span style="font-size:11px;color:var(--g400);margin-right:6px">#${i+1}</span> ${item._source?`<span class="source-label src-${item._source}">${srcIcons[item._source]||''} ${srcLabels[item._source]||''}</span>`:''}${st}</div>
-      <div class="meta">${item.status_code?`<span><span class="status-badge ${sc}">${statusIcons[item.status_code]||'❓'} ${statusNames[item.status_code]||item.status}</span></span>`:''}${item.publish_date?`<span>📅 公布:${item.publish_date}</span>`:''}${item.effective_date?`<span>施行:${item.effective_date}</span>`:''}${item.issuing_authority?`<span>🏛️ ${esc(item.issuing_authority)}</span>`:''}</div>
-      <div class="id-row">NPC ID: ${sid}</div></div>`;
+      <div class="meta"><span><span class="status-badge ${statusMap[item.status_code]||'s-unknown'}">${statusIcons[item.status_code]||'⚪'} ${statusNames[item.status_code]||'时效未标注'}</span></span>${item.publish_date?`<span>📅 公布:${item.publish_date}</span>`:''}${item.effective_date?`<span>施行:${item.effective_date}</span>`:''}${item.issuing_authority?`<span>🏛️ ${esc(item.issuing_authority)}</span>`:''}</div>
+      ${idRow}</div>`;
   });
   if(total>items.length)h+=`<p style="text-align:center;font-size:12px;color:var(--g400);margin-top:12px">显示前${items.length}条，共${total}条 · 缩小搜索范围以获取更精确结果</p>`;
   c.innerHTML=h;
@@ -666,7 +677,8 @@ async function loadInterpretationsTab(bbbsId){
             ${item.url?`<span style="color:var(--g600)">🔗 查看 →</span>`:''}
           </div></a>`;
       });
-    }else{h='<div class="interp-empty"><div style="font-size:24px;margin-bottom:8px">📭</div><p><b>未找到官方解读</b></p><p style="font-size:13px;margin-top:4px;color:var(--g400)">该法规可能暂无公开的政策解读文件</p></div>';}
+    }else if(data.engine_error){h='<div class="interp-empty"><div style="font-size:24px;margin-bottom:8px">⚠️</div><p><b>官方解读暂时取不到</b></p><p style="font-size:13px;margin-top:4px;color:var(--g400)">'+esc(data.engine_error)+'（拦截 '+esc(data.queries_blocked||'')+' 次检索）。这是取数失败，不代表该法规没有解读文件；可稍后重试或改用 /api/search 的 fgk 源。</p></div>';}
+    else{h='<div class="interp-empty"><div style="font-size:24px;margin-bottom:8px">📭</div><p><b>未找到官方解读</b></p><p style="font-size:13px;margin-top:4px;color:var(--g400)">该法规可能暂无公开的政策解读文件</p></div>';}
     c.innerHTML=h;
   }catch(e){c.innerHTML=`<div class="interp-empty">⚠️ 搜索失败: ${esc(e.message)}</div>`;}
 }
@@ -674,15 +686,15 @@ async function loadInterpretationsTab(bbbsId){
 /* ═══════════ WEB RELATED TAB ═══════════ */
 async function loadWebRelatedTab(bbbsId,title){
   const c=document.getElementById('tabWebContent');
-  c.innerHTML=`<div class="interp-empty"><div class="loading-spinner"></div><p style="margin-top:10px">正在搜索实务参考与解读…</p><p style="font-size:12px;color:var(--g400)">小颖言税 · 税海涛声 · 会计网 · 税小课 · 朴税 + 网络补充</p></div>`;
+  c.innerHTML=`<div class="interp-empty"><div class="loading-spinner"></div><p style="margin-top:10px">正在搜索实务参考与解读…</p><p style="font-size:12px;color:var(--g400)">税屋 · 微信公众号 · 全网补充</p></div>`;
   try{
     const data=await fetchWithRetry(`/api/web-related/${bbbsId}?keyword=${encodeURIComponent(title+' '+lastKeyword)}`);
     if(data.error)throw new Error(data.error);
     let h='';
     if(data.sources&&data.sources.length>0){
-      h+=`<div style="padding:10px 20px;font-size:12px;color:var(--g500);background:var(--g50);border-bottom:1px solid var(--g100)">🔎 搜索结果: ${data.total}条 · ${data.searched_at||''}</div>`;
+      h+=`<div style="padding:10px 20px;font-size:12px;color:var(--g500);background:var(--g50);border-bottom:1px solid var(--g100)">🔎 搜索结果: ${data.total}条 · ${data.searched_at||''}${data.engine_error?' · <span style=\"color:var(--accent)\">全网检索被拦，'+esc(data.engine_error)+'</span>':''}</div>`;
       data.sources.forEach(item=>{
-        const practiceNames=['小颖言税','税海涛声','会计网','税小课','朴税'];
+        const practiceNames=['税屋','微信公众号','小颖言税','税海涛声','会计网','税小课','朴税','实务解读'];
         const isPractice=practiceNames.includes(item.source_label);
         const isOfficial=item.source_label&&['国家税务总局','财政部','税务法规库','中国政府网','全国人大','官方来源'].includes(item.source_label);
         const badge=isPractice?`✍️ ${item.source_label}`:(isOfficial?'🏛️ 官方':'🌐 网络来源');
@@ -725,7 +737,7 @@ async function viewLaw(bbbsId,title){
     <div class="modal-body">
       <div class="tab-panel active" id="tabLawContent"><div style="text-align:center;padding:60px"><div class="loading-spinner"></div><p style="margin-top:10px;font-size:13px;color:var(--g500)">正在获取法规全文…</p></div></div>
       <div class="tab-panel" id="tabInterpContent"></div>
-      <div class="tab-panel" id="tabAiContent"><div class="interp-empty" style="padding:40px"><div style="font-size:28px;margin-bottom:10px">🤖</div><p><b>AI 政策解读</b></p><p style="font-size:13px;margin-top:4px;color:var(--g500)">点击下方按钮，AI 将用通俗语言解读本法规</p><button onclick="generateAiInterpret()" style="margin-top:14px;padding:9px 22px;background:var(--black);color:#fff;border:none;font-size:13px;font-weight:600;cursor:pointer">✨ 生成 AI 解读</button><p style="font-size:11px;color:var(--g400);margin-top:6px">约需 5–10 秒 · 仅供参考</p></div></div>
+      <div class="tab-panel" id="tabAiContent"><div class="interp-empty" style="padding:40px"><div style="font-size:28px;margin-bottom:10px">🤖</div><p><b>AI 政策解读</b></p><p style="font-size:13px;margin-top:4px;color:var(--g500)">点击下方按钮，AI 将用通俗语言解读本法规</p><button onclick="generateAiInterpret()" style="margin-top:14px;padding:9px 22px;background:var(--black);color:#fff;border:none;font-size:13px;font-weight:600;cursor:pointer">✨ 生成 AI 解读</button><p style="font-size:11px;color:var(--g400);margin-top:6px">本机 AI 现场生成，耗时取决于本机负载 · 仅供参考</p></div></div>
       <div class="tab-panel" id="tabWebContent"></div>
     </div>
     <div class="modal-footer">
@@ -758,13 +770,15 @@ function switchTab(tab){
   if(btn)btn.classList.add('active');
   if(tab==='interp')loadInterpretationsTab(_modalLawId);
   if(tab==='web')loadWebRelatedTab(_modalLawId,_modalTitle);
-  const footerLabels={law:'实时获取自NPC国家法规库',interp:'搜索自 chinatax.gov.cn · mof.gov.cn · gov.cn（仅官方来源）',ai:'AI 生成 · 仅供参考 · 以官方为准',web:'搜索自公众号 + 实务网络（含小颖言税/税海涛声/会计网等）'};
+  // 措辞要说"实际直连了哪些源"：小颖言税/税海涛声/会计网/税小课/朴税只用来给
+  // 命中条目打来源标签（TAX_PRACTICE_SOURCES），程序并不会去搜它们，写进这里会变成假承诺。
+  const footerLabels={law:'实时获取自NPC国家法规库',interp:'检索站点：chinatax.gov.cn · fgk.chinatax.gov.cn · mof.gov.cn · www.gov.cn（仅官方来源）',ai:'AI 生成 · 仅供参考 · 以官方为准',web:'直连税屋(shui5.cn) + 微信公众号，另经 360 全网补充；来源标签按命中条目的域名/标题识别'};
   document.getElementById('footerInfo').textContent=footerLabels[tab]||'';
 }
 
 async function generateAiInterpret(){
   const c=document.getElementById('tabAiContent');
-  c.innerHTML=`<div class="interp-empty"><div class="loading-spinner"></div><p style="margin-top:10px">AI 正在解读法规…</p><p style="font-size:12px;color:var(--g400)">约需 5–10 秒</p></div>`;
+  c.innerHTML=`<div class="interp-empty"><div class="loading-spinner"></div><p style="margin-top:10px">AI 正在解读法规…</p><p style="font-size:12px;color:var(--g400)">由本机现场生成，请稍候</p></div>`;
   try{
     const data=await fetchWithRetry(`/api/ai-interpret/${_modalLawId}?keyword=${encodeURIComponent(lastKeyword)}`);
     if(data.error)throw new Error(data.error);
@@ -797,10 +811,10 @@ function renderGuideStep(step){
   if(step==='user_type'){body.innerHTML=`<div class="step"><div class="step-label">Step 1/4</div><div class="step-question">你的身份是？</div><div class="choice-grid"><div class="choice${guideState.user_type==='enterprise'?' picked':''}" onclick="guidePick('user_type','enterprise')"><span class="ci">🏢</span>企业</div><div class="choice${guideState.user_type==='individual'?' picked':''}" onclick="guidePick('user_type','individual')"><span class="ci">👤</span>个人 / 个体户</div><div class="choice${guideState.user_type==='agent'?' picked':''}" onclick="guidePick('user_type','agent')"><span class="ci">📋</span>代理记账 / 税务师</div><div class="choice${guideState.user_type==='other'?' picked':''}" onclick="guidePick('user_type','other')"><span class="ci">💬</span>其他</div></div></div>`;foot.innerHTML='<button disabled>点击选项自动进入下一步</button>';}
   else if(step==='tax_type'){const idLabels={enterprise:'企业',individual:'个人/个体户',agent:'代理记账/税务师',other:''};const idLabel=idLabels[guideState.user_type]||'';let ch=[{v:'vat',icon:'📊',label:'增值税',desc:'流转税核心'},{v:'cit',icon:'🏢',label:'企业所得税',desc:'利润征税'},{v:'iit',icon:'👤',label:'个人所得税',desc:'工资/劳务/经营'},{v:'invoice',icon:'🧾',label:'发票管理',desc:'开票/抵扣/红冲'},{v:'prefer',icon:'🎁',label:'税收优惠',desc:'减免/退税'},{v:'stamp',icon:'📝',label:'印花税',desc:'合同/账簿'},{v:'deed',icon:'🔑',label:'契税',desc:'不动产登记'},{v:'property',icon:'🏠',label:'房产税',desc:'房屋租赁'},{v:'consumption',icon:'🛒',label:'消费税',desc:'特定消费品'},{v:'tariff',icon:'🚢',label:'关税',desc:'进出口'},{v:'land_vat',icon:'🏗️',label:'土地增值税',desc:'房地产'},{v:'admin',icon:'⚖️',label:'税收征管',desc:'登记/申报/稽查'}];body.innerHTML=`<div class="step"><div class="step-label">Step 2/4 ${idLabel?'· '+idLabel:''}</div><div class="step-question">你想了解哪个税种？</div><div class="choice-grid">${ch.map(c=>`<div class="choice${guideState.tax_type===c.v?' picked':''}" onclick="guidePick('tax_type','${c.v}')"><span class="ci">${c.icon}</span>${c.label}<span class="cl">${c.desc}</span></div>`).join('')}</div></div>`;foot.innerHTML=`<button onclick="renderGuideStep('intent')">跳过手动选择 →</button>${guideState.user_type?`<button class="reset" onclick="renderGuideStep('user_type')">← 返回修改</button>`:''}`;}
   else if(step==='intent'){const tl={vat:'增值税',cit:'企业所得税',iit:'个人所得税',invoice:'发票管理',prefer:'税收优惠',stamp:'印花税',deed:'契税',property:'房产税',consumption:'消费税',tariff:'关税',land_vat:'土地增值税',admin:'税收征管'};const tLabel=tl[guideState.tax_type]||guideState.tax_type||'';body.innerHTML=`<div class="step"><div class="step-label">Step 3/4${tLabel?' · '+tLabel:''}</div><div class="step-question">你想了解什么？</div><div class="choice-grid"><div class="choice${guideState.intent==='policy'?' picked':''}" onclick="guidePick('intent','policy')"><span class="ci">📖</span>查政策 / 税率<span class="cl">具体规定、税率标准</span></div><div class="choice${guideState.intent==='preference'?' picked':''}" onclick="guidePick('intent','preference')"><span class="ci">🎁</span>优惠资格<span class="cl">能否享受减免/退税</span></div><div class="choice${guideState.intent==='risk'?' picked':''}" onclick="guidePick('intent','risk')"><span class="ci">⚠️</span>风险自查<span class="cl">金税四期/合规</span></div><div class="choice${guideState.intent==='filing'?' picked':''}" onclick="guidePick('intent','filing')"><span class="ci">📋</span>申报流程<span class="cl">怎么申报/截止日期</span></div><div class="choice${guideState.intent==='invoice'?' picked':''}" onclick="guidePick('intent','invoice')"><span class="ci">🧾</span>发票问题<span class="cl">开票/遗失/红冲</span></div><div class="choice${guideState.intent==='calc'?' picked':''}" onclick="guidePick('intent','calc')"><span class="ci">🔢</span>计算/标准<span class="cl">起征点/扣除标准</span></div></div></div>`;foot.innerHTML=`<button onclick="renderGuideStep('conditions')">跳过手动选择 →</button><button class="reset" onclick="renderGuideStep('tax_type')">← 返回修改</button>`;}
-  else{const tl={vat:'增值税',cit:'企业所得税',iit:'个人所得税',invoice:'发票管理',prefer:'税收优惠'};const il={policy:'查政策',preference:'优惠资格',risk:'风险自查',filing:'申报流程',invoice:'发票问题',calc:'计算标准'};const tLabel=tl[guideState.tax_type]||guideState.tax_type||'';const iLabel=il[guideState.intent]||guideState.intent||'';body.innerHTML=`<div class="step"><div class="step-label">Step 4/4${tLabel?' · '+tLabel:''}${iLabel?' · '+iLabel:''}</div><div class="step-question">补充条件（可选，可多选）</div><div class="choice-grid"><div class="choice${guideState.enterprise_type==='small'?' picked':''}" onclick="guidePick('enterprise_type','small')"><span class="ci">🏪</span>小规模纳税人<span class="cl">年应税≤500万</span></div><div class="choice${guideState.enterprise_type==='general'?' picked':''}" onclick="guidePick('enterprise_type','general')"><span class="ci">🏭</span>一般纳税人</div><div class="choice${guideState.enterprise_type==='micro'?' picked':''}" onclick="guidePick('enterprise_type','micro')"><span class="ci">🌱</span>小微企业<span class="cl">利润≤300万</span></div><div class="choice${guideState.enterprise_type==='hitech'?' picked':''}" onclick="guidePick('enterprise_type','hitech')"><span class="ci">🔬</span>高新技术企业</div><div class="choice${guideState.timeframe==='latest'?' picked':''}" onclick="guidePick('timeframe','latest')"><span class="ci">🆕</span>只看最新政策</div><div class="choice${guideState.timeframe==='2024'?' picked':''}" onclick="guidePick('timeframe','2024')"><span class="ci">📅</span>2024年以来的</div><div class="choice${guideState.region==='national'?' picked':''}" onclick="guidePick('region','national')"><span class="ci">🇨🇳</span>全国性政策</div><div class="choice${guideState.region==='local'?' picked':''}" onclick="guidePick('region','local')"><span class="ci">📍</span>也看地方性法规</div></div><div style="margin-top:14px"><div style="font-size:12px;color:var(--g500);margin-bottom:4px">或直接输入关键词：</div><input type="text" id="customKeyword" style="width:100%;padding:8px 12px;border:1px solid var(--g200);font-size:13px;background:var(--white);color:var(--black)" placeholder="例如：研发费用加计扣除、留抵退税…"></div></div>`;foot.innerHTML=`<button onclick="executeGuidedSearch()">🔍 生成搜索 →</button><button class="reset" onclick="renderGuideStep('intent')">← 返回修改</button>`;}
+  else{const tl={vat:'增值税',cit:'企业所得税',iit:'个人所得税',invoice:'发票管理',prefer:'税收优惠'};const il={policy:'查政策',preference:'优惠资格',risk:'风险自查',filing:'申报流程',invoice:'发票问题',calc:'计算标准'};const tLabel=tl[guideState.tax_type]||guideState.tax_type||'';const iLabel=il[guideState.intent]||guideState.intent||'';body.innerHTML=`<div class="step"><div class="step-label">Step 4/4${tLabel?' · '+tLabel:''}${iLabel?' · '+iLabel:''}</div><div class="step-question">补充条件（可选，可多选）</div><div class="choice-grid"><div class="choice${guideState.enterprise_type==='small'?' picked':''}" onclick="guidePick('enterprise_type','small')"><span class="ci">🏪</span>小规模纳税人<span class="cl">年应税≤500万</span></div><div class="choice${guideState.enterprise_type==='general'?' picked':''}" onclick="guidePick('enterprise_type','general')"><span class="ci">🏭</span>一般纳税人</div><div class="choice${guideState.enterprise_type==='micro'?' picked':''}" onclick="guidePick('enterprise_type','micro')"><span class="ci">🌱</span>小微企业<span class="cl">利润≤300万</span></div><div class="choice${guideState.enterprise_type==='hitech'?' picked':''}" onclick="guidePick('enterprise_type','hitech')"><span class="ci">🔬</span>高新技术企业</div><div class="choice${guideState.timeframe==='latest'?' picked':''}" onclick="guidePick('timeframe','latest')"><span class="ci">🆕</span>只看最新政策</div><div class="choice${guideState.timeframe==='2024'?' picked':''}" onclick="guidePick('timeframe','2024')"><span class="ci">📅</span>2024年以来的</div><div class="choice${guideState.scope==='national'?' picked':''}" onclick="guidePick('scope','national')"><span class="ci">✅</span>只看现行有效<span class="cl">默认</span></div><div class="choice${guideState.scope==='all_status'?' picked':''}" onclick="guidePick('scope','all_status')"><span class="ci">🗂</span>含已修改·已废止</div></div><div style="margin-top:14px"><div style="font-size:12px;color:var(--g500);margin-bottom:4px">或直接输入关键词：</div><input type="text" id="customKeyword" style="width:100%;padding:8px 12px;border:1px solid var(--g200);font-size:13px;background:var(--white);color:var(--black)" placeholder="例如：研发费用加计扣除、留抵退税…"></div></div>`;foot.innerHTML=`<button onclick="executeGuidedSearch()">🔍 生成搜索 →</button><button class="reset" onclick="renderGuideStep('intent')">← 返回修改</button>`;}
 }
 
-function executeGuidedSearch(){const taxMap={vat:'增值税',cit:'企业所得税',iit:'个人所得税',invoice:'发票管理办法',prefer:'税收优惠',stamp:'印花税',deed:'契税',property:'房产税',consumption:'消费税',tariff:'关税',land_vat:'土地增值税',admin:'税收征收管理法'};const intentMap={policy:'',preference:'优惠',risk:'风险 合规',filing:'申报',invoice:'发票',calc:'标准 扣除'};const entMap={small:'小规模纳税人',general:'一般纳税人',micro:'小微企业',hitech:'高新技术企业'};let parts=[];const taxK=guideState.tax_type?taxMap[guideState.tax_type]||guideState.tax_type:'';if(taxK)parts.push(taxK);if(guideState.intent&&intentMap[guideState.intent])parts.push(intentMap[guideState.intent]);if(guideState.enterprise_type&&entMap[guideState.enterprise_type])parts.push(entMap[guideState.enterprise_type]);const custom=document.getElementById('customKeyword')?.value?.trim();if(custom)parts.push(custom);document.getElementById('searchInput').value=parts.join(' ')||'增值税';if(guideState.timeframe==='latest')document.getElementById('filterSort').value='date';if(guideState.timeframe==='2024')document.getElementById('filterDateFrom').value='2024-01-01';if(guideState.region==='local')document.getElementById('filterStatus').value='';toggleGuidance();doSearch();}
+function executeGuidedSearch(){const taxMap={vat:'增值税',cit:'企业所得税',iit:'个人所得税',invoice:'发票管理办法',prefer:'税收优惠',stamp:'印花税',deed:'契税',property:'房产税',consumption:'消费税',tariff:'关税',land_vat:'土地增值税',admin:'税收征收管理法'};const intentMap={policy:'',preference:'优惠',risk:'风险 合规',filing:'申报',invoice:'发票',calc:'标准 扣除'};const entMap={small:'小规模纳税人',general:'一般纳税人',micro:'小微企业',hitech:'高新技术企业'};let parts=[];const taxK=guideState.tax_type?taxMap[guideState.tax_type]||guideState.tax_type:'';if(taxK)parts.push(taxK);if(guideState.intent&&intentMap[guideState.intent])parts.push(intentMap[guideState.intent]);if(guideState.enterprise_type&&entMap[guideState.enterprise_type])parts.push(entMap[guideState.enterprise_type]);const custom=document.getElementById('customKeyword')?.value?.trim();if(custom)parts.push(custom);document.getElementById('searchInput').value=parts.join(' ')||'增值税';if(guideState.timeframe==='latest')document.getElementById('filterSort').value='date';if(guideState.timeframe==='2024')document.getElementById('filterDateFrom').value='2024-01-01';if(guideState.scope==='national')document.getElementById('filterStatus').value='3';if(guideState.scope==='all_status')document.getElementById('filterStatus').value='';toggleGuidance();doSearch();}
 
 function getProvinceName(sub){const m={beijing:'北京',shanghai:'上海',tianjin:'天津',chongqing:'重庆',guangdong:'广东',shenzhen:'深圳',zhejiang:'浙江',jiangsu:'江苏',shandong:'山东',sichuan:'四川',hubei:'湖北',hunan:'湖南',henan:'河南',hebei:'河北',fujian:'福建',xiamen:'厦门',anhui:'安徽',liaoning:'辽宁',dalian:'大连',jilin:'吉林',heilongjiang:'黑龙江',jiangxi:'江西',shanxi:'山西',shaanxi:'陕西',gansu:'甘肃',qinghai:'青海',yunnan:'云南',guizhou:'贵州',guangxi:'广西',hainan:'海南',neimenggu:'内蒙古',ningxia:'宁夏',xinjiang:'新疆',xizang:'西藏',qingdao:'青岛',ningbo:'宁波'};return m[sub]||sub;}
 function esc(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML;}

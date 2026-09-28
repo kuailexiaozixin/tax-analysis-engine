@@ -2,10 +2,11 @@
 """
 360 站内搜索 — 通过 m.so.com 的 site: 检索补齐搜索引擎层能力。
 
-为什么不用 Bing：实测 www.bing.com 对 site: 查询返回 0 个结果块，
+为什么不用 Bing：www.bing.com 对 site: 查询返回 0 个结果块，
 cn.bing.com/m.bing.com 虽偶发返回 10 个 <li class="b_algo">，但内容与查询无关
 （查 chinatax.gov.cn 企业所得税法 返回"元气壁纸"），属于不可信降级，故已移除。
-m.so.com 每次返回 29~52 条真实目标站链接，且能命中省局子站。
+m.so.com 会命中目标站子域名，代价是它对被限流的 IP 返回一份"访问异常出错"页
+（见 _BLOCK_MARKER），所以本模块把"被拦截"和"没结果"分成两种返回值。
 
 360 把真实地址放在 m.so.com/jump?u=<urlencoded> 中，需要解出 u 参数。
 
@@ -48,6 +49,9 @@ _SNIPPET_RE = re.compile(r'<div[^>]*class="res-con"[^>]*>(.*?)</div>', re.DOTALL
 _TAG_RE = re.compile(r"<[^>]+>")
 # 360 自身的推荐/再搜索链接不是检索结果
 _SELF_SEARCH_RE = re.compile(r"^https?://m\.so\.com/")
+# 被限流时 360 回一份约 5KB 的"访问异常出错"页：HTTP 200、一张结果卡都没有。
+# 必须识别出来，否则上层把 0 条当成"该法规没有解读文件"，前端会据此给出假结论。
+_BLOCK_MARKER = "访问异常出错"
 
 
 def _clean(fragment: str) -> str:
@@ -93,6 +97,10 @@ def so360_search(keyword: str, site: str = "", size: int = 10,
 
     if r.status_code != 200:
         return _empty(keyword, site, f"HTTP {r.status_code}")
+
+    if _BLOCK_MARKER in r.text:
+        return _empty(keyword, site,
+                      "360 返回访问异常页（本机 IP 被限流），0 条不代表没有匹配结果")
 
     # 按 data-pcurl 切分出每张结果卡，再在卡内取标题与摘要
     cards = re.split(r'(?=<div[^>]*data-pcurl=")', r.text)

@@ -2,8 +2,8 @@
 """
 分析质量评测 — 检验这套技能对税务问题"分析得好不好"，而不只是"找没找到"。
 
-为什么要有第二个评测：eval_ideafin_tax_law.py 测的是检索命中率，答到 99.7%
-也只能证明正确那部法排进了前三名。它测不出三件真正要命的事：
+为什么要有第二个评测：eval_retrieval.py 测的是依据能不能被检索到，
+即使全部满分，也只能证明正确那部法排进了前三名。它测不出三件真正要命的事：
   1. 判型对不对。把"下列说法正确的有"当成政策查询去答，检索命中再高
      也没用，因为这类题要逐条比对，不是找一部法就完。
   2. 主依据选得对不对。命中了《企业所得税法》但把它埋在二十条里，
@@ -17,7 +17,7 @@
   sufficient 依据是否足以支撑该类型的结论（逐类判，不是一个分数）
   caveat     缺失的前提有没有被标出来
 
-后两项是这轮新增的，也是最难拿满分的：它们逼着系统承认答不了。
+后两项最难拿满分：它们逼着系统承认答不了。
 
 Usage:
   python tests/eval_analysis.py --sample 60          # 抽 60 题跑四项
@@ -49,12 +49,14 @@ import tax_analyze as A            # noqa: E402
 import tax_evidence as E            # noqa: E402
 import tax_answer as AN             # noqa: E402
 
-EVAL_GLOB = str(HERE.parent.parent / "eval_data" / "*tax_law_val.csv")
+EVAL_DIR = HERE.parent.parent / "eval_data"
+EVAL_SET = EVAL_DIR / "tax_eval_set.jsonl"
+# 统一评测集还没构建时退回原始 CSV，让脚本在只有题库的状态下也能跑
+EVAL_GLOB = str(EVAL_DIR / "*tax_law_val.csv")
 
 # ── 人工标注 ───────────────────────────────────────────────────────────────
-# 标注以题面为键，不用 id：cpa_one 与 cpa_multi 两个子集的 id 各自从 1 开始，
-# 同一个 id 会指向两道完全不同的题（实测 id=133 分别是"外籍个人所得"和
-# "创新层挂牌公司个税"）。按 id 建索引会让两题的标注互相覆盖。
+# 标注以题面为键，不用 id：各题库子集的 id 都各自从 1 或 0 开始，同一个 id 会
+# 指向多道完全不同的题，按 id 建索引会让它们的标注互相覆盖。
 LABELS_PATH = HERE / "analysis_labels.json"
 
 
@@ -69,15 +71,40 @@ def load_labels() -> dict:
         return json.load(fh)
 
 
-def load_questions(limit: int, seed: int = 7) -> list:
+def load_questions(limit: int, seed: int = 7, validity: str = "ok",
+                   labeled_only: bool = False) -> list:
+    """优先读统一评测集，读不到再退回原始 CSV。
+
+    统一集带 `validity` 档，过期真题与现行题混在一起判分会让指标失真，
+    所以默认只取 `ok`。原始 CSV 没有这个字段，退回时不做时效过滤。
+    """
     rows = []
-    for f in glob.glob(EVAL_GLOB):
-        with open(f, encoding="utf-8-sig") as fh:
-            for r in csv.DictReader(fh):
-                rows.append({"id": r.get("id", ""), "question": r.get("question", ""),
-                             "answer": r.get("answer", "")})
+    if EVAL_SET.is_file():
+        with EVAL_SET.open(encoding="utf-8") as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                r = json.loads(line)
+                if validity != "all" and r.get("validity") != validity:
+                    continue
+                rows.append({"id": r.get("key", "")[:16], "question": r["question"],
+                             "answer": r.get("answer", ""), "source": r.get("source", ""),
+                             "validity": r.get("validity", "")})
+    else:
+        for f in glob.glob(EVAL_GLOB):
+            with open(f, encoding="utf-8-sig") as fh:
+                for r in csv.DictReader(fh):
+                    rows.append({"id": r.get("id", ""),
+                                 "question": r.get("question", ""),
+                                 "answer": r.get("answer", "")})
+    if labeled_only:
+        # 四项指标都要拿人工标注比对，没标注的题只出"跳过"。必须先按标注筛、
+        # 再抽样，反过来抽 12 题可能只剩 3 题有标注，样本量会被悄悄摊薄。
+        labeled = set(load_labels())
+        rows = [r for r in rows if label_key(r) in labeled]
     if limit and limit < len(rows):
-        random.Random(seed).shuffle(rows)
+        rnd = random.Random(seed)
+        rnd.shuffle(rows)
         rows = rows[:limit]
     return rows
 
@@ -209,19 +236,24 @@ def main():
     p = argparse.ArgumentParser(description="分析质量评测")
     p.add_argument("--sample", type=int, default=60, help="抽多少题，0=全量")
     p.add_argument("--seed", type=int, default=7)
+    p.add_argument("--validity", default="ok",
+                   help="只跑该时效档：ok / review / stale / all（原始 CSV 无此字段，退回时忽略）")
+    p.add_argument("--labeled-only", action="store_true",
+                   help="只跑已有人工标注的题，四项指标才有分母")
     p.add_argument("--json", action="store_true")
     p.add_argument("--dump-labels", action="store_true",
                    help="打印待标注的题型猜测，作为人工标注起点")
     args = p.parse_args()
 
     labels = load_labels()
-    rows = load_questions(args.sample, args.seed)
+    rows = load_questions(args.sample, args.seed, args.validity, args.labeled_only)
 
     if args.dump_labels:
         # 不跑分，只给题型猜测，供人工核对后写进 labels 文件
         for r in rows:
             t = A.classify(r["question"])
-            print(f"{r['id']}\t{t['type']}\t{t['confidence']}\t{r['question'][:60]}")
+            print(f"{r.get('source', '?')}\t{t['type']}\t{t['confidence']}"
+                  f"\t{r['question'][:60]}")
         return
 
     results = [run_one(r, labels) for r in rows]
