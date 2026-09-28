@@ -203,7 +203,7 @@ def _practice_source_name(domain: str, title: str) -> str:
 
 
 def _search_practice_sources(query: str, n: int = 3) -> list[dict]:
-    """Practical-interpretation sources: tax.shui5.cn + WeChat public accounts.
+    """Practical-interpretation sources: www.shui5.cn + WeChat public accounts.
 
     Both were previously routed through Bing site: search, which no longer
     returns usable results. They are now queried through their own modules.

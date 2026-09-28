@@ -56,7 +56,7 @@
 数据源  flk.npc.gov.cn        法律 · 行政法规 · 司法解释（官方 API）
         www.chinatax.gov.cn   总局公告与法规库 fgk.chinatax.gov.cn（search5 JSON）
         m.so.com              site: 检索，定位省局、财政部、国务院等站点
-        tax.shui5.cn          税屋：实务解读、专栏、答疑（正文可取）
+        www.shui5.cn          税屋：实务解读、专栏、答疑（正文可取）
         mp.weixin.qq.com      微信公众号（经搜狗微信检索）
 ```
 
@@ -73,6 +73,7 @@
 | **Web 搜索** | `tax_web_search.py` | 税务总局 search5 JSON 检索（含 fgk 法规库） |
 | **站内搜索** | `tax_so360.py` | 360 `site:` 检索，定位省局与地方文件；识别"访问异常出错"拦截页并回报 |
 | **法规库目录与正文** | `tax_fgk.py` | 税务总局法规目录，`--body` 取正文、`--cache` 缓存清单（TTL 1h、正文不缓存）、翻页按需自适应（`--pages` 显式指定则关自适应） |
+| **统一请求层** | `tax_http.py` | 全项目对外 HTTP 请求的**唯一出口**；`verify` 设计成**必填参数**（`tax_detail`/`tax_search` 用默认关闭的 `VERIFY_SSL`，`tax_fgk` 用 requests 默认的 `True`，给默认值等于悄悄改行为）。各自维护 Session / WAF 应对的 `tax_shui5`、`tax_so360`、`tax_wechat`、`tax_web_search` 在白名单内，其余脚本直接发请求会被 `test_http_layer.py` 拦下 |
 | **共享缓存** | `tax_cache.py` | 缓存逻辑的**唯一实现**（`tax_search` / `tax_fgk` / `tax_detail` 三处共用）；按条目里的 `_ns` 字段分命名空间，各自的 `--cache-clear` 互不越界；只缓存清单 / 元数据，**正文永不缓存** |
 | **实务解读** | `tax_shui5.py` | 税屋：360 检索 + 浏览器过 WAF 后 HTTP 连读 |
 | **实务解读** | `tax_wechat.py` | 微信公众号：搜狗微信 + 移动 UA |
@@ -117,7 +118,7 @@
 | **时效性过滤** | 默认仅查"现行有效"，支持筛选已废止/已修改/尚未生效 |
 | **日期范围过滤** | 支持按公布日期范围筛选（如"2024 年以来的政策"） |
 | **排序** | 按相关度 / 按公布日期降序 |
-| **分页** | 每页 20-100 条，NPC API 支持总量查询 |
+| **分页** | 每页最多 100 条（默认 20），NPC API 也返回命中总量 |
 
 ### 2. 意图识别引擎
 
@@ -437,6 +438,7 @@ tax-policy-search/
 │   ├── tax_so360.py                # 360 site: 站内检索（含拦截页识别）
 │   ├── tax_fgk.py                  # 税务总局法规库目录与正文（--body 取正文 / --cache 缓存 / 翻页自适应）
 │   ├── tax_cache.py                # 缓存唯一实现（tax_search / tax_fgk / tax_detail 三处共用；清单默认关、详情默认开；正文不缓存）
+│   ├── tax_http.py                 # 统一请求层：对外 HTTP 的唯一出口（verify 必填）
 │   ├── tax_shui5.py                # 税屋检索与正文
 │   ├── tax_wechat.py               # 微信公众号（搜狗微信）
 │   ├── tax_browser.py              # 复用本机浏览器过 WAF、导 cookie
