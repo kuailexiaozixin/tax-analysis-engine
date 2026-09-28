@@ -100,7 +100,8 @@ def aggregate_search(keyword: str, *,
                      size: int = 10,
                      sources: list = None,
                      status: int = 3,
-                     scope: str = "title") -> dict:
+                     scope: str = "title",
+                     exact: bool = False) -> dict:
     """
     Concurrently search multiple data sources and return deduplicated, ranked results.
 
@@ -110,6 +111,8 @@ def aggregate_search(keyword: str, *,
         sources: 见 DEFAULT_SOURCES；默认五源全开
         status: NPC status filter (default: 3 = effective)
         scope: NPC search scope (default: title；fulltext 已按相关度排序但可能偏题)
+        exact: NPC 精确检索。检索词是本体法名时必须为 True，否则模糊检索
+               按发布时间排，宪法会顶掉本该在首位的本体法。
     """
     if sources is None:
         sources = list(DEFAULT_SOURCES)
@@ -122,7 +125,8 @@ def aggregate_search(keyword: str, *,
 
         if "npc" in sources:
             futures["npc"] = pool.submit(
-                search_tax, keyword, scope=scope, status=status, size=size
+                search_tax, keyword, scope=scope, status=status, size=size,
+                search_type=1 if exact else 2,
             )
         if "chinatax" in sources:
             futures["chinatax"] = pool.submit(

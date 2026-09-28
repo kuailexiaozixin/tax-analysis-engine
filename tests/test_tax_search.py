@@ -676,6 +676,37 @@ def test_shui5_batch_read():
     return 1
 
 
+def test_aggregated_exact_flag():
+    """聚合检索传了本体法名时必须走精确检索，否则宪法会顶掉本体法。"""
+    print("[Test] aggregated search honors exact flag")
+    import inspect
+    from tax_aggregator import aggregate_search
+    src = inspect.getsource(aggregate_search)
+    assert "search_type=1 if exact else 2" in src, \
+        "聚合检索未把 exact 传给 NPC 源"
+    assert "exact: bool = False" in src, "aggregate_search 缺 exact 形参"
+    print("  [PASS] exact 参数已透传到 NPC 源")
+    return 1
+
+
+def test_server_routing_all_sources():
+    """网页每条检索路径都要按 authority 换源，不能只改默认那条。"""
+    print("[Test] server routes every source by authority")
+    import inspect
+    import tax_server
+    src = inspect.getsource(tax_server.api_search)
+    # 聚合路径也必须换源：sta 改查法规库并剔掉 NPC，npc 走 parent_law 精确检索
+    assert 'if source == "aggregated":' in src
+    assert "exact=bool(parent_law)" in src, \
+        "聚合路径未按 parent_law 走精确检索"
+    assert 's for s in DEFAULT_SOURCES if s != "npc"' in src, \
+        "sta 专题在聚合路径未剔掉 NPC 源"
+    # 每条分支都要写明改查了什么
+    assert src.count("_routed") >= 4, \
+        f"应有四处 _routed 提示，实际 {src.count('_routed')} 处"
+    print("  [PASS] npc / fgk / chinatax / aggregated 四条路径均已换源")
+    return 1
+
 
 def main():
     print("=" * 60)
@@ -689,6 +720,8 @@ def main():
         ("Evidence Validity and Primary", test_evidence_validity_and_primary),
         ("Analysis Orchestration Plan", test_answer_plan),
         ("Search Term Routing", test_search_terms_route),
+        ("Aggregated Exact Flag", test_aggregated_exact_flag),
+        ("Server Routing All Sources", test_server_routing_all_sources),
         ("Installed Browser Detection", test_browser_detection),
         ("shui5 Batch Body Read", test_shui5_batch_read),
         ("Intent Detection", test_detect_intent),

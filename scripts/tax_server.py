@@ -18,11 +18,12 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from tax_search import search_tax, detect_intent, resolve_tax_type
 from tax_detail import fetch_detail, get_download_url, SXX_MAP, _parse_docx_from_bytes
 from tax_web_search import search_chinatax
+from tax_fgk import search_fgk
 from tax_so360 import so360_search
 from tax_shui5 import search_shui5
 from tax_wechat import search_wechat
 from tax_formatter import format_search_response
-from tax_aggregator import aggregate_search
+from tax_aggregator import aggregate_search, DEFAULT_SOURCES
 
 from flask import Flask, request, jsonify, send_from_directory
 import requests as req
@@ -313,20 +314,59 @@ def api_search():
 
     intent = detect_intent(keyword)
     tax_type_info = resolve_tax_type(keyword)
+    parent_law = (tax_type_info or {}).get("parent_law") or ""
+    authority = (tax_type_info or {}).get("authority", "npc")
 
     if source == "aggregated":
-        result = aggregate_search(keyword, size=size, status=status, scope=scope)
+        # 聚合同样要换源：不换就会把用户原话丢给五源，NPC 侧取回的是含通用字的
+        # 无关法规，总局侧又翻不到该专题的规范性文件。sta 专题改用条目自带的
+        # search_term 并剔掉 NPC，npc 专题改用 parent_law 精确检索。
+        agg_kw = keyword
+        agg_sources = None
+        if authority == "sta":
+            agg_kw = (tax_type_info or {}).get("search_term") or keyword
+            agg_sources = [s for s in DEFAULT_SOURCES if s != "npc"]
+            result = aggregate_search(agg_kw, size=size, status=status,
+                                      scope=scope, sources=agg_sources)
+            result["_routed"] = f"{tax_type_info['type']}属总局专题，已改查法规库：{agg_kw}"
+        else:
+            if parent_law:
+                agg_kw = parent_law
+            result = aggregate_search(agg_kw, size=size, status=status, scope=scope,
+                                      exact=bool(parent_law))
+            if parent_law:
+                result["_routed"] = f"按{tax_type_info['type']}的本体法检索：{parent_law}"
     elif source == "chinatax":
         result = search_chinatax(keyword, size=size)
+    elif source == "fgk":
+        result = search_fgk(keyword, size=size, with_body=bool(data.get("body")))
     else:
-        result = search_tax(
-            keyword, scope=scope, search_type=search_type,
-            status=status, date_from=date_from, date_to=date_to,
-            size=size, sort=sort,
-        )
+        # 归类出税种就按本体法名查，不要拿用户原话去标题检索。原话里
+        # "费用"这类通用字会把《诉讼费用交纳办法》《国家赔偿费用管理条例》
+        # 顶到首位（实测"研发费用加计扣除"就是这样），归类后走
+        # parent_law 才能保证首条就是答这题要依据的那部法。
+        if parent_law:
+            keyword = parent_law
+            search_type = 1
+        # sta 专题（转让定价、税收优惠、税收立法权等）在 NPC 库里检索无效，
+        # 搜"转让定价"命中的是国有土地使用权出让和转让暂行条例。这类题
+        # 改查总局法规库，用条目自带的 search_term 而不是原话。
+        if authority == "sta":
+            term = (tax_type_info or {}).get("search_term") or keyword
+            result = search_fgk(term, size=size, with_body=bool(data.get("body")))
+            result["_routed"] = f"{tax_type_info['type']}属总局专题，已改查法规库：{term}"
+        else:
+            result = search_tax(
+                keyword, scope=scope, search_type=search_type,
+                status=status, date_from=date_from, date_to=date_to,
+                size=size, sort=sort,
+            )
+            if parent_law:
+                result["_routed"] = f"按{tax_type_info['type']}的本体法检索：{parent_law}"
 
     return jsonify({
         "keyword": keyword,
+        "user_keyword": data.get("keyword", "").strip(),
         "intent": intent,
         "province": province,
         "intent_label": {
@@ -338,6 +378,7 @@ def api_search():
         }.get(intent, intent),
         "tax_type": tax_type_info["type"] if tax_type_info else None,
         "tax_type_aliases": tax_type_info["aliases"] if tax_type_info else [],
+        "authority": (tax_type_info or {}).get("authority", "npc"),
         "result": result,
     })
 
