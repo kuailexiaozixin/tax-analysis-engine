@@ -17,6 +17,10 @@
     review  出现 2020-2022 年度，或出现国地税合并前的征管主体表述
     stale   出现 2019 年及更早年度、营业税、增值税旧税率档
 
+时效之外还有一层"范围"判定（SCOPE_EXCLUDE）：题面问的是税制史 rather than
+现行规定的题直接不收。这类题没有可检索、可定级的对象，留着只会把题库的
+命题口径算成技能的能力分。
+
 用法：
     python tests/build_eval_set.py --data-dir ../eval_data
     python tests/build_eval_set.py --data-dir ../eval_data --report
@@ -89,6 +93,23 @@ RULE_MATCH = {
 }
 
 PUNCT = re.compile(r"[，。、；：（）()《》\"'’‘“”【】\[\]{}<>？?！!\-—_%．.\s]")
+
+# 出题范围不在现行税法里的题，一道都不收。
+# 只扫题面、不扫选项：选项里出现"两税法""费改税"往往只是一句背景描述
+# （实测车辆购置税那道的 D 项就是这么写的），题面问的还是现行税种；
+# 反过来，题面一旦落在"税制史／税收历史进程"上，这道题要的是史实，
+# 没有任何现行规范可以检索、可以定级，答错记的是题库的命题口径，不是技能能力。
+SCOPE_EXCLUDE = [
+    ("税制史", re.compile(r"税制史|税收历史|税法.{0,3}建立与发展|历史进程|沿革")),
+]
+
+
+def out_of_scope(question: str):
+    """命中返回规则代号，否则 None。"""
+    for name, pat in SCOPE_EXCLUDE:
+        if pat.search(question):
+            return name
+    return None
 
 
 def make_key(question: str, options: dict) -> str:
@@ -174,6 +195,10 @@ def build(data_dir: Path):
                 continue
             if not all(r["options"].values()):
                 stats["dropped"][f"{subset}: 选项缺失"] += 1
+                continue
+            scope = out_of_scope(r["question"])
+            if scope:
+                stats["dropped"][f"{subset}: 范围外（{scope}）"] += 1
                 continue
             answer = parse_answer(r["raw_answer"])
             if not answer:

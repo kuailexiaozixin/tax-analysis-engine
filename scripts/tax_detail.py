@@ -6,10 +6,13 @@ Usage:
   python tax_detail.py --info <bbbs_id>
   python tax_detail.py --download <bbbs_id> [--format docx|pdf] [output_path]
   python tax_detail.py --preview <bbbs_id>
+  python tax_detail.py --cache-stats / --cache-clear   # 详情缓存默认开，TTL 1h
+  python tax_detail.py --info <bbbs_id> --no-cache     # 本次强制现拉，不读也不写
+
+详情元数据默认缓存 1 小时（键前缀 detail）。DOCX/PDF 下载件不缓存，每次现下。
 """
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -26,45 +29,34 @@ import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# NPC 串行闸与 tax_search 共用同一把跨进程锁：详情接口和检索接口打的是同一个
+# 站，两边各持一把锁等于没锁。锁的实现见 tax_search.NpcSerialGate。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import tax_http  # noqa: E402
+from tax_search import npc_gate  # noqa: E402
+from tax_cache import CacheManager  # noqa: E402
+# 发请求统一走 tax_http：本模块原有的 3 处 requests.get 各写了一遍 timeout，
+# 与 tax_search / tax_fgk 的写法也不一致。VERIFY_SSL 在这里再导出一次，
+# 因为 tests/eval_answer.py 读的是 tax_detail.VERIFY_SSL。
+from tax_http import VERIFY_SSL  # noqa: E402,F401
+
 BASE_URL = "https://flk.npc.gov.cn"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Referer": "https://flk.npc.gov.cn/",
     "Accept": "application/json, text/plain, */*",
 }
-VERIFY_SSL = os.getenv("TAX_SEARCH_VERIFY_SSL", "0") == "1"
 SXX_MAP = {1: "已废止", 2: "已修改", 3: "现行有效", 4: "尚未生效"}
 
 
-# ── Lightweight cache for detail metadata (1h TTL) ──────────────────────────
-class _DetailCache:
-    def __init__(self):
-        self.dir = Path.home() / ".cache" / "tax-policy-search"
-
-    def _key(self, bbbs_id: str) -> str:
-        return hashlib.sha256(f"detail|{bbbs_id}".encode()).hexdigest()[:16]
-
-    def get(self, bbbs_id: str) -> Optional[dict]:
-        p = self.dir / f"{self._key(bbbs_id)}.json"
-        if not p.exists():
-            return None
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-            if time.time() - data.get("_cached_at", 0) > 3600:
-                return None
-            return data.get("payload")
-        except Exception:
-            return None
-
-    def set(self, bbbs_id: str, payload: dict) -> None:
-        self.dir.mkdir(parents=True, exist_ok=True)
-        p = self.dir / f"{self._key(bbbs_id)}.json"
-        p.write_text(
-            json.dumps({"_cached_at": time.time(), "payload": payload}, ensure_ascii=False),
-            encoding="utf-8"
-        )
-
-_detail_cache = _DetailCache()
+# ── 详情元数据缓存：交给共享实现，1h TTL，默认开 ───────────────────────────
+# 缓存的唯一实现在 tax_cache.py（这里曾内联过一份 _DetailCache，与它重复）。
+# 默认开是有意的差异：详情接口比检索慢，且元数据变动频率低。
+# 键带 "detail" 前缀，与 search / fgk 两个命名空间的键天然不撞；
+# namespace 只用来划定 clear() / stats() 的作用范围——以前 --cache-clear 删的是
+# 目录里所有 *.json，清检索缓存会把这里一起清掉，属于越界。
+DETAIL_CACHE_TTL = 3600
+_detail_cache = CacheManager(enabled=True, namespace="detail")
 
 # 详情接口与检索接口同一套限流策略，最小间隔与重试次数照抄 tax_search
 _MIN_INTERVAL = 0.6
@@ -88,7 +80,9 @@ def _request(url: str, max_retries: int = 4):
         if gap > 0:
             time.sleep(gap)
         try:
-            r = requests.get(url, headers=HEADERS, verify=VERIFY_SSL, timeout=15)
+            # 与检索接口共用同一把 NPC 串行闸（跨进程）
+            with npc_gate:
+                r = tax_http.get(url, headers=HEADERS, verify=VERIFY_SSL, timeout=15)
         except requests.RequestException as e:
             if attempt == max_retries - 1:
                 raise
@@ -115,8 +109,14 @@ def fetch_detail(bbbs_id: str) -> dict:
     按顶层取会静默拿到空串——下载功能因此报"No download URL"之外的问题却
     毫无提示。content 是单个节点对象而非数组，取 body 时要按节点展开。
     """
-    cached = _detail_cache.get(bbbs_id)
+    cache_key = _detail_cache._key("detail", bbbs_id)
+    cached = _detail_cache.get(cache_key, max_age=DETAIL_CACHE_TTL)
     if cached:
+        # 留痕：命中时 fetched_at 是"第一次抓取的时刻"，不打标记会被当成刚刚抓的
+        cached["_from_cache"] = True
+        age = _detail_cache.age(cache_key)
+        if age is not None:
+            cached["_cache_age_s"] = round(age, 1)
         return cached
 
     url = f"{BASE_URL}/law-search/search/flfgDetails?bbbs={bbbs_id}"
@@ -154,9 +154,10 @@ def fetch_detail(bbbs_id: str) -> dict:
         },
         "content_tree": _flatten_content(detail.get("content")),
         "fetched_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "_from_cache": False,
     }
 
-    _detail_cache.set(bbbs_id, result)
+    _detail_cache.set(cache_key, result)
     return result
 
 
@@ -188,7 +189,7 @@ def _flatten_content(node, out: Optional[list] = None) -> list:
 def get_download_url(bbbs_id: str, fmt: str = "docx") -> Optional[str]:
     """Get a signed download URL for a law document."""
     url = f"{BASE_URL}/law-search/download/pc?format={fmt}&bbbs={bbbs_id}"
-    r = requests.get(url, headers=HEADERS, verify=VERIFY_SSL, timeout=15)
+    r = tax_http.get(url, headers=HEADERS, verify=VERIFY_SSL, timeout=15)
     r.raise_for_status()
     data = r.json()
     return data.get("data", {}).get("url")
@@ -200,7 +201,7 @@ def download_file(bbbs_id: str, fmt: str = "docx", output_path: Optional[str] = 
     if not dl_url:
         raise ValueError(f"No download URL returned for {bbbs_id}")
 
-    r = requests.get(dl_url, headers=HEADERS, verify=VERIFY_SSL, timeout=60)
+    r = tax_http.get(dl_url, headers=HEADERS, verify=VERIFY_SSL, timeout=60)
     r.raise_for_status()
 
     detail = fetch_detail(bbbs_id)
@@ -285,8 +286,24 @@ def main():
     p.add_argument("--format", choices=["docx", "pdf"], default="docx")
     p.add_argument("--output", "-o", help="Output file path")
     p.add_argument("--json", action="store_true", help="Output JSON")
+    p.add_argument("--no-cache", action="store_true",
+                   help=f"本次不读也不写详情缓存（详情缓存默认开，TTL {DETAIL_CACHE_TTL}s）")
+    p.add_argument("--cache-stats", action="store_true", help="查看详情缓存统计")
+    p.add_argument("--cache-clear", action="store_true",
+                   help="清空详情缓存（不动检索与法规库缓存）")
 
     args = p.parse_args()
+
+    global _detail_cache
+    if args.no_cache:
+        _detail_cache = CacheManager(enabled=False, namespace="detail")
+
+    if args.cache_stats:
+        print(json.dumps({"cache": _detail_cache.stats()}, ensure_ascii=False, indent=2))
+        return
+    if args.cache_clear:
+        print(f"已清理详情缓存 {_detail_cache.clear()} 条")
+        return
 
     if args.info:
         detail = fetch_detail(args.info)
@@ -294,6 +311,9 @@ def main():
             print(json.dumps(detail, ensure_ascii=False, indent=2))
         else:
             print(f"📋 {detail['title']}")
+            if detail.get("_from_cache"):
+                age = detail.get("_cache_age_s")
+                print(f"   [详情缓存{' ' + str(int(age)) + 's 前' if age is not None else ''}]")
             print(f"   分类: {detail['category']}")
             print(f"   状态: [{detail['status']}]")
             print(f"   公布: {detail['publish_date']}  施行: {detail['effective_date']}")

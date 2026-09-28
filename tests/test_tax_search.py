@@ -150,11 +150,13 @@ def test_search_with_cache():
     """Test cache functionality."""
     print("\n[Test] Cache: two sequential searches")
     import tax_search
-    from tax_search import _CacheManager
+    # 缓存的类名是 tax_cache.CacheManager，tax_search 只是把它转手导入；
+    # 早先这里写的是已被删掉的 _CacheManager，用例直接 ImportError 挂掉。
+    from tax_search import CacheManager
 
     # Clear any residual cache first
-    _CacheManager(enabled=True).clear()
-    tax_search._cache = _CacheManager(enabled=True)
+    CacheManager(enabled=True).clear()
+    tax_search._cache = CacheManager(enabled=True)
 
     result1 = search_tax("契税", scope="title", status=3, size=3)
     assert not result1.get("_from_cache"), "First search should not be from cache"
@@ -162,7 +164,7 @@ def test_search_with_cache():
     result2 = search_tax("契税", scope="title", status=3, size=3)
     assert result2.get("_from_cache"), "Second search should be from cache"
 
-    tax_search._cache = _CacheManager(enabled=False)
+    tax_search._cache = CacheManager(enabled=False)
     print(f"  [PASS] Cache works: first={result1['searched_at']}, second={result2['searched_at']}")
     return result2
 
@@ -655,6 +657,317 @@ def test_analyze_context_axes():
     return 1
 
 
+def test_answer_scoring_strict():
+    """答题判分按考试口径：多选只有集合完全相等才算对，漏选与错选都得算错。
+
+    判分口径一松，正确率就静默虚高——F1 0.8 的多选题看着"基本答对"，真实阅卷
+    给 0 分。所以这里同时钉两件事：exact 只在集合相等时为真；F1 与错选/漏选
+    另记一档，不参与正确率。
+    """
+    print("[Test] answer scoring strictness")
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import eval_answer as X
+    multi = {"answer": "AD", "answer_type": "multiple"}
+    cases = [
+        ({"answer": "D", "answer_type": "single"}, "D", True, "全对"),
+        ({"answer": "D", "answer_type": "single"}, "B", False, "答错"),
+        ({"answer": "D", "answer_type": "single"}, "", False, "拒答"),
+        ({"answer": "AD", "answer_type": "multiple"}, "AD", True, "全对"),
+        ({"answer": "AD", "answer_type": "multiple"}, "DA", True, "全对"),   # 顺序无关
+        ({"answer": "AD", "answer_type": "multiple"}, "A", False, "漏选"),   # 答全一半仍算错
+        ({"answer": "AD", "answer_type": "multiple"}, "ABCD", False, "错选"),
+        ({"answer": "AD", "answer_type": "multiple"}, "ABC", False, "错选+漏选"),
+        ({"answer": "AD", "answer_type": "multiple"}, "AB", False, "错选+漏选"),
+        ({"answer": "AD", "answer_type": "multiple"}, "D", False, "漏选"),
+        ({"answer": "AD", "answer_type": "multiple"}, "", False, "拒答"),
+    ]
+    for item, pred, want_exact, want_verdict in cases:
+        r = X.score_one(item, {"answer": pred})
+        assert r["exact"] == want_exact, f"{pred} 对 {item['answer']} 应 exact={want_exact}"
+        assert r["verdict"] == want_verdict, f"{pred} 判成 {r['verdict']}，应为 {want_verdict}"
+    # 单选题不写"漏选"：没有少选可言，套多选的分解会指错修法
+    assert "漏" not in X.score_one({"answer": "D"}, {"answer": "B"})["verdict"]
+    # F1 只作第二档：漏选给部分分，但 exact 必须仍为假
+    half = X.score_one(multi, {"answer": "A"})
+    assert half["f1"] > 0 and not half["exact"], "部分分不得渗进正确率"
+    assert X.score_one(multi, {"answer": "AB"})["wrong"] == ["B"]
+    assert X.score_one(multi, {"answer": "A"})["missing"] == ["D"]
+    print(f"  [PASS] {len(cases)} 条判分与考试口径一致，部分分与正确率互不污染")
+    return 1
+
+
+def test_model_choice_parsing():
+    """模型输出的解析要三级降级，且兜底档不能把废话数成选项。
+
+    要求模型只回一个 JSON，但它会加围栏、加开场白、干脆用中文写"答案：ABD"。
+    没有兜底就取不到答案，全表按拒答算，正确率被压低还看不出原因；
+    兜底太宽又会把"ABC 三个选项都相关"这种句子读成选了 ABC。所以解析命中的
+    级别必须写进 parse 字段，判分口径本身不变。
+    """
+    print("[Test] model output parsing")
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import eval_answer as X
+    got = X.parse_choice('好的。\n```json\n{"answer":"ABD","basis":"契税法","reasoning":"x"}\n```')
+    assert (got["answer"], got["parse"]) == ("ABD", "json"), got
+    got = X.parse_choice('{"answer": "D", "basis": "b", "reasoning": "r"} 以上。')
+    assert (got["answer"], got["parse"]) == ("D", "json"), got
+    got = X.parse_choice('经比对各选项，答案：AC')
+    assert (got["answer"], got["parse"]) == ("AC", "regex"), got
+    got = X.parse_choice('')
+    assert got["answer"] == "", "空输出必须是拒答，不能猜一个"
+    got = X.parse_choice('这题涉及 A 与 C 两项，我倾向于都选')
+    assert got["parse"] == "none" and got["answer"] == "", \
+        f"没有作答格式时不得把散字母拼成选项：{got}"
+    # 多个 JSON 时取最后一个带 answer 的：模型常先给草稿再给正式答案
+    got = X.parse_choice('{"reasoning":"先看这条"} {"answer":"B","basis":"","reasoning":""}')
+    assert got["answer"] == "B", got
+    # 调用失败必须判成调用失败，不进分母：CLI 的英文告警里有散大写元音字母，
+    # 早先的兜底解析把它们拼成了选项，blind 组正确率从满格假降到两成。
+    got = X.parse_choice('{"_error": "调用失败（重试 3 次）：\\"deepseek\\" is not a model'
+                         ' this version of Claude Code recognizes"}')
+    assert got["parse"] == X.CALL_FAILED and got["answer"] == "", got
+    got = X.parse_choice('"deepseek-v4-flash" is not a model this version of'
+                         ' Claude Code recognizes, so auto-compact will keep A C E')
+    assert got["parse"] == X.CALL_FAILED, f"裸告警文本必须判调用失败：{got}"
+    r = X.score_one({"answer": "AD", "answer_type": "multiple"}, got)
+    assert r["verdict"] == X.CALL_FAILED and r["call_failed"] and not r["exact"]
+    assert X.agg([{"score": r, "source": "s", "validity": "ok",
+                   "answer_type": "multiple"}])["call_failed"] == 1, \
+        "调用失败要被单列，不能混进分母"
+    # 额度信号绝不能被读成"模型答错了"。CLI 把 "API Error: 402 Insufficient
+    # Balance" 打在标准输出、把无关的模型名告警打在标准错误，所以判额度要两边
+    # 都看；判出来必须往上抛，让调用方停掉整批，而不是留一条失败记录继续烧钱。
+    import types
+    import tax_llm as L
+
+    def stub_run(returncode, stdout, stderr):
+        def fake(cmd, **kw):
+            calls.append(cmd)
+            return types.SimpleNamespace(returncode=returncode, stdout=stdout,
+                                         stderr=stderr)
+        return fake
+
+    saved = (L.subprocess.run, os.environ.get(L.ENABLE_ENV),
+             os.environ.get(L.CMD_ENV))
+    calls = []
+    os.environ[L.ENABLE_ENV] = "1"
+    os.environ[L.CMD_ENV] = sys.executable    # 只要求文件存在，闸门不真跑它
+    try:
+        L.subprocess.run = stub_run(1, "API Error: 402 Insufficient Balance (id: x)\n",
+                                    '"deepseek-v4-flash" is not a model '
+                                    "this version recognizes。" * 30)
+        try:
+            X.ask_model({"question": "q", "options": {"A": "x"}}, "", "blind", 5)
+            raise AssertionError("额度耗尽必须抛出：落成 _error 就等于让整批继续调")
+        except L.QuotaExhausted as e:
+            assert "402" in str(e), f"报错正文丢了状态码：{e}"
+
+        # 本机 CLI 自身的故障没打到上游，允许按 retries 重问
+        calls.clear()
+        L.subprocess.run = stub_run(1, "", '"deepseek-v4-flash" is not a model')
+        msg = json.loads(X.ask_model({"question": "q", "options": {"A": "x"}},
+                                     "", "blind", 5, retries=2))["_error"]
+        assert len(calls) == 2 and "is not a model" in msg, (len(calls), msg)
+
+        # 除此之外一次都不重问：一次非零退出可能已经在计费的请求上发生过
+        calls.clear()
+        L.subprocess.run = stub_run(1, "连接被重置", "")
+        msg = json.loads(X.ask_model({"question": "q", "options": {"A": "x"}},
+                                     "", "blind", 5, retries=3))["_error"]
+        assert len(calls) == 1, f"非本地故障不得重试，重试可能再扣一笔：{len(calls)}"
+        assert "连接被重置" in msg, msg
+    finally:
+        L.subprocess.run = saved[0]
+        for k, v in ((L.ENABLE_ENV, saved[1]), (L.CMD_ENV, saved[2])):
+            os.environ.pop(k) if v is None else os.environ.__setitem__(k, v)
+    p = X.parse_choice(json.dumps({"_error": "调用失败：is not a model"},
+                                  ensure_ascii=False))
+    assert p["parse"] == X.CALL_FAILED and not p["answer"], \
+        f"报错正文不得被读成选项：{p}"
+    print("  [PASS] JSON／正则／未答三档解析正确，调用失败单独成档不进分母，"
+          "额度耗尽抛出停批、非本地故障不重问")
+    return 1
+
+
+def test_paid_llm_gate():
+    """外部模型调用必须默认关死，而且只认环境变量、不自动找本机 CLI。
+
+    这条是整条付费路径的地基：技能会被别人装走，只要"探测到 CLI 就直接调"，
+    使用者点任何一个按钮都在花他自己账号的钱，而且事前一个字都看不到。
+    三种回绝理由要各不相同才查得清——开关没开、开了没给命令、给了命令但路径
+    不存在，是三种不同的现场。额度信号则要带词边界：请求 id 里的散数字一旦被
+    认成"没钱了"，好端端的一批题会被无故停掉。
+    """
+    print("[Test] paid model call gate")
+    import inspect
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import tax_llm as L
+    import eval_answer as X
+    import tax_server
+    saved = (os.environ.get(L.ENABLE_ENV), os.environ.get(L.CMD_ENV))
+    for k in (L.ENABLE_ENV, L.CMD_ENV):
+        os.environ.pop(k, None)
+    try:
+        cmd, why = L.channel()
+        assert cmd == "" and L.ENABLE_ENV in why and L.CMD_ENV in why, why
+        try:
+            X.ask_model({"question": "q", "options": {"A": "x"}}, "", "blind", 5)
+            raise AssertionError("闸门关着还能发起调用")
+        except L.SpendRefused:
+            pass
+        os.environ[L.ENABLE_ENV] = "1"
+        cmd, why = L.channel()
+        assert cmd == "" and L.CMD_ENV in why, why
+        os.environ[L.CMD_ENV] = str(Path(sys.executable).parent / "没有这个cli命令")
+        cmd, why = L.channel()
+        assert cmd == "" and "不存在" in why, why
+
+        assert L.quota_text("API Error: 402 Insufficient Balance"), "状态码要认"
+        assert L.quota_text("提示：账户余额不足，请充值"), "中文回显要认"
+        assert L.quota_text("request_id=req_4027ab88") == "", "散数字不算额度信号"
+        assert L.local_failure('"x" is not a model this version recognizes')
+        assert not L.local_failure("API Error: 402 Insufficient Balance")
+
+        # 花费预告按缓存命中数出来，所以命中判断只能有一份实现：
+        # 两处各写一遍，迟早一处算钱、一处算调用。
+        item = {"key": "k1", "question": "问", "options": {"A": "x"}}
+        fp = X.cache_fingerprint(item, "")
+        cache = {("k1", "blind"): {"fp": fp, "raw": "答案 A"}}
+        assert X.cached_raw(item, "blind", None, cache) == "答案 A"
+        assert X.cached_raw(dict(item, question="问改一个字"), "blind", None, cache) == "", \
+            "题面变一个字就不许复用旧回答"
+        notice = L.cost_notice(37, arms="evidence,blind")
+        assert "37" in notice and "evidence,blind" in notice, notice
+
+        # 分发面检查：源码里再出现"自己拼 npm 目录找 CLI"就说明闸门被绕过了
+        for mod in (tax_server, X):
+            src = inspect.getsource(mod)
+            assert "AppData" not in src and "claude.cmd" not in src, \
+                f"{mod.__name__} 又绕开闸门去找 CLI 了"
+        # 网页按钮那条路必须真的接在闸门上，并且把状态报给前端：
+        # 前端自己猜环境变量，猜错的方向是"以为能用了"。
+        assert "tax_llm.channel()" in inspect.getsource(tax_server.api_ai_interpret)
+        assert "paid_llm" in inspect.getsource(tax_server.api_health)
+    finally:
+        for k, v in ((L.ENABLE_ENV, saved[0]), (L.CMD_ENV, saved[1])):
+            os.environ.pop(k) if v is None else os.environ.__setitem__(k, v)
+    print("  [PASS] 默认关死、三种回绝理由分明、额度与本地故障分档、花费按命中数计")
+    return 1
+
+
+def test_answer_stratified_sampling():
+    """分层抽样必须每格都取到题，否则分题库正确率是噪声。
+
+    题库三家、时效三档共九格，题量差到 488:50。纯随机抽样会让 financeiq 吃掉
+    大半样本，ideafin 与 fineval 各剩一两题，报出来的分题库正确率就没有含义。
+    """
+    print("[Test] stratified sampling covers every cell")
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import eval_answer as X
+    n_id = 0
+    synth = []
+    for s, n in (("financeiq", 30), ("ideafin", 6), ("fineval", 2)):
+        for v, m in (("ok", 5), ("review", 3), ("stale", 1)):
+            for _ in range(n * m):
+                n_id += 1
+                synth.append({"key": f"k{n_id}", "id": f"k{n_id}", "source": s,
+                              "validity": v, "subset": "", "question": "q",
+                              "options": {"A": "x"}, "answer": "A",
+                              "answer_type": "single"})
+    picked = X.stratified(synth, 9, 7)
+    cells = {(r["source"], r["validity"]) for r in picked}
+    assert len(picked) == 9, f"应取满 9 题，实取 {len(picked)}"
+    assert len(cells) == 9, f"九格应各出一题，实出 {len(cells)} 格：{sorted(cells)}"
+    # 样本量超过格数时不得越界取题，也不得重复
+    more = X.stratified(synth, 40, 7)
+    keys = [r["key"] for r in more]
+    assert len(keys) == len(set(keys)), "抽样出现重复题"
+    print(f"  [PASS] 九格各出一题；扩样到 {len(more)} 题仍不重复")
+    return 1
+
+
+def test_basis_health_bucket():
+    """主依据健康度要分得开"取对了法"与"根本没路由"。
+
+    答对率饱和之后（模型本来就会做这批题），这一档是唯一还能区分技能好坏的量：
+    把《国际刑事司法协助法》顶成"国际重复征税"的主依据不会让答案变错，
+    但真实用户拿到的就是一份没用的依据清单。四档必须互斥且能覆盖缺字段的情况。
+    """
+    print("[Test] primary-authority health bucket")
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import eval_answer as X
+    cases = [
+        ({"evidence_n": 8, "parent_law": "中华人民共和国契税法",
+          "primary_title": "中华人民共和国契税法"}, "on_topic"),
+        ({"evidence_n": 8, "parent_law": "中华人民共和国契税法",
+          "primary_title": "中华人民共和国契税法实施条例"}, "on_topic"),
+        # 路由对了但取回无关法：这才是真正要修排序的档
+        ({"evidence_n": 8, "parent_law": "中华人民共和国契税暂行条例",
+          "primary_title": "中华人民共和国农业税法"}, "off_topic"),
+        ({"evidence_n": 28, "parent_law": "",
+          "primary_title": "中华人民共和国国际刑事司法协助法"}, "unrouted"),
+        ({"evidence_n": 0, "parent_law": "", "primary_title": ""}, "no_evidence"),
+        ({}, "no_evidence"),
+    ]
+    bad = []
+    for diag, want in cases:
+        got = X.basis_health(diag)
+        if got != want:
+            bad.append(f"{diag} 判成 {got}，应为 {want}")
+    assert not bad, "\n  ".join(bad)
+    assert X.basis_health(None) == "no_evidence", "缺字段的旧批次不能抛异常"
+    print(f"  [PASS] {len(cases)} 种诊断字段组合各归一档，四档互斥")
+    return 1
+
+
+def row(key, arm, exact, pred, failed=False):
+    return {"key": key, "arm": arm,
+            "score": {"exact": exact, "pred": pred, "call_failed": failed}}
+
+
+def test_paired_excludes_call_failures():
+    """净贡献交叉表只配两组都真拿到回答的题，并把配不上的题数报出来。
+
+    agg 已把调用失败剔出分母，但交叉表原先按"两组都有行"来配：一条失败的
+    blind 行算成"blind 答错"，于是每道 evidence 答对的题都被记成依据救回来的。
+    实测有一批 100 题的 blind 组 78 题调用失败，交叉表照样报 gain=70、harm=0，
+    读起来像依据有决定性作用，真相是上游配额耗尽。所以失败行必须退出配对，
+    配不上的题数报成 n_unpaired——不然覆盖缺口只会让配对数悄悄变小。
+    """
+    print("[Test] paired net contribution excludes call failures")
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import eval_answer as X
+    # 1 题两组都真答对；1 题 evidence 对、blind 真答错（合法的 gain）；
+    # 2 题 evidence 对、blind 调用失败（原先被误记为 gain）；1 题只有 blind 行
+    rows = [
+        row("q1", "evidence", True, "AB"), row("q1", "blind", True, "AB"),
+        row("q2", "evidence", True, "AC"), row("q2", "blind", False, "A"),
+        row("q3", "evidence", True, "B"), row("q3", "blind", False, "", True),
+        row("q4", "evidence", True, "D"), row("q4", "blind", False, "", True),
+        row("q5", "blind", True, "A"),
+    ]
+    p = X.paired(rows)
+    assert p["n_both"] == 2, f"只有两组都真答过的 2 题可配，实得 {p['n_both']}"
+    assert p["n_keys"] == 5 and p["n_unpaired"] == 3, \
+        f"配不上的应为 3（2 题一组失败 + 1 题缺行），实得 {p['n_unpaired']}"
+    assert p["gain"] == 1 and p["gain_keys"] == ["q2"], \
+        f"合法的由错转对只该有 q2，实得 {p['gain']}/{p['gain_keys']}"
+    assert p["harm"] == 0 and p["same_right"] == 1 and p["same_wrong"] == 0
+    assert p["choice_changed"] == 1, "失败行不该算'选项被依据改变'"
+    # 两组都失败的批次：净贡献必须为空，而不是把空答案当答错
+    allbad = [row("z", "evidence", False, "", True), row("z", "blind", False, "", True)]
+    q = X.paired(allbad)
+    assert q["n_both"] == 0 and q["gain"] == 0 and q["n_unpaired"] == 1, \
+        f"两组都失败时净贡献必须为空，实得 {q}"
+    # 只跑一组时没有对照意图，不该报配对缺口
+    solo = X.paired([row("s", "evidence", True, "A"), row("t", "evidence", False, "B")])
+    assert solo["n_both"] == 0 and solo["n_unpaired"] == 0, \
+        f"单组批次不该报缺口，实得 {solo}"
+    print(f"  [PASS] 配对 {p['n_both']}/{p['n_keys']} 题、{p['n_unpaired']} 题退出，"
+          f"gain 只认 q2；两组皆失败为空，单组批次不报缺口")
+    return 1
+
+
 # ── 分析层：依据定级 ───────────────────────────────────────────────
 def test_evidence_rank():
     """效力位阶要分得开法律、行政法规、部门规章、规范性文件、解读。"""
@@ -875,6 +1188,12 @@ def main():
     tests = [
         ("Question Type Classification", test_analyze_question_types),
         ("Context Axis Detection", test_analyze_context_axes),
+        ("Answer Scoring Strictness", test_answer_scoring_strict),
+        ("Model Choice Parsing", test_model_choice_parsing),
+        ("Paid Model Call Gate", test_paid_llm_gate),
+        ("Answer Stratified Sampling", test_answer_stratified_sampling),
+        ("Basis Health Bucket", test_basis_health_bucket),
+        ("Paired Net Contribution Guard", test_paired_excludes_call_failures),
         ("Evidence Authority Ranking", test_evidence_rank),
         ("Evidence Validity and Primary", test_evidence_validity_and_primary),
         ("Analysis Orchestration Plan", test_answer_plan),

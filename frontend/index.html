@@ -737,7 +737,7 @@ async function viewLaw(bbbsId,title){
     <div class="modal-body">
       <div class="tab-panel active" id="tabLawContent"><div style="text-align:center;padding:60px"><div class="loading-spinner"></div><p style="margin-top:10px;font-size:13px;color:var(--g500)">正在获取法规全文…</p></div></div>
       <div class="tab-panel" id="tabInterpContent"></div>
-      <div class="tab-panel" id="tabAiContent"><div class="interp-empty" style="padding:40px"><div style="font-size:28px;margin-bottom:10px">🤖</div><p><b>AI 政策解读</b></p><p style="font-size:13px;margin-top:4px;color:var(--g500)">点击下方按钮，AI 将用通俗语言解读本法规</p><button onclick="generateAiInterpret()" style="margin-top:14px;padding:9px 22px;background:var(--black);color:#fff;border:none;font-size:13px;font-weight:600;cursor:pointer">✨ 生成 AI 解读</button><p style="font-size:11px;color:var(--g400);margin-top:6px">本机 AI 现场生成，耗时取决于本机负载 · 仅供参考</p></div></div>
+      <div class="tab-panel" id="tabAiContent"><div class="interp-empty" style="padding:40px"><div style="font-size:28px;margin-bottom:10px">🤖</div><p><b>AI 政策解读</b></p><p style="font-size:13px;margin-top:4px;color:var(--g500)">点击下方按钮，AI 将用通俗语言解读本法规</p><button onclick="generateAiInterpret()" style="margin-top:14px;padding:9px 22px;background:var(--black);color:#fff;border:none;font-size:13px;font-weight:600;cursor:pointer">✨ 生成 AI 解读</button><p id="aiGateNote" style="font-size:11px;color:var(--g400);margin-top:6px">费用由所配置的外部模型账号承担 · 仅供参考</p></div></div>
       <div class="tab-panel" id="tabWebContent"></div>
     </div>
     <div class="modal-footer">
@@ -769,11 +769,26 @@ function switchTab(tab){
   const btn=document.getElementById('tabBtn'+tab.charAt(0).toUpperCase()+tab.slice(1));
   if(btn)btn.classList.add('active');
   if(tab==='interp')loadInterpretationsTab(_modalLawId);
+  if(tab==='ai')refreshAiGate();
   if(tab==='web')loadWebRelatedTab(_modalLawId,_modalTitle);
   // 措辞要说"实际直连了哪些源"：小颖言税/税海涛声/会计网/税小课/朴税只用来给
   // 命中条目打来源标签（TAX_PRACTICE_SOURCES），程序并不会去搜它们，写进这里会变成假承诺。
   const footerLabels={law:'实时获取自NPC国家法规库',interp:'检索站点：chinatax.gov.cn · fgk.chinatax.gov.cn · mof.gov.cn · www.gov.cn（仅官方来源）',ai:'AI 生成 · 仅供参考 · 以官方为准',web:'直连税屋(shui5.cn) + 微信公众号，另经 360 全网补充；来源标签按命中条目的域名/标题识别'};
   document.getElementById('footerInfo').textContent=footerLabels[tab]||'';
+}
+
+async function refreshAiGate(){
+  // 点按钮之前就把"这次会不会花钱、能不能花"说清楚。闸门状态只能从服务端问：
+  // 环境变量在 Flask 进程里，浏览器看不到，前端自己猜必然猜错。
+  const note=document.getElementById('aiGateNote');
+  if(!note)return;
+  try{
+    const h=await fetchWithRetry('/api/health',{},2,500);
+    const g=h.paid_llm||{};
+    note.textContent=g.enabled
+      ?'已开启：将调用 TAX_LLM_CMD 指定的外部模型，费用由该账号承担'
+      :(g.explanation||'外部模型调用未开启，此功能不可用');
+  }catch(e){/* 问不到状态就保留默认文案，不编造开启状态 */}
 }
 
 async function generateAiInterpret(){
@@ -793,7 +808,7 @@ async function generateAiInterpret(){
     });
     h+=`<div class="meta-note"><span>🤖 ${data.model||'AI 生成'}</span><span>🕐 ${data.generated_at||''}</span><span>⚠️ ${data.disclaimer||'仅供参考'}</span></div>`;
     c.innerHTML=h;
-  }catch(e){c.innerHTML=`<div class="interp-empty">⚠️ AI 解读失败: ${esc(e.message)}<br><span style="font-size:12px;color:var(--g400)">请确认 Claude Code CLI 可用</span></div>`;}
+  }catch(e){c.innerHTML=`<div class="interp-empty">⚠️ AI 解读未生成<br><span style="font-size:12px;color:var(--g400)">${esc(e.message)}</span><br><span style="font-size:12px;color:var(--g400)">这一步调用你在 TAX_LLM_CMD 指定的外部模型，费用由该账号承担；服务端不会在未确认的情况下发起，也不会在失败后重试。</span></div>`;}
 }
 
 function closeModal(){document.getElementById('modalOverlay').style.display='none';}

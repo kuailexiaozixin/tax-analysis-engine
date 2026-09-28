@@ -21,10 +21,20 @@ Usage:
   python tax_fgk.py "研发费用" --size 10
   python tax_fgk.py "增值税" --size 5 --json
   python tax_fgk.py "资产评估减值" --size 1 --body
-  python tax_fgk.py "转让定价" --size 3 --pages 8
+  python tax_fgk.py "转让定价" --size 3 --pages 8       # 严格翻 8 页（关自适应）
+  python tax_fgk.py "增值税" --size 10 --cache          # 清单缓存(TTL 1h)，正文仍现拉
+  python tax_fgk.py --cache-stats / --cache-clear       # 查看 / 清空缓存
+
+翻页约定：默认按需自适应——连续 IDLE_PAGE_LIMIT(3) 页没捞到新的法规库条目
+就收尾，不再往后翻（总局站里法规库条目占比低、集中在靠前页，后面多是新闻）。
+显式给 --pages 则关掉自适应，严格翻满该页数。
+
+缓存约定：只缓存"检索清单"（标题/文号/日期/URL），**正文永不缓存**——
+条文必须每次现拉，避免把已废止/被修订的旧条文当现行有效引用。
 """
 
 import argparse
+import copy
 import html as htmllib
 import json
 import re
@@ -37,12 +47,27 @@ import requests
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
+import tax_http
+from tax_cache import CacheManager
 from tax_web_search import FGK_MARKER, search_chinatax
 
 # 总局检索接口把 pageSize 卡在 10 条，传更大的值无效，只能按页翻。
 PAGE_SIZE = 10
-# 翻到第几页为止。实测第 6 页仍能翻出法规文件，再深的页收益极低。
-MAX_PAGES = 6
+# 翻页上限。实测“转让定价”全量 174 条命中分布在约 18 页，第 6 页之后仍有
+# 法规库条目（默认 6 页只会筛出约 28% 的 fgk 条目）；故放宽到 20 页以覆盖
+# 完整法规集。命中量极大的关键词用 --pages 自行收敛即可。
+MAX_PAGES = 20
+
+# 清单缓存 TTL（秒）。只缓存检索清单，正文永远现拉。默认关闭，用 --cache 打开。
+# 清单/元数据变动频率低（与手册“详情元数据 1 小时”一致），故 TTL 取 1 小时。
+CACHE_TTL = 3600
+
+# 按需自适应收尾：连续这么多页都没捞到新的法规库条目，就不再往后翻。
+# 总局站里法规库条目占比低且集中在靠前的页，后面的页基本是新闻，继续翻
+# 只是白烧请求。要严格翻满某个页数，用 --pages 显式指定（那时不做自适应）。
+IDLE_PAGE_LIMIT = 3
+
+_cache = CacheManager(enabled=False, namespace="fgk")
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -79,7 +104,9 @@ def fetch_fgk_body(url: str) -> dict:
     """
     out = {"url": url}
     try:
-        r = requests.get(url, headers=HEADERS, timeout=25)
+        # verify 显式传 True：本模块原先走的是 requests 的默认校验（tax_detail
+        # 与 tax_search 用的则是默认关闭的 VERIFY_SSL），这一处保持原行为。
+        r = tax_http.get(url, headers=HEADERS, timeout=25, verify=True)
     except requests.RequestException as e:
         out["_error"] = f"请求失败：{e}"
         return out
@@ -125,24 +152,19 @@ def fetch_fgk_body(url: str) -> dict:
     return out
 
 
-def search_fgk(keyword: str, size: int = 10, with_body: bool = False,
-               max_pages: int = MAX_PAGES) -> dict:
-    """
-    在税务总局法规库检索法规文件清单。
+def _scan_list(keyword: str, size: int, max_pages: int,
+               adaptive: bool = True) -> dict:
+    """只翻检索清单，不取正文（这一层才可缓存）。
 
-    Args:
-        keyword: 检索词
-        size: 返回条数上限
-        with_body: 逐条取详情页正文（每条多一次请求）
-        max_pages: 最多翻几页总局检索结果（每页固定 10 条）
-
-    Returns:
-        {"keyword","total","pages_scanned","results","searched_at","source","_error"?}
-        每项含 title/document_number/date/publisher/url，with_body 时另有 body。
+    adaptive=True 时按需收尾：连续 IDLE_PAGE_LIMIT 页没捞到新的法规库条目
+    就停。总局站里法规库条目占比低且集中在靠前页，后面的页多是新闻，继续
+    翻只是白烧请求。要严格翻满就用 adaptive=False（CLI 显式给 --pages 时）。
     """
     results = []
     seen = set()
     pages = 0
+    idle_pages = 0          # 连续多少页没新增法规库条目
+    stopped_early = False   # 是否因自适应而提前收尾
     first_error = ""
     total_hits = 0
     for page in range(1, max(1, max_pages) + 1):
@@ -155,13 +177,14 @@ def search_fgk(keyword: str, size: int = 10, with_body: bool = False,
         pages += 1
         if not page_items:
             break
+        before = len(results)
         for item in page_items:
             if FGK_MARKER not in item.get("url", ""):
                 continue
             if item["url"] in seen:
                 continue
             seen.add(item["url"])
-            entry = {
+            results.append({
                 "title": item["title"],
                 "url": item["url"],
                 "date": item.get("date", ""),
@@ -170,25 +193,26 @@ def search_fgk(keyword: str, size: int = 10, with_body: bool = False,
                 "snippet": item.get("snippet", ""),
                 "source": "税务总局法规库",
                 "source_label": "税务总局法规库",
-            }
-            if with_body and item["url"]:
-                body = fetch_fgk_body(item["url"])
-                entry["body"] = body.get("content", "")
-                if body.get("pub_date") and not entry["date"]:
-                    entry["date"] = body["pub_date"]
-                if body.get("_error"):
-                    entry["body_error"] = body["_error"]
-            results.append(entry)
+            })
             if len(results) >= size:
                 break
         if len(results) >= size:
             break
+        if adaptive:
+            if len(results) == before:
+                idle_pages += 1
+                if idle_pages >= IDLE_PAGE_LIMIT:
+                    stopped_early = True
+                    break
+            else:
+                idle_pages = 0
 
     result = {
         "keyword": keyword,
         "total": len(results),
         "total_hits": total_hits,
         "pages_scanned": pages,
+        "stopped_early": stopped_early,
         "results": results,
         "searched_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "source": "税务总局法规库 (fgk.chinatax.gov.cn)",
@@ -198,35 +222,123 @@ def search_fgk(keyword: str, size: int = 10, with_body: bool = False,
     if first_error:
         result["_error"] = first_error
     elif not results:
+        tail = (f"（连续 {idle_pages} 页无新法规库条目，已自适应收尾）"
+                if stopped_early else "")
         result["_error"] = (f"翻完前 {pages} 页总局检索结果（共 {total_hits} 条命中）"
-                            "未筛出法规库条目")
+                            f"未筛出法规库条目{tail}")
+    return result
+
+
+def search_fgk(keyword: str, size: int = 10, with_body: bool = False,
+               max_pages: int = MAX_PAGES, adaptive: bool = True) -> dict:
+    """
+    在税务总局法规库检索法规文件清单。
+
+    缓存策略：**只缓存清单，正文永不缓存**。清单按
+    (keyword, size, max_pages, adaptive) 缓存 CACHE_TTL 秒；命中缓存时直接
+    返回清单，正文（with_body）仍逐条现拉。
+
+    Args:
+        keyword: 检索词
+        size: 返回条数上限
+        with_body: 逐条取详情页正文（每条多一次请求，正文不走缓存）
+        max_pages: 最多翻几页总局检索结果（每页固定 10 条）
+        adaptive: 连续 IDLE_PAGE_LIMIT 页无新法规库条目即收尾（默认开）；
+                  要严格翻满 max_pages 就传 False
+
+    Returns:
+        {"keyword","total","total_hits","pages_scanned","stopped_early","results",
+         "searched_at","source","_from_cache","_cache_age_s"?,"_error"?}
+        每项含 title/document_number/date/publisher/url；with_body 时另有
+        body（正文）。正文是视频/图片的条目另带 media_only=True——表示"本来
+        就没有文字"，与取失败的 body_error 区分开，上层据此判断无需重试。
+    """
+    cache_key = _cache._key("fgk", keyword, str(size), str(max_pages),
+                            str(adaptive))
+    result = _cache.get(cache_key, max_age=CACHE_TTL)
+    if result is not None:
+        # 深拷贝，避免下面写 body 时污染缓存文件
+        result = copy.deepcopy(result)
+        result["_from_cache"] = True
+        cached_age = _cache.age(cache_key)
+        if cached_age is not None:
+            result["_cache_age_s"] = round(cached_age, 1)
+    else:
+        result = _scan_list(keyword, size, max_pages, adaptive)
+        _cache.set(cache_key, result)  # 缓存的是"无正文"的清单
+
+    # 正文永远现拉，绝不缓存（避免引用过期条文）
+    if with_body:
+        for entry in result["results"]:
+            if not entry.get("url"):
+                continue
+            body = fetch_fgk_body(entry["url"])
+            entry["body"] = body.get("content", "")
+            if body.get("pub_date") and not entry["date"]:
+                entry["date"] = body["pub_date"]
+            if body.get("_error"):
+                entry["body_error"] = body["_error"]
+                # 视频/图片条目单独标出来：这不是"取失败"，是"本来就没有文字"。
+                # 上层见到 media_only 就知道不该去引条文，也不必重试。
+                if "视频/图片" in body["_error"]:
+                    entry["media_only"] = True
     return result
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
 def main():
     p = argparse.ArgumentParser(description="国家税务总局政策法规库检索")
-    p.add_argument("keyword", help="检索词")
+    p.add_argument("keyword", nargs="?", help="检索词")
     p.add_argument("--size", type=int, default=10)
     p.add_argument("--body", action="store_true",
-                   help="同时取详情页正文（每条多一次请求）")
-    p.add_argument("--pages", type=int, default=MAX_PAGES,
-                   help=f"最多翻几页总局检索结果，每页固定 {PAGE_SIZE} 条"
-                        f"（默认 {MAX_PAGES}）")
+                   help="同时取详情页正文（每条多一次请求，正文不走缓存）")
+    p.add_argument("--pages", type=int, default=None,
+                   help=f"最多翻几页总局检索结果，每页固定 {PAGE_SIZE} 条。"
+                        f"不指定时按需自适应（连续 {IDLE_PAGE_LIMIT} 页无新条目"
+                        f"即收尾，上限 {MAX_PAGES} 页）；显式指定则严格翻满")
     p.add_argument("--json", action="store_true")
+    p.add_argument("--cache", action="store_true",
+                   help=f"启用清单缓存（TTL {CACHE_TTL}s）；正文仍现拉")
+    p.add_argument("--no-cache", action="store_true", help="禁用缓存（默认）")
+    p.add_argument("--cache-stats", action="store_true", help="查看缓存统计")
+    p.add_argument("--cache-clear", action="store_true", help="清空缓存")
     args = p.parse_args()
 
+    global _cache
+    if args.cache:
+        _cache = CacheManager(enabled=True, namespace="fgk")
+
+    if args.cache_stats:
+        print(json.dumps({"cache": _cache.stats()}, ensure_ascii=False, indent=2))
+        return
+    if args.cache_clear:
+        _cache.clear()
+        print("Cache cleared.")
+        return
+
+    if not args.keyword:
+        p.error("需要检索词（仅 --cache-stats / --cache-clear 可省略）")
+
+    max_pages = args.pages if args.pages is not None else MAX_PAGES
+    adaptive = args.pages is None      # 显式给了页数就别自作主张提前收尾
+
     result = search_fgk(args.keyword, size=args.size, with_body=args.body,
-                        max_pages=args.pages)
+                        max_pages=max_pages, adaptive=adaptive)
 
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
 
-    print(f"🔍 税务总局法规库 \"{args.keyword}\" | {result['searched_at']}")
+    cache_tag = ""
+    if result.get("_from_cache"):
+        age = result.get("_cache_age_s")
+        cache_tag = f" [清单缓存{' ' + str(int(age)) + 's 前' if age is not None else ''}]"
+    print(f"🔍 税务总局法规库 \"{args.keyword}\" | {result['searched_at']}{cache_tag}")
     if result.get("_error"):
         print(f"⚠️  {result['_error']}")
-    print(f"总局检索命中 {result['total_hits']} 条，翻了 {result['pages_scanned']} 页，"
+    early = (f"（连续 {IDLE_PAGE_LIMIT} 页无新法规库条目，已自适应收尾）"
+             if result.get("stopped_early") else "")
+    print(f"总局检索命中 {result['total_hits']} 条，翻了 {result['pages_scanned']} 页{early}，"
           f"筛出法规文件 {result['total']} 条\n")
     for item in result["results"]:
         print(f"  📋 {item['title']}")
@@ -241,7 +353,9 @@ def main():
             print(f"     正文 {len(item['body'])} 字:")
             for ln in item["body"].splitlines():
                 print(f"       {ln}")
-        if item.get("body_error"):
+        if item.get("media_only"):
+            print("     🎬 该条正文是视频/图片，没有文字可引（不是取失败，重试也无用）")
+        elif item.get("body_error"):
             print(f"     ⚠️ {item['body_error']}")
         print()
 

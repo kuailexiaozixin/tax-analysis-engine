@@ -20,6 +20,7 @@ Usage:
   python tax_browser.py --check          # 只报本机浏览器探测结果，不抓页
 """
 
+import argparse
 import os
 import sys
 from pathlib import Path
@@ -237,8 +238,15 @@ class BrowserSession:
 
 
 def main():
-    args = [a for a in sys.argv[1:] if a != "--check"]
-    if "--check" in sys.argv[1:] or not args:
+    ap = argparse.ArgumentParser(
+        description="真浏览器会话：过一次 WAF，再把 cookie 转交 requests",
+        epilog="省略 url 等于只做浏览器探测（同 --check）。")
+    ap.add_argument("url", nargs="?", help="要抓的页面地址；省略则只探测本机浏览器")
+    ap.add_argument("--check", action="store_true",
+                    help="只报本机浏览器探测结果，不抓页")
+    ns = ap.parse_args()
+
+    if ns.check or not ns.url:
         info = probe_browsers()
         print("本机已装浏览器探测：")
         for row in info["已装"]:
@@ -247,11 +255,11 @@ def main():
                   + ("" if row["ok"] else f"\n{'':14s}{row['error']}"))
         if not info["已装"]:
             print("  未装任何常见浏览器（Edge/Chrome/Brave/360/Firefox）")
-        if args:
+        if ns.url:
             print()
-    if not args:
+    if not ns.url:
         return
-    url = args[0]
+    url = ns.url
     with BrowserSession(warm_url=url) as s:
         html = s.read_html(url)
         body = ""

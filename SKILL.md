@@ -10,6 +10,47 @@ version: "3.0.0"
 
 ---
 
+## 快速索引
+
+文件较长，按"你要干什么"找章节。**第一次用先读 ① 与 ⑤**。
+
+| 你要做的事 | 去哪一节 |
+|-----------|---------|
+| 判断问题属于哪一类、缺哪些前提 | ① 分析判定 · ② 前提补齐 |
+| 决定走哪些源、按什么顺序检索 | ③ 层级下挖 · ④ 多源聚合 |
+| 查具体命令、看某个源失败了怎么办 | ⑤ 各源命令与失败表现 |
+| 写最终回答（六段式 / 逐条比对 / 填空 / 风险自检） | ⑥ 输出格式模板 |
+| 确认哪些事绝对不能做 | ⑦ 禁止行为清单 |
+| 判断一条依据能不能引用（效力位阶、时效） | ⑧ 依据定级 |
+| 查税种/专题对应的检索词与依据源 | ⑨ 税种与专题映射 |
+| 想知道哪些源缺陷得靠人工判断 | ⑩ 仍需人工判断的源缺陷 |
+| 了解各数据源的性质与覆盖 | ⑪ 数据源说明 |
+| 启动网页界面做可视化呈现 | ⑫ 使用网页可视化界面 |
+| 跑评测、看指标含义与判读标准 | ⑬ 质量评测 |
+
+常用命令速查（参数细节见 ⑤）：
+
+```bash
+python scripts/tax_answer.py "<用户原话>" --plan              # 只判型，不联网
+python scripts/tax_answer.py "<用户原话>" --answer --at <时点>  # 全流程底稿
+python scripts/tax_search.py "<关键词>" --status 3 --size 20   # NPC 法规库
+python scripts/tax_fgk.py "<关键词>" --size 10                 # 总局法规库（翻页自适应）
+python scripts/tax_web_search.py "<关键词>" --size 10          # 总局站点
+python scripts/tax_so360.py "<关键词>" --size 10               # 360 站内（省局/地方）
+python scripts/tax_shui5.py "<关键词>" --size 3 --read         # 税屋实务
+python scripts/tax_wechat.py "<关键词>" --size 3 --read        # 微信公众号实务
+python scripts/tax_aggregator.py "<关键词>" --size 10          # 五源聚合
+```
+
+测试与门禁（改完代码先跑离线组）：
+
+```bash
+python tests/run_all.py            # 离线门禁：不联网，几秒出结果
+python tests/run_all.py --online   # 追加联网 e2e：慢，且受对方限流影响
+```
+
+---
+
 ## 工作流程（必须严格遵循）
 
 ```
@@ -189,24 +230,32 @@ print(json.dumps(A.search_terms('<用户原话>'),ensure_ascii=False,indent=2))"
 ### L2：规章与公告
 
 ```bash
-python scripts/tax_fgk.py "<关键词>" --size 10            # 只要目录
+python scripts/tax_fgk.py "<关键词>" --size 10            # 只要目录（翻页自适应）
 python scripts/tax_fgk.py "<关键词>" --size 3 --body      # 同时取正文
-python scripts/tax_fgk.py "转让定价" --size 3 --pages 8    # 放宽翻页上限
+python scripts/tax_fgk.py "转让定价" --size 3 --pages 8    # 严格翻满 8 页（关自适应）
 
 # 总局站点检索（覆盖总局站点与 fgk 法规库）
 python scripts/tax_web_search.py "<关键词>" --size 10
 ```
 
 **必须翻页，不能只读第一页**。总局检索接口把 `pageSize` 卡在 10 条，传 20/60/100
-都只回 10 条，只能按 `pageNum` 翻页，程序默认翻 6 页。法规文件在结果里排得靠后，
-只读第 1 页会把"库里没有"错报成"确实没有"。翻页不够用时加 `--pages`，但要记住：
-翻得越深相关性越差。返回里的 `total_hits`（命中总数）与 `pages_scanned`
-（实际翻了几页）能说明是"翻完了确实没有"还是"根本没翻到"。
+都只回 10 条，只能按 `pageNum` 翻页。法规文件在结果里排得靠后，只读第 1 页会把
+"库里没有"错报成"确实没有"。
+
+默认**按需自适应**：连续 3 页没捞到新的法规库条目就收尾（上限 20 页）——总局站里
+法规库条目占比低、集中在靠前页，后面多是新闻，硬翻到底只是白烧请求。代价是
+**可能漏掉间隔 3 页以上的条目**；若出现 `total` 很少但 `total_hits` 很大的可疑情形，
+就用 `--pages N` 显式指定页数——那时会关掉自适应、严格翻满，但翻得越深相关性越差。
+
+返回里三个字段合起来看：`total_hits`（命中总数）、`pages_scanned`（实际翻了几页）、
+`stopped_early`（是否因自适应早停）。三者能区分"确实没有"、"翻到上限也没有"
+和"自适应提前收了尾"——后者值得用 `--pages` 再确认一次。
 
 详情页 HTML 里有完整正文，但该站不声明 charset，必须按 UTF-8 解码才能读出
 中文；程序已处理，正文容器是 `div.zscont`（注释）与 `div.arc_cont`（正文）。
-加 `--body` 逐篇取正文，正文是视频/图片的条目会明确报
-"该条正文为视频/图片，无文字内容"。
+加 `--body` 逐篇取正文。正文是视频/图片的条目会在结果里带 `media_only: true`
+（CLI 里显示成"🎬 该条正文是视频/图片"）——**这不是取失败，重试也没用**，
+别去引它的条文；只有真正取失败才会进 `body_error`。
 
 ### L3：地方口径
 
@@ -293,11 +342,49 @@ NPC 详情接口 `flfgDetails` 的正文是 `data.content` 单个根节点（带
 
 ### 缓存控制
 
+三类缓存的默认值不同，这是有意的：
+
+| 缓存 | 默认 | TTL | 为什么 |
+|---|---|---|---|
+| NPC 检索清单（`tax_search.py`） | 关 | 5 分钟 | 政策随时更新，默认每次实时查 |
+| 总局法规库清单（`tax_fgk.py`） | 关 | 1 小时 | 同上；只有批量检索或多轮追查同一主题时才开 |
+| 详情元数据（`tax_detail.py`） | **开** | 1 小时 | 详情接口慢、元数据变动频率低，值得用一点新鲜度换速度 |
+
 ```bash
-python scripts/tax_search.py "增值税" --cache     # 默认无缓存，需要加速时开
-python scripts/tax_search.py --cache-stats
-python scripts/tax_search.py --cache-clear
+# NPC 法规库检索 —— 清单缓存，默认关，TTL 5 分钟
+python scripts/tax_search.py "增值税" --cache
+python scripts/tax_search.py --cache-stats        # 看条数与体积
+python scripts/tax_search.py --cache-clear        # 只清检索缓存
+
+# 总局法规库检索 —— 清单缓存，默认关，TTL 1 小时
+python scripts/tax_fgk.py "转让定价" --size 10 --cache
+python scripts/tax_fgk.py --cache-stats
+python scripts/tax_fgk.py --cache-clear
+
+# 详情元数据 —— 默认开，TTL 1 小时
+python scripts/tax_detail.py --info <bbbs_id>
+python scripts/tax_detail.py --cache-stats
+python scripts/tax_detail.py --cache-clear        # 只清详情缓存
+python scripts/tax_detail.py --info <bbbs_id> --no-cache   # 本次强制现拉
 ```
+
+三条约定，不能破：
+
+1. **只缓存清单与元数据，正文永不缓存。** 条文每次现拉——缓存旧条文会把
+   已废止、被修订的法条当成现行有效引用，这对合规工具是不可接受的风险。
+   （实测：NPC 详情接口返回的 `content` 树只有章 / 节标题，条文只在 DOCX / PDF 里，
+   所以详情缓存里也没有正文；`tests/test_detail_cache.py` 有一条用例守着这个契约。）
+2. **TTL 按源的变动频率定**：NPC 库政策更新快，取 5 分钟；总局法规库目录与
+   详情元数据变动慢，取 1 小时。缓存都落在 `~/.cache/tax-policy-search`。
+3. **命中缓存会在输出里留痕**：`tax_search.py` 打 `[缓存]`，`tax_fgk.py` 打
+   `[清单缓存 Ns 前]`，`tax_detail.py` 打 `[详情缓存 Ns 前]`。
+   **别拿 `fetched_at` 当"刚查过"的证据**——命中时它记的是第一次抓取的时刻；
+   要做时效性判断，先 `--no-cache` 或 `--cache-clear` 再查。
+
+三个脚本的缓存都由 `scripts/tax_cache.py` 提供（唯一实现）。同一个目录下靠条目里的
+`_ns` 字段分命名空间（`search` / `fgk` / `detail`），所以各自的 `--cache-stats`、
+`--cache-clear` 只作用于自己那一份——以前 `tax_search --cache-clear` 会把详情缓存
+一起删掉，属于越界。
 
 ---
 
@@ -362,9 +449,11 @@ python scripts/tax_aggregator.py "<关键词>" --size 10
 python scripts/tax_search.py "<完整法规名>" --exact --status 3 --size 20
 python scripts/tax_search.py "<关键词>" --status 3 --size 20
 
-# 税务总局法规库 — 部门规章/公告
-python scripts/tax_fgk.py "<关键词>" --size 10
-python scripts/tax_fgk.py "转让定价" --size 3 --pages 8
+# 税务总局法规库 — 部门规章/公告（目录 + 正文都能取）
+python scripts/tax_fgk.py "<关键词>" --size 10                     # 翻页自适应（默认）
+python scripts/tax_fgk.py "转让定价" --size 3 --pages 8             # 严格翻满 8 页
+python scripts/tax_fgk.py "<关键词>" --size 10 --body      # 同时逐条取详情页正文
+python scripts/tax_fgk.py "<关键词>" --size 10 --cache     # 清单缓存(TTL 1h)，正文仍现拉
 
 # 总局站点检索
 python scripts/tax_web_search.py "<关键词>" --size 10
@@ -381,12 +470,25 @@ python scripts/tax_detail.py --info <法规ID>
 python scripts/tax_detail.py --preview <法规ID>
 ```
 
-### NPC 限流：必须串行
+### NPC 限流：已由代码强制串行
 
 NPC 触发限流有三种表现，**都不返回 429**：直接断连（`RemoteDisconnected`）、
 HTTP 200 但正文是一份带 `<noscript>` 与混淆 JS 的挑战页、以及直接 5xx。
-程序已能识别挑战页并按 2/4/8 秒退避重试；**并行跑多个检索脚本仍会必现限流**。
-检索要串行执行，评测期间尤其不要并行跑别的 NPC 检索。
+程序已能识别挑战页并按 2/4/8 秒退避重试。
+
+**串行不再只靠自觉**。`tax_search.py` 里有一道跨进程文件锁 `npc_gate`
+（类 `NpcSerialGate`，锁文件在系统临时目录），`tax_search.py` 与
+`tax_detail.py` 的每次 NPC 请求都要先过闸——两者**共用同一把锁**，因为打的
+是同一个站。同一时刻只允许一个进程访问 NPC；同进程多线程也会先在进程内
+排队（Windows 的文件锁不可重入，不排队一并发就报错）。
+
+等待超过 `TAX_NPC_LOCK_TIMEOUT` 秒（默认 180）会抛 `TimeoutError`，提示
+"另有进程正在跑 NPC 检索"。**遇到它不要重试**，等对方跑完即可；确实要放宽
+就调大这个环境变量。
+
+这道闸只管 NPC（`flk.npc.gov.cn`）。总局站（`chinatax.gov.cn`，由
+`tax_fgk.py` / `tax_web_search.py` 访问）是另一个站，靠 fgk 的按需自适应
+翻页控制请求量，不走这把锁。评测期间仍不建议并行跑多个 NPC 检索。
 
 失败先分诊：区分"限流"与"代码坏了"——限流等退避重跑，代码问题才改代码。
 把限流误读成接口变更，会去改本来正常的代码。
@@ -538,6 +640,12 @@ HTTP 200 但正文是一份带 `<noscript>` 与混淆 JS 的挑战页、以及�
     `medium` 可用于定位法规，但引用具体条文前要回到标题检索确认
 17. **禁止把实务解读当法规原文**：引用时必须标注"实务解读，非官方文件"
 18. **禁止编造法规库正文**：取正文失败时只报告失败原因，不得据标题推测条文内容
+19. **禁止在未确认计费的情况下调用外部模型**：技能本体的六步分析只打公开法规接口，
+    一次模型都不调；会花钱的只有 `/api/ai-interpret` 与 `tests/eval_answer.py` 两处，
+    且扣的是使用者自己配置的模型通道所属账号的额度。闸门在 `scripts/tax_llm.py`，
+    默认关死，开启要同时设 `TAX_ENABLE_PAID_LLM=1` 与 `TAX_LLM_CMD=<命令绝对路径>`；
+    批量前先报出调用次数，上游回额度类错误就停掉整批——重试只是继续扣钱，
+    并把一次故障写成一片零分
 
 ---
 
@@ -745,7 +853,13 @@ AI 直接调用网页同款后端接口完成取数，再用自动化打开页�
      整包在 `detail` 下。
    - `GET /api/interpretations/<bbbs_id>?keyword=&province=` — 官方解读，列表字段是
      `sources`。`province` 换成该省税务局的站点去检索，**只有这个接口真的按省份过滤**
-   - `GET /api/ai-interpret/<bbbs_id>?keyword=` — AI 通俗解读，正文在 `interpretation`
+   - `GET /api/ai-interpret/<bbbs_id>?keyword=` — AI 通俗解读，正文在 `interpretation`。
+     **这一步花的是使用者模型账号的钱**，所以过 ⑦ 第 19 条的闸门：闸门没开返 503，
+     `code=paid_llm_disabled`；开了但上游没钱返 503，`code=quota_exhausted`，服务端
+     不重试。两者的 `error` 都是照着能敲的开启步骤
+   - `GET /api/health` — 除 `status` 外还回 `paid_llm`：`enabled` 是闸门开没开，
+     `explanation` 是没开时的原因与开启方法。前端在用户点按钮之前就要读它，
+     因为环境变量在 Flask 进程里，浏览器猜不到
    - `GET /api/web-related/<bbbs_id>?keyword=` — 相关网页，列表字段也是 `sources`
    - `GET /api/quick-tax-types` — 快捷税种
 2. **开浏览器呈现**：AI 启动服务并用自动化打开 `http://localhost:5080`，
@@ -785,7 +899,8 @@ AI 直接调用网页同款后端接口完成取数，再用自动化打开页�
   原文链接，点开无弹窗。要这些条目的正文得回命令行——总局/法规库条目用
   `--source fgk --body`，税屋与公众号用各自的取正文入口
 - 4 Tab 法规弹窗：📖 法规原文（关键词高亮）/ 🔍 官方解读 / 🤖 AI 解读 / 🌐 相关网页；
-  弹窗底部一行写的是这一屏实际直连了哪些源，不是候选源清单
+  弹窗底部一行写的是这一屏实际直连了哪些源，不是候选源清单。🤖 AI 解读这一页在
+  切进去时会把闸门状态写在按钮下方——未开启时那里就是开启步骤，不是"生成失败"
 
 ### 第四步：合规约束不变
 
@@ -876,6 +991,12 @@ answer_type / validity / flags`。
 两道题是真实存在的，只比题干会把它们并成一道。也不做长度截断，截断正是造成误并的
 原因。
 
+收题前还有一道**范围判定**（`SCOPE_EXCLUDE`）：题面问的是税制沿革的题一道都不收。
+这类题要的是史实——"哪一次改革首次把征税对象从对人转为对物"——没有任何现行规范
+可以检索、可以定级，六步分析在它上面没有取数对象。留着它只会把题库的命题口径算成
+技能的能力分。判据只扫题面不扫选项：选项里出现"两税法""费改税"通常只是一句背景
+描述，题面问的还是现行税种（车辆购置税那题就是这么写的）。
+
 ### 时效甄别
 
 真题按年度命题，隔年税率与优惠口径就变。这类题题干完整、答案唯一，直接判分会
@@ -899,25 +1020,155 @@ answer_type / validity / flags`。
 营业税、合并前征管主体、研发费旧比例三条一次都没命中，没命中不等于写对了——
 没有合成用例，规则被改坏时不会有任何声响。
 
-### 四类脚本各量什么
+### 各用例脚本量什么
 
 | 脚本 | 量什么 | 打网络 |
 |-----|-------|-------|
 | `tests/test_eval_set.py` | 评测集自身的规则：时效判档、去重键、表面词表与分类表是否同步 | 否 |
+| `tests/test_tax_fgk.py` | 总局法规库：翻页上限与自适应收尾、文字/视频/空容器正文、缓存不含正文与命中标记 | 否 |
+| `tests/test_npc_gate.py` | NPC 串行闸：跨进程互斥、同进程多线程排队、超时后不锁死、接线是否接上 | 否 |
+| `tests/test_detail_cache.py` | 详情缓存：键算法对得上老缓存、命名空间不越界、命中留痕、缓存里不许出现条文正文 | 否 |
+| `tests/test_server_routes.py` | 服务端 9 个路由：状态码、分支路由、闸门关着时不许碰模型、上游报错如实透出 | 否 |
+| `tests/test_http_layer.py` | 请求层守门：除白名单外不许绕过 `tax_http` 直接发请求（别名写法也会被扫出来） | 否 |
+| `tests/check_doc_cli.py` | 文档-代码契约：文档里写过的命令行参数，代码里必须真有 | 否 |
 | `tests/test_tax_search.py` | 检索与格式化的端到端行为，含每个 `parent_law` 在库里真实存在 | 是 |
-| `tests/eval_retrieval.py` | 答一题所需依据能否被检索到 | 是 |
-| `tests/eval_analysis.py` | 分析输出的四项质量 | 是 |
+| `tests/eval_answer.py` | **主指标**：模型照技能流程作答，答案与标准答案是否一致 | 是 |
+| `tests/eval_analysis.py` | 诊断：分析输出的四项质量 | 是 |
+| `tests/eval_retrieval.py` | 诊断：答一题所需依据能否被检索到 | 是 |
+
+后两个评测满分也只能说明"对的那部法排进了前三名"和"输出结构没毛病"。
+它们都不看最终答案，所以降级为诊断指标，排在答题正确率之后；
+真正要断言的是"这道题答对了没有"。
 
 ```bash
-python tests/test_eval_set.py                # 先跑这个，不联网
+python tests/run_all.py                      # 离线门禁：一次跑完所有不联网用例
+python tests/run_all.py --list               # 权威清单：当前有哪些用例（别手抄进文档）
+python tests/run_all.py --online             # 追加联网 e2e，含 test_tax_search.py
 python tests/build_eval_set.py --data-dir ../eval_data
-python tests/test_tax_search.py
-python tests/eval_retrieval.py --validity ok
-python tests/eval_analysis.py --sample 200 --labeled-only
+python tests/eval_analysis.py --sample 200 --labeled-only       # 诊断，不调模型
+python tests/eval_retrieval.py --validity ok                    # 诊断，不调模型
 python scripts/tax_browser.py --check        # 税屋正文链路是否可用
 ```
 
-**评测必须串行**，人大接口限流会波及（见 ⑩）。
+上面这几条都不花钱。要跑主指标得先开闸门，否则脚本数出这次要调几次之后就退出：
+
+```bash
+export TAX_ENABLE_PAID_LLM=1
+export TAX_LLM_CMD=<本机模型 CLI 的绝对路径>     # 不自动探测，探测到就用等于替用户决定花钱
+python tests/eval_answer.py --sample 36 --arms evidence,blind   # 主指标
+```
+
+**取依据必须串行，模型调用才可并发**。人大接口在并发下必现限流（见 ⑩），
+所以 `eval_answer.py` 把两件事拆成两个阶段：阶段一逐题取依据（恒串行，
+`--pause` 控制间隔，结果落 `tests/results/answer_evidence_cache.jsonl`），
+阶段二才按 `--workers` 并发问模型。限流一旦混进评测，缺口会表现成
+"依据变少→模型少依据→答错"，看着像能力缺陷，其实是自找的。
+
+### 答题正确率（eval_answer.py）— 主指标
+
+判据只有一个：模型交付的选项集合与标准答案**完全相等**。多选漏一项算错，
+与真实阅卷同口径；不给"答对一半"的及格分，因为漏选在实务里就是少报一项，
+后果与错选同量级。另记三档辅助量：F1（区分"没答全"与"答反了"）、
+错选/漏选分解、拒答数。
+
+错法分解只对多选成立；单选选错记 `答错` 一档，不写"错选+漏选"。
+单选题没有"少选"可言，把两种形态混进同一档，就会看不出该修的是干扰项辨析
+还是逐条比对——这两处的修法完全不同。
+
+**主依据健康度是答对率之下的次级主指标**（`basis_health()`，四档互斥）：
+
+| 档 | 判据 | 要修的地方 |
+|---|-----|-----------|
+| `on_topic` | 主依据就是路由表给出的那部本体法 | — |
+| `off_topic` | 路由对了，但取回的是另一部法 | 检索词与排序 |
+| `unrouted` | `parent_law` 为空，检索词直接用了题面原话 | `TAX_TYPE_KEYWORDS` / 专题表 |
+| `no_evidence` | 一条依据都没取到 | 该主题根本不在五源覆盖内，答案只能给方向 |
+
+为什么要单独报这一档：这批题库的选择题对模型来说偏易，实测中把
+《国际刑事司法协助法》顶成"国际重复征税"主依据的题照样答对——答对率看不见
+这个缺陷，真实用户拿到的却是一份没用的依据清单。健康度用的是已存在诊断里的
+字段，旧批次可以直接 `--rescore` 重算，不必重新检索。
+
+报告里另有两张交叉表供定位：`paired()` 给同题两组的选项改变数与对错方向
+（由错转对 / 由对转错），主依据层级 × 正确率给位阶维度的分布。两者都不报分。
+`paired()` 只配两组都真拿到模型回答的题，并把配不上的题数报成 `n_unpaired`：
+一条失败的回答若被当成"该组答错"，每道另一组答对的题都会被记成依据救回来的。
+
+两个对照组，差值才是这条链路的净贡献：
+
+| 组 | 喂给模型什么 | 单独看说明什么 |
+|---|------------|--------------|
+| `evidence` | 题面＋选项＋技能取到的依据（主依据给全文条文，规范性文件给法规库正文） | 技能端到端的答题水平 |
+| `blind` | 只有题面＋选项 | 模型自身税法知识的水位，即技能的起点 |
+
+只有 `evidence` 组数字时，答对究竟是因为依据取得好、还是模型本来就会做，
+分不开。两组同题同分意味着依据没提供任何信息，先去查依据块字数与主依据层级，
+不要先去调 prompt。
+
+输入构造上三个决定：
+
+- **题面连选项一起交给分析器**。判型靠的是"下列说法正确的有"这类选项句式，
+  只给问句会把逐条比对题判成政策查询，多轮模板根本不触发。
+- **主依据给全文，不给标题清单**。只给标题时，"转移土地承包经营权不征契税"
+  这种断言无从核对，模型等于在 blind 组条件下装作看了依据。条文上限按整部法
+  取（《关税法》七十余条、《税收征收管理法》九十余条），截在前四十条会把
+  决定选项对错的条文剪掉。
+- **时效标注随依据一起进 prompt**。否则模型分不清现行有效与已废止，
+  会拿过期条文推出一个看起来很整洁的结论。
+
+输出协议是单行 JSON（`answer` / `basis` / `reasoning`），解析只认两档：
+整段 JSON、以及"答案：ABD"这类明示写法；两档都没命中就记**未答**，
+**绝不把文里出现的大写字母拼成选项**。调用失败单独成档 `调用失败`，
+不进正确率分母，也不写进缓存。
+
+这条不是预防性设计：实测中 CLI 在并发下会偶发非零退出，把一行英文告警原样
+打到标准输出，散在句子里的大写字母正好落进 `[A-E]`。当时 blind 组 78/100 题
+被这样拼出了"答案"，正确率从满格假降到 21%，看起来像模型不会做题，
+实际是链路故障。判分口径必须把"没拿到答案"和"答错了"分成两档，
+否则网络状态会被记成分析能力。
+
+模型输出按 (题 key, 组) 落 `tests/results/answer_llm_cache.jsonl`，
+指纹含题面、选项与依据块三者，任一变化即作废重问；改判分口径时用
+`--rescore`，只用缓存重算分、不发起模型调用。
+
+#### 问模型这一段是花钱的
+
+`eval_answer.py` 的模型调用经 `scripts/tax_llm.py` 的闸门走，规则与 ⑦ 第 19 条同一条：
+
+| 状态 | 脚本行为 |
+|-----|---------|
+| 未设 `TAX_ENABLE_PAID_LLM=1` 或未设 `TAX_LLM_CMD` | 数出这次要新发起几次调用，报出开启方法后退出；一次都不调 |
+| 两个变量都齐、`TAX_LLM_CMD` 指向的文件存在 | 打印"将发起 N 次外部模型调用（哪些组）"，等输入 `yes`；`--yes` 跳过等待 |
+| 上游回额度类错误（402、`insufficient balance`、余额不足等） | 抛 `QuotaExhausted`，整批就地中断，未开跑的调用被取消，已答过的题留在缓存里 |
+| 本机 CLI 自身的问题（版本不认模型名、路径不存在、超时） | 判成本地故障，不重问也不计费；其余失败一次都不重问 |
+
+要新发起的次数按缓存命中算（`cached_raw()`，与 `run_one` 同一份判断），所以预告
+就是实际次数。`--rescore` 恒为 0 次，不设闸门也能跑——改判分口径、重出报告都走
+这条路。`--arms blind` 配 `--rescore` 时连阶段一的取依据都不做，是纯离线路径。
+
+判读标准：
+
+- 主指标只报 `ok` 档；`review`、`stale` 两档同表另列。过期真题答错不是能力缺陷，
+  混进总正确率会把一个正在变好的实现评成退步。
+- 错选多于漏选 → 干扰项被采纳，通常是依据块里混进了同名但口径不同的旧文件；
+  先查定级结果，再查检索词。
+- 漏选集中在多选题 → 逐条比对的模板没走全，回 `eval_analysis.py` 看 `typing`。
+- 拒答且 `basis` 为空 → 依据缺口如实暴露，这是正确行为；只要 `gap` 字段同时非空，
+  就不要把它算成失败样本去优化。
+- 主依据层级×正确率的交叉表用来定位，不用来报分：它是诊断量，
+  层级高但正确率低说明"依据给对了、推理没接上"。
+- `调用失败` 档不为 0 时**不要引用这一批的正确率**：分母虽然剔除了它，
+  但缺的是同一类题（并发争用集中的那一段），补齐重跑后再报数。
+  长批次前先拿一题探通道：`python tests/eval_answer.py --sample 1 --arms blind --yes`，
+  上游没钱时它抛 `QuotaExhausted` 并中断整批，未开跑的调用当场取消——
+  剩下的题会成片落进 `调用失败` 档，那批数字没有含义。
+- 两组正确率接近时看 `paired`：选项被依据改变的题数才是净贡献。
+  报净贡献前先确认配对覆盖——`n_unpaired` 不为 0 说明有题只拿到一组的回答
+  （调用失败、配额耗尽，或 `--rescore` 时那一组无缓存被跳过），这批的
+  gain/harm 只是部分题的结果，要用 `--arms` 指定缺的那一组、去掉 `--rescore`
+  补齐后重算。
+  改变数为 0 而两组都高，说明这批题对该模型太易，评测集没有鉴别力，
+  该换题（计算题、口径细则题、地方文件题）而不是调 prompt。
 
 ### 检索评测的两级指标
 
@@ -955,10 +1206,11 @@ python scripts/tax_browser.py --check        # 税屋正文链路是否可用
 - 提不出专题的题里有一部分本就不该归类：税法要素、税率形式、立法权归属、
   会计职业道德这类题没有本体法可查。别为了指标好看把它们硬塞进某个税种。
 
-### 分析质量（eval_analysis.py）
+### 分析质量（eval_analysis.py）— 诊断
 
 **检索命中答不出"分析得好不好"**：一份把法条原样贴出来的输出，`found@N` 满分，
-一分分析没有。所以另立四项，检验技能作为分析器的表现：
+一分分析没有。所以另立四项，检验技能作为分析器的表现。它们不判答案对错，
+答对率归 `eval_answer.py` 管；这四项的用处是**在正确率掉下去时指出掉在哪一环**。
 
 | 指标 | 问什么 | 不合格的样子 |
 |-----|-------|------------|

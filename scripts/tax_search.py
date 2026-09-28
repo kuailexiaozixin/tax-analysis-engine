@@ -18,11 +18,12 @@ Usage:
 """
 
 import argparse
-import hashlib
 import json
 import os
 import re
 import sys
+import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -35,6 +36,10 @@ import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import tax_http  # noqa: E402
+from tax_http import VERIFY_SSL  # noqa: E402,F401
+
 # ── Constants ───────────────────────────────────────────────────────────────
 _CLEAN_HTML_RE = re.compile(r"<[^>]+>")
 BASE_URL = "https://flk.npc.gov.cn"
@@ -43,65 +48,24 @@ HEADERS = {
     "Referer": "https://flk.npc.gov.cn/",
     "Accept": "application/json, text/plain, */*",
 }
-VERIFY_SSL = os.getenv("TAX_SEARCH_VERIFY_SSL", "0") == "1"
 
 # Status code mapping
 SXX_MAP = {1: "已废止", 2: "已修改", 3: "现行有效", 4: "尚未生效"}
 SXX_REVERSE = {v: k for k, v in SXX_MAP.items()}
 
 # ── Cache (disabled by default, short TTL when enabled) ─────────────────────
-class _CacheManager:
-    """Lightweight JSON file cache. Disabled by default."""
-    def __init__(self, enabled: bool = False):
-        self._enabled = enabled
-        self.dir = Path.home() / ".cache" / "tax-policy-search"
+# 缓存的唯一实现在 tax_cache.py。本模块不再自带一份：两处各写一份 TTL 与
+# 失效规则，早晚会各自演化（"三处重复必漂移"的老毛病）。
+# 约定：只缓存"检索清单 / 元数据"，**正文永不缓存**。
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
-    def _key(self, *parts: str) -> str:
-        raw = "|".join(str(p) for p in parts)
-        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+from tax_cache import CacheManager  # noqa: E402
 
-    def _path(self, key: str) -> Path:
-        return self.dir / f"{key}.json"
-
-    def get(self, key: str, max_age: float = 300) -> Optional[dict]:
-        if not self._enabled:
-            return None
-        p = self._path(key)
-        if not p.exists():
-            return None
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-            if time.time() - data.get("_cached_at", 0) > max_age:
-                return None
-            return data.get("payload")
-        except Exception:
-            return None
-
-    def set(self, key: str, payload: dict) -> None:
-        if not self._enabled:
-            return
-        self.dir.mkdir(parents=True, exist_ok=True)
-        p = self._path(key)
-        p.write_text(
-            json.dumps({"_cached_at": time.time(), "payload": payload}, ensure_ascii=False),
-            encoding="utf-8"
-        )
-
-    def clear(self) -> None:
-        if self.dir.exists():
-            for f in self.dir.glob("*.json"):
-                f.unlink()
-
-    def stats(self) -> dict:
-        if not self.dir.exists():
-            return {"entries": 0, "size_kb": 0}
-        files = list(self.dir.glob("*.json"))
-        return {
-            "entries": len(files),
-            "size_kb": round(sum(f.stat().st_size for f in files) / 1024, 1)
-        }
-
-_cache = _CacheManager(enabled=False)
+# NPC 检索清单 TTL（秒）。税收政策随时更新，故取短 TTL 保证新鲜度。
+CACHE_TTL = 300
+_cache = CacheManager(enabled=False, namespace="search")
 
 
 # ── 税种与专题 → 检索词映射 ──────────────────────────────────────────────────
@@ -444,6 +408,103 @@ RELIABILITY_NOTES = {
 _MIN_INTERVAL = 0.6          # NPC 连续请求过快会直接断连，不回 429
 _last_request_at = 0.0
 
+# ── NPC 串行闸（跨进程） ─────────────────────────────────────────────────────
+# NPC 限流不回 429，而是断连、或回一份挑战页（见 _is_challenge_page）。几个
+# 脚本并发跑必现，文档里写"必须串行"太软，这里直接用锁强制：同一时刻只允许
+# 一个进程打 NPC。锁在进程退出时由操作系统自动释放，崩溃不会留死锁。
+SERIAL_LOCK_TIMEOUT = float(os.getenv("TAX_NPC_LOCK_TIMEOUT", "180"))
+_SERIAL_LOCK_PATH = Path(tempfile.gettempdir()) / "tax-policy-search-npc.lock"
+
+try:
+    import msvcrt                       # Windows
+except ImportError:                     # pragma: no cover
+    msvcrt = None
+try:
+    import fcntl                        # Linux / macOS
+except ImportError:                     # pragma: no cover
+    fcntl = None
+
+
+class NpcSerialGate:
+    """跨进程互斥：同一时刻只有一个进程能访问 NPC。
+
+        with npc_gate:
+            requests.request(...)
+
+    两层锁缺一不可：
+      - 进程内的 threading.Lock —— Windows 的文件锁按"进程 + 区域"算，同一
+        进程里第二次加锁会直接失败（不像 flock 可重入），所以多线程必须先
+        在进程内排队；
+      - 跨进程的文件锁 —— 用 msvcrt（Windows）或 fcntl（类 Unix），不引依赖。
+
+    两者都不可用时退化成不加锁，只影响强度，不会比以前更差。
+    """
+
+    def __init__(self, path: Path = _SERIAL_LOCK_PATH,
+                 timeout: float = SERIAL_LOCK_TIMEOUT):
+        self.path = Path(path)
+        self.timeout = timeout
+        self._fh = None
+        self._thread_lock = threading.Lock()
+
+    def _try_lock(self):
+        if msvcrt is not None:
+            self._fh.seek(0)
+            msvcrt.locking(self._fh.fileno(), msvcrt.LK_NBLCK, 1)
+        elif fcntl is not None:
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _unlock(self):
+        try:
+            if msvcrt is not None:
+                self._fh.seek(0)
+                msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
+            elif fcntl is not None:
+                fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+
+    def __enter__(self):
+        if msvcrt is None and fcntl is None:
+            return self                     # 裸平台：不加锁，也不报错
+        self._thread_lock.acquire()
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._fh = open(self.path, "a+b")
+            if self.path.stat().st_size == 0:   # 要锁 1 字节，文件先得有那 1 字节
+                self._fh.write(b"\0")
+                self._fh.flush()
+            deadline = time.monotonic() + self.timeout
+            while True:
+                try:
+                    self._try_lock()
+                    return self
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            f"等待 NPC 串行闸超过 {self.timeout:.0f} 秒——"
+                            "说明另有进程正在跑 NPC 检索。NPC 并发会被限流"
+                            "（且不回 429），请等它跑完，或调大环境变量 "
+                            "TAX_NPC_LOCK_TIMEOUT。")
+                    time.sleep(0.2)
+        except BaseException:
+            if self._fh is not None:
+                self._fh.close()
+                self._fh = None
+            self._thread_lock.release()
+            raise
+
+    def __exit__(self, *exc):
+        if self._fh is not None:
+            self._unlock()
+            self._fh.close()
+            self._fh = None
+        self._thread_lock.release()
+        return False
+
+
+npc_gate = NpcSerialGate()
+
 
 def _fulltext_match_rank(title: str, keyword: str, parent_law: str, score: float) -> tuple:
     """给正文检索的结果重排用，键越小越相关。
@@ -490,8 +551,10 @@ def _request(method: str, url: str, **kwargs) -> requests.Response:
         if gap > 0:
             time.sleep(gap)
         try:
-            r = requests.request(method, url, verify=VERIFY_SSL, headers=HEADERS,
-                                 timeout=15, **kwargs)
+            # 跨进程串行：NPC 并发会被限流，且不回 429（见 _is_challenge_page）
+            with npc_gate:
+                r = tax_http.request(method, url, verify=VERIFY_SSL, headers=HEADERS,
+                                     timeout=15, **kwargs)
         except requests.RequestException as e:
             # 断连与 429 一样是对方在限流，退避后重试
             last_exc = e
@@ -563,7 +626,7 @@ def search_tax(keyword: str, *,
         "search", keyword, str(search_range), str(search_type),
         str(status), str(date_from), str(date_to), str(page), str(size), sort
     )
-    cached = _cache.get(cache_key, max_age=300)
+    cached = _cache.get(cache_key, max_age=CACHE_TTL)
     if cached:
         cached["_from_cache"] = True
         return cached
@@ -743,7 +806,8 @@ Examples:
     p.add_argument("--sort", choices=["relevance", "date"], default="relevance")
     p.add_argument("--json", action="store_true", help="Output JSON")
     p.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
-    p.add_argument("--cache", action="store_true", help="Enable cache (5min TTL)")
+    p.add_argument("--cache", action="store_true",
+                   help=f"Enable cache ({CACHE_TTL // 60}min TTL)")
     p.add_argument("--no-cache", action="store_true", help="Disable cache")
     p.add_argument("--cache-stats", action="store_true", help="Show cache stats")
     p.add_argument("--cache-clear", action="store_true", help="Clear cache")
@@ -758,9 +822,9 @@ def main():
 
     # Cache management
     if args.cache:
-        _cache = _CacheManager(enabled=True)
+        _cache = CacheManager(enabled=True, namespace="search")
     elif args.no_cache:
-        _cache = _CacheManager(enabled=False)
+        _cache = CacheManager(enabled=False, namespace="search")
 
     if args.cache_stats:
         s = _cache.stats()

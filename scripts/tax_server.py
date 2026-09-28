@@ -22,16 +22,27 @@ from tax_fgk import search_fgk
 from tax_so360 import so360_search
 from tax_shui5 import search_shui5
 from tax_wechat import search_wechat
-from tax_formatter import format_search_response
 from tax_aggregator import aggregate_search, DEFAULT_SOURCES
+import tax_http
+from tax_http import VERIFY_SSL
+import tax_llm
 
 from flask import Flask, request, jsonify, send_from_directory
-import requests as req
 import urllib3
 urllib3.disable_warnings()
 
 app = Flask(__name__, static_folder=None)
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+
+# 监听地址。默认只绑本机回环：这个服务会拿本机 IP 去抓 NPC / 总局 / 360 /
+# 搜狗，暴露到局域网等于把本机配额借给别人用。
+#   本机自用   默认 127.0.0.1
+#   局域网共享 TAX_BIND=0.0.0.0
+#   容器里跑   必须 TAX_BIND=0.0.0.0——`-p` 端口映射靠 DNAT 把包投给容器自己
+#              的 IP，只监听回环时没有任何 socket 收得到（实测 WinError 10061）。
+#              此时把暴露面收在宿主机侧： docker run -p 127.0.0.1:5080:5080
+BIND_HOST = os.getenv("TAX_BIND", "127.0.0.1").strip() or "127.0.0.1"
+PORT = int(os.getenv("TAX_PORT", "5080"))
 
 _text_cache = {}
 _interp_cache = {}
@@ -294,7 +305,10 @@ def _download_and_extract(bbbs_id: str) -> list[str]:
     if not dl_url:
         return []
 
-    resp = req.get(dl_url, verify=False, timeout=30, headers={
+    # verify 改用统一的 VERIFY_SSL：这里原来硬编码 verify=False，是全项目
+    # 唯一一处绕开环境变量的例外。默认值下两者等价（VERIFY_SSL 未设时也是
+    # False），只有显式 TAX_SEARCH_VERIFY_SSL=1 时才会跟着一起打开校验。
+    resp = tax_http.get(dl_url, verify=VERIFY_SSL, timeout=30, headers={
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Referer": "https://flk.npc.gov.cn/",
     })
@@ -449,8 +463,17 @@ def api_text(bbbs_id):
 
 @app.route("/api/ai-interpret/<bbbs_id>", methods=["GET"])
 def api_ai_interpret(bbbs_id):
-    """AI-generated interpretation as fallback for a law."""
+    """AI 解读——本接口会花钱，花的是使用者自己账号里的额度，所以先过付费闸门。
+
+    旧写法在这里自己去 npm 全局目录找一个写死的命令名并直接发起调用：谁打开
+    网页点一下"AI 解读"就开始计费，界面上一个字都不提。现在闸门关着就返 503，
+    错误文案里写清楚开哪两个环境变量；闸门开了但上游没钱也返 503，不重试。
+    """
     keyword = request.args.get("keyword", "")
+    cmd, why = tax_llm.channel()
+    if not cmd:
+        return jsonify({"error": why, "code": "paid_llm_disabled",
+                        "paid": True, "enabled": False}), 503
     try:
         detail = fetch_detail(bbbs_id)
         title = detail.get("title", "")
@@ -502,43 +525,26 @@ def api_ai_interpret(bbbs_id):
 - 如涉及税率、金额、日期等关键数据，请准确引用
 - 总数控制在 500 字以内"""
 
-        import subprocess, tempfile
-        # Write prompt to temp file, then use stdin redirect to claude
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt",
-                                          encoding="utf-8", delete=False) as pf:
-            pf.write(prompt)
-            prompt_file = pf.name
-
-        npm_global = Path.home() / "AppData" / "Roaming" / "npm"
-        claude_path = npm_global / "claude.cmd"
-        if not claude_path.exists():
-            claude_path = npm_global / "claude"
-
         try:
-            result = subprocess.run(
-                f'"{claude_path}" --print < "{prompt_file}"',
-                capture_output=True, encoding="utf-8", errors="replace",
-                timeout=120,
-                cwd=str(Path.home()),
-                shell=True,
-            )
-        finally:
-            os.unlink(prompt_file)
-
-        if result.returncode != 0:
-            return jsonify({"error": f"Claude error: {result.stderr[:200]}"}), 500
+            text = tax_llm.ask(prompt)
+        except tax_llm.QuotaExhausted as e:
+            # 额度耗尽不重试：在没钱的账号上每重试一次都可能继续计费。
+            return jsonify({"error": f"所用账号额度已用完：{e}",
+                            "code": "quota_exhausted",
+                            "paid": True, "enabled": True}), 503
+        except Exception as e:
+            return jsonify({"error": str(e)[:300], "code": "model_error",
+                            "paid": True, "enabled": True}), 502
 
         return jsonify({
             "law_id": bbbs_id,
             "law_title": title,
             "keyword": keyword,
-            "interpretation": result.stdout,
-            "model": "Claude (AI 生成)",
+            "interpretation": text,
+            "model": f"外部模型 CLI（{cmd}）生成的解读",
             "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "disclaimer": "AI 生成内容仅供参考，以官方政策文件和主管税务机关解释为准。",
         })
-    except subprocess.TimeoutExpired:
-        return jsonify({"error": "AI generation timed out"}), 504
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -667,16 +673,52 @@ def api_quick_tax_types():
 
 @app.route("/api/health", methods=["GET"])
 def api_health():
-    return jsonify({"status": "ok", "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+    """健康检查顺带报出付费闸门状态。
+
+    前端要在点按钮之前就知道"AI 解读"这次会不会花钱、能不能用，所以把闸门
+    说明放在这里；否则只能等用户点下去、拿到 503 才知道功能没开。
+    """
+    cmd, why = tax_llm.channel()
+    return jsonify({"status": "ok", "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "paid_llm": {"enabled": bool(cmd), "explanation": why}})
+
+
+def _force_utf8_console():
+    """让 Windows 控制台跟着 Python 走 UTF-8。
+
+    本服务的输出固定用 UTF-8（见下面 __main__ 里的 reconfigure）。但 Windows
+    控制台默认代码页是 936，UTF-8 字节按 936 解释就是乱码——所以先把控制台
+    代码页也切成 65001。
+
+    好处是 `python scripts\\tax_server.py` 在哪个终端里跑都能正常显示中文，
+    启动脚本不必再套一层 `cmd /k "chcp 65001 && ..."`（那种嵌套引号在 bat 里
+    既难写又难验）。
+    """
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+        ctypes.windll.kernel32.SetConsoleCP(65001)
+    except Exception:
+        pass                      # 没有真实控制台（管道/重定向）时忽略
 
 
 if __name__ == "__main__":
-    import sys
-    sys.stdout.reconfigure(encoding='utf-8')
+    _force_utf8_console()
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass                      # 容器里 stdout 是管道时可能不支持重配
     print("\n  [tax-policy-search] API Server")
-    print("  http://localhost:5080")
+    print(f"  监听 {BIND_HOST}:{PORT}")
+    if BIND_HOST in ("127.0.0.1", "localhost"):
+        print(f"  打开 http://localhost:{PORT}")
+    else:
+        print(f"  本机 http://127.0.0.1:{PORT}    局域网 http://<本机IP>:{PORT}")
+        print("  注意：已监听所有网卡，同网段设备都能访问，且会用本机 IP 去抓外部站点")
     print("  POST /api/search")
     print("  GET  /api/text/<id>")
     print("  GET  /api/interpretations/<id>")
     print()
-    app.run(host="0.0.0.0", port=5080, debug=False)
+    app.run(host=BIND_HOST, port=PORT, debug=False)

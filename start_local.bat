@@ -1,28 +1,65 @@
 @echo off
-chcp 65001 >nul
+REM ============================================================
+REM ±¾ÎÄ¼şÊÇ GBK(cp936) ±àÂë¡£ÖĞÎÄ Windows µÄ cmd Ä¬ÈÏ´úÂëÒ³¾ÍÊÇ 936£¬
+REM ÓÃ GBK ´æÅÌ£¬cmd ½âÎöÓëÏÔÊ¾¶¼Õı³££»´æ³É UTF-8 ·´¶ø»áÈÃÖĞÎÄ±ä³ÉÂÒÂë£¬
+REM ÉõÖÁ°Ñ×¢ÊÍĞĞ¶Á³ÉÃüÁî¡£¸Ä¶¯Ê±Çë±£³Ö GBK ±àÂëÓë CRLF »»ĞĞ¡£
+REM ============================================================
 cd /d "%~dp0"
 
 echo ============================================
-echo  è§„åˆ™çš„èµ·ç‚¹ â€” è´¢ç¨æ”¿ç­–æœç´¢å¼•æ“ï¼ˆæœ¬åœ°ç‰ˆï¼‰
+echo  ¹æÔòµÄÆğµã ¡ª ²ÆË°Õş²ßËÑË÷ÒıÇæ£¨±¾µØ°æ£©
 echo ============================================
 echo.
 
-echo æ£€æŸ¥ Pythonâ€¦
+echo ¼ì²é Python¡­
 where python >nul 2>&1
 if %ERRORLEVEL% neq 0 (
-    echo [é”™è¯¯] æœªæ‰¾åˆ° Pythonï¼Œè¯·å…ˆå®‰è£… Python 3
+    echo [´íÎó] Î´ÕÒµ½ Python£¬ÇëÏÈ°²×° Python 3
     pause
     exit /b 1
 )
 
-echo å®‰è£… / æ£€æŸ¥ä¾èµ–â€¦
-python -m pip install flask requests urllib3 -q
+echo °²×° / ¼ì²éÒÀÀµ¡­
+python -m pip install -r requirements.txt -q
+
+REM ¶Ë¿Ú¸úËæ tax_server.py£ºTAX_PORT Ã»Éè¾ÍÊÇ 5080
+set PORT=5080
+if not "%TAX_PORT%"=="" set PORT=%TAX_PORT%
 
 echo.
-echo å¯åŠ¨æœåŠ¡å™¨ï¼ˆç«¯å£ 5080ï¼‰â€¦
-echo æµè§ˆå™¨æ‰“å¼€ï¼šhttp://localhost:5080
-echo.
-start http://localhost:5080
-python scripts\tax_server.py
+echo Æô¶¯·şÎñÆ÷£¨¶Ë¿Ú %PORT%£©¡­
 
+REM ÒÑ¾­ÔÚÅÜ¾ÍÖ±½Ó¿ªä¯ÀÀÆ÷£¬²»ÔÙÆğµÚ¶ş¸ö£¨·ñÔòÁ½¸ö½ø³Ì»á×²¶Ë¿Ú£©¡£
+REM ProgressPreference ÊÇÎªÁË²»ÈÃ Invoke-WebRequest ÍùÆÁÄ»ÉÏË¢½ø¶ÈÌõ¡£
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; try{ if((Invoke-WebRequest -Uri 'http://127.0.0.1:%PORT%/api/health' -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200){exit 0} }catch{}; exit 1"
+if %ERRORLEVEL% equ 0 (
+    echo ·şÎñÆ÷ÒÑ¾­ÔÚÔËĞĞ£¬Ö±½Ó´ò¿ªä¯ÀÀÆ÷¡£
+    start "" http://127.0.0.1:%PORT%
+    goto :done
+)
+
+REM ÔÚ¶ÀÁ¢´°¿ÚÀïÆğ·şÎñ£ºÈÕÖ¾ÁôÔÚÄÇ¸ö´°¿Ú£¬¹ØµôËü¼´Í£·şÎñ¡£
+REM ÕâÀï²»±ØÌ× cmd /k "chcp 65001 && ..."£ºtax_server.py Æô¶¯Ê±»á×Ô¼º°Ñ¿ØÖÆÌ¨
+REM ´úÂëÒ³ÇĞ³É 65001£¬ËùÒÔÒ»¸ö×î¼òµ¥µÄ start ¾Í¹»£¬Ã»ÓĞÇ¶Ì×ÒıºÅÒª²ÙĞÄ¡£
+REM ¼àÌıµØÖ·¸úËæ tax_server.py µÄ TAX_BIND£¨Ä¬ÈÏ 127.0.0.1£¬Ö»±¾»ú¿É·ÃÎÊ£©¡£
+start "tax-policy-search server" python scripts\tax_server.py
+
+REM µÈ¶Ë¿ÚÕæµÄ¾ÍĞ÷ÔÙ¿ªä¯ÀÀÆ÷¡£Ô­À´ÕâÀïÊÇÏÈ start ä¯ÀÀÆ÷ÔÙÆğ·şÎñ£¬
+REM Ò³ÃæÇÀÔÚ Flask Ç°Ãæ¼ÓÔØ£¬Ö»»á¿´µ½"ÎŞ·¨·ÃÎÊ´ËÍøÕ¾"¡£
+REM ¶Ë¿ÚÃ»¿ªÊ±Ã¿Ì½²âÒ»´ÎÔ¼ 1.5 Ãë£¨Á¬½Ó±»¾ÜÒªµÈ³¬Ê±£©£¬40 ´ÎÔ¼ 1 ·ÖÖÓ¡£
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; $ok=$false; for($i=0;$i -lt 40;$i++){ try{ if((Invoke-WebRequest -Uri 'http://127.0.0.1:%PORT%/api/health' -UseBasicParsing -TimeoutSec 1).StatusCode -eq 200){$ok=$true; break} }catch{}; Start-Sleep -Milliseconds 500 }; if($ok){exit 0}else{exit 1}"
+if %ERRORLEVEL% neq 0 (
+    echo.
+    echo [¾¯¸æ] ·şÎñÆ÷Ô¼ 1 ·ÖÖÓÄÚÃ»ÓĞ¾ÍĞ÷£¬ÈÔ³¢ÊÔ´ò¿ªä¯ÀÀÆ÷¡£
+    echo        Çë²é¿´ÄÇ¸ö "tax-policy-search server" ´°¿ÚÀïµÄ±¨´í¡£
+    echo.
+)
+
+start "" http://127.0.0.1:%PORT%
+
+:done
+echo.
+echo ·şÎñÆ÷ÔËĞĞÔÚ¶ÀÁ¢µÄ "tax-policy-search server" ´°¿ÚÀï¡£
+echo Í£Ö¹·şÎñ£º¹Ø±ÕÄÇ¸ö´°¿Ú¼´¿É¡£
+echo.
 pause

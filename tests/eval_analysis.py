@@ -87,9 +87,17 @@ def load_questions(limit: int, seed: int = 7, validity: str = "ok",
                 r = json.loads(line)
                 if validity != "all" and r.get("validity") != validity:
                     continue
-                rows.append({"id": r.get("key", "")[:16], "question": r["question"],
+                rows.append({"id": r.get("key", "")[:16], "key": r.get("key", ""),
+                             "question": r["question"],
                              "answer": r.get("answer", ""), "source": r.get("source", ""),
-                             "validity": r.get("validity", "")})
+                             "subset": r.get("subset", ""),
+                             "validity": r.get("validity", ""),
+                             # 选项与题型档位只有答题正确率评测用得上，判型四项不读它们；
+                             # 在这里带上是为了让两个评测共用同一份取样与时效过滤，
+                             # 免得两边各挑各的题、指标对不上。
+                             "options": r.get("options", {}),
+                             "answer_type": r.get("answer_type", ""),
+                             "flags": r.get("flags", [])})
     else:
         for f in glob.glob(EVAL_GLOB):
             with open(f, encoding="utf-8-sig") as fh:
