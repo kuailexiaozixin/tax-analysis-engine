@@ -22,7 +22,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
+ROOT = Path(__file__).resolve().parent.parent
+SCRIPTS_DIR = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 import tax_http  # noqa: E402
@@ -43,7 +44,12 @@ ALLOWED_BARE = {
 NETWORK_ATTRS = {"get", "post", "put", "delete", "patch", "head", "request", "Session"}
 
 # 必须经由统一层的模块（原先是各写一遍裸请求的那几个）
-MUST_USE_HTTP_LAYER = ("tax_detail.py", "tax_fgk.py", "tax_search.py", "tax_server.py")
+#
+# tax_server.py 已不在名单里：它唯一的直接请求（下载 NPC 正文）改成了调用
+# tax_detail.download_bytes，本模块不再自己发 HTTP，硬要它 import tax_http
+# 只会留下一个没人用的导入。覆盖不会因此变松——上面的白名单规则照样管它，
+# 下面的 TestNpcDownloadSinglePath 还额外钉住"下载只有一条路径且上了闸"。
+MUST_USE_HTTP_LAYER = ("tax_detail.py", "tax_fgk.py", "tax_search.py")
 
 
 def _requests_names(tree):
@@ -122,6 +128,40 @@ class TestBareRequestsGuard(unittest.TestCase):
             )
             hits = [expr for _, expr in _bare_calls(tmp)]
         self.assertEqual(["post", "r.get"], sorted(hits))
+
+
+class TestNpcDownloadSinglePath(unittest.TestCase):
+    """NPC 正文下载只能有一条路径，而且必须在串行闸内。
+
+    tax_server 与 tests/eval_answer 原先各自拼一遍下载 URL、再裸发请求，
+    两条路都不在闸里——"评测时不要并行打 NPC"这条规则只能靠人记。现在
+    取地址与取文件都收进 tax_detail.download_bytes 一个函数。
+    """
+
+    def test_download_url_is_built_only_in_tax_detail(self):
+        # 针脚拆成两段拼出来：否则本文件自己就含有那个字符串，会被自己扫出来
+        # （把本文件排除也能过，但那等于把扫描面缩小，不如让针脚不出现）。
+        needle = "law-search/" + "download/pc"
+        offenders = []
+        for p in sorted(list(SCRIPTS_DIR.glob("*.py")) + list((ROOT / "tests").glob("*.py"))):
+            if p.name == "tax_detail.py":
+                continue
+            if needle in p.read_text(encoding="utf-8"):
+                offenders.append(p.name)
+        self.assertEqual(
+            [], offenders,
+            "下载地址只该在 tax_detail.py 里拼，这些文件各拼了一遍：{}".format(offenders))
+
+    def test_download_bytes_holds_the_gate(self):
+        src = (SCRIPTS_DIR / "tax_detail.py").read_text(encoding="utf-8")
+        body = src[src.index("def download_bytes"):src.index("def download_file")]
+        self.assertIn("with npc_gate:", body, "download_bytes 没有上串行闸")
+
+    def test_consumers_use_download_bytes(self):
+        for rel in ("scripts/tax_server.py", "tests/eval_answer.py"):
+            text = (ROOT / rel).read_text(encoding="utf-8")
+            self.assertIn("download_bytes", text,
+                          "{} 没有走 tax_detail.download_bytes".format(rel))
 
 
 class TestTaxHttpPassthrough(unittest.TestCase):

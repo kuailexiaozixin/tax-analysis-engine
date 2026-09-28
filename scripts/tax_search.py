@@ -23,7 +23,6 @@ import os
 import re
 import sys
 import tempfile
-import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -419,95 +418,24 @@ _last_request_at = 0.0
 # NPC 限流不回 429，而是断连、或回一份挑战页（见 _is_challenge_page）。几个
 # 脚本并发跑必现，文档里写"必须串行"太软，这里直接用锁强制：同一时刻只允许
 # 一个进程打 NPC。锁在进程退出时由操作系统自动释放，崩溃不会留死锁。
+# 闸本体在 tax_http.SerialGate（搜狗微信共用同一份实现），这里只钉 NPC 的默认值。
 SERIAL_LOCK_TIMEOUT = float(os.getenv("TAX_NPC_LOCK_TIMEOUT", "180"))
 _SERIAL_LOCK_PATH = Path(tempfile.gettempdir()) / "tax-policy-search-npc.lock"
 
-try:
-    import msvcrt                       # Windows
-except ImportError:                     # pragma: no cover
-    msvcrt = None
-try:
-    import fcntl                        # Linux / macOS
-except ImportError:                     # pragma: no cover
-    fcntl = None
 
+class NpcSerialGate(tax_http.SerialGate):
+    """NPC 站专用闸：锁文件与超时环境变量都钉在 NPC 上。
 
-class NpcSerialGate:
-    """跨进程互斥：同一时刻只有一个进程能访问 NPC。
-
-        with npc_gate:
-            requests.request(...)
-
-    两层锁缺一不可：
-      - 进程内的 threading.Lock —— Windows 的文件锁按"进程 + 区域"算，同一
-        进程里第二次加锁会直接失败（不像 flock 可重入），所以多线程必须先
-        在进程内排队；
-      - 跨进程的文件锁 —— 用 msvcrt（Windows）或 fcntl（类 Unix），不引依赖。
-
-    两者都不可用时退化成不加锁，只影响强度，不会比以前更差。
+    锁的实现只有一份，在 tax_http.SerialGate —— 搜狗微信那边也要用同一套
+    （并发加压会触发反爬），两处各抄一遍文件锁代码迟早只改一处。
+    这里只负责把 NPC 的默认值固定下来，调用方看到的签名与行为跟以前一样。
     """
+
+    site = "NPC"
 
     def __init__(self, path: Path = _SERIAL_LOCK_PATH,
                  timeout: float = SERIAL_LOCK_TIMEOUT):
-        self.path = Path(path)
-        self.timeout = timeout
-        self._fh = None
-        self._thread_lock = threading.Lock()
-
-    def _try_lock(self):
-        if msvcrt is not None:
-            self._fh.seek(0)
-            msvcrt.locking(self._fh.fileno(), msvcrt.LK_NBLCK, 1)
-        elif fcntl is not None:
-            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-
-    def _unlock(self):
-        try:
-            if msvcrt is not None:
-                self._fh.seek(0)
-                msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
-            elif fcntl is not None:
-                fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
-        except OSError:
-            pass
-
-    def __enter__(self):
-        if msvcrt is None and fcntl is None:
-            return self                     # 裸平台：不加锁，也不报错
-        self._thread_lock.acquire()
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self._fh = open(self.path, "a+b")
-            if self.path.stat().st_size == 0:   # 要锁 1 字节，文件先得有那 1 字节
-                self._fh.write(b"\0")
-                self._fh.flush()
-            deadline = time.monotonic() + self.timeout
-            while True:
-                try:
-                    self._try_lock()
-                    return self
-                except OSError:
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError(
-                            f"等待 NPC 串行闸超过 {self.timeout:.0f} 秒——"
-                            "说明另有进程正在跑 NPC 检索。NPC 并发会被限流"
-                            "（且不回 429），请等它跑完，或调大环境变量 "
-                            "TAX_NPC_LOCK_TIMEOUT。")
-                    time.sleep(0.2)
-        except BaseException:
-            if self._fh is not None:
-                self._fh.close()
-                self._fh = None
-            self._thread_lock.release()
-            raise
-
-    def __exit__(self, *exc):
-        if self._fh is not None:
-            self._unlock()
-            self._fh.close()
-            self._fh = None
-        self._thread_lock.release()
-        return False
+        super().__init__(path=path, timeout=timeout)
 
 
 npc_gate = NpcSerialGate()

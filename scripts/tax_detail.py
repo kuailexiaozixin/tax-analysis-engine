@@ -187,22 +187,36 @@ def _flatten_content(node, out: Optional[list] = None) -> list:
 
 
 def get_download_url(bbbs_id: str, fmt: str = "docx") -> Optional[str]:
-    """Get a signed download URL for a law document."""
+    """Get a signed download URL for a law document.
+
+    走 _request，不直接 tax_http.get：这个端点就在 flk.npc.gov.cn 上，与检索、
+    详情接口同一套限流。原先它绕过了节流与串行闸，是闸外的一条缝——两个进程
+    各拿一个下载地址都会打进同一个站。
+    """
     url = f"{BASE_URL}/law-search/download/pc?format={fmt}&bbbs={bbbs_id}"
-    r = tax_http.get(url, headers=HEADERS, verify=VERIFY_SSL, timeout=15)
-    r.raise_for_status()
+    r = _request(url)
     data = r.json()
     return data.get("data", {}).get("url")
 
 
-def download_file(bbbs_id: str, fmt: str = "docx", output_path: Optional[str] = None) -> str:
-    """Download a law document and save to disk."""
+def download_bytes(bbbs_id: str, fmt: str = "docx") -> bytes:
+    """下载法规文件并返回字节，不落盘。
+
+    下载环节也在串行闸内：评测逐题取依据时会连发几十次，而"评测时不要并行
+    打 NPC"这条规则靠人记迟早会忘——放进闸里就不必记了。
+    """
     dl_url = get_download_url(bbbs_id, fmt)
     if not dl_url:
         raise ValueError(f"No download URL returned for {bbbs_id}")
-
-    r = tax_http.get(dl_url, headers=HEADERS, verify=VERIFY_SSL, timeout=60)
+    with npc_gate:
+        r = tax_http.get(dl_url, headers=HEADERS, verify=VERIFY_SSL, timeout=60)
     r.raise_for_status()
+    return r.content
+
+
+def download_file(bbbs_id: str, fmt: str = "docx", output_path: Optional[str] = None) -> str:
+    """Download a law document and save to disk."""
+    content = download_bytes(bbbs_id, fmt)
 
     detail = fetch_detail(bbbs_id)
     safe_title = re.sub(r"[^\w一-鿿]", "_", detail["title"])[:50]
@@ -212,7 +226,7 @@ def download_file(bbbs_id: str, fmt: str = "docx", output_path: Optional[str] = 
         output_path = f"{safe_title}_{bbbs_id[:8]}.{ext}"
 
     with open(output_path, "wb") as f:
-        f.write(r.content)
+        f.write(content)
 
     return output_path
 

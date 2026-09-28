@@ -29,9 +29,19 @@ verify 为什么是必填参数
 tax_shui5 / tax_so360 / tax_wechat / tax_web_search 各自维护 requests.Session
 （WAF 挑战应对、cookie 恢复、页面二次跳转），请求形状与这里不同。
 强行合并只会把它们的特例塞进通用层，所以它们保持自管。
+
+串行闸为什么也放这里
+--------------------
+"同一时刻只让一个进程打某个站"这件事有两个站要用：NPC（检索 + 详情同上限流）
+与搜狗微信（并发加压触发反爬）。闸的实现在下面只写一份，两个站各配一个锁文件，
+免得同一段文件锁逻辑抄两遍、只改一处。
 """
 
 import os
+import tempfile
+import threading
+import time
+from pathlib import Path
 
 import requests
 
@@ -41,6 +51,96 @@ import requests
 # 注意：这个常量是给调用方取用的"默认值来源"，不是本层的隐式默认——
 # 每个调用点仍必须把 verify 显式传进来。
 VERIFY_SSL = os.getenv("TAX_SEARCH_VERIFY_SSL", "0") == "1"
+
+try:
+    import msvcrt                       # Windows
+except ImportError:                     # pragma: no cover
+    msvcrt = None
+try:
+    import fcntl                        # Linux / macOS
+except ImportError:                     # pragma: no cover
+    fcntl = None
+
+
+class SerialGate:
+    """跨进程串行闸：同一时刻只允许一个进程进入临界区。
+
+        with gate:
+            do_request()
+
+    两层锁缺一不可：
+      - 进程内的 threading.Lock —— Windows 的文件锁按"进程 + 区域"算，同一
+        进程里第二次加锁会直接失败（不像 flock 可重入），所以多线程必须先
+        在进程内排队；
+      - 跨进程的文件锁 —— 用 msvcrt（Windows）或 fcntl（类 Unix），不引依赖。
+
+    两者都不可用时退化成不加锁，只影响强度，不会比以前更差。
+    """
+
+    #: 超时提示里替换成调用方自己的站点名，好让报错说清是哪个站在等
+    site = "该站"
+
+    def __init__(self, path: Path = None, timeout: float = 180.0):
+        self.path = Path(path) if path else Path(tempfile.gettempdir()) / "tax-policy-search.lock"
+        self.timeout = float(timeout)
+        self._fh = None
+        self._thread_lock = threading.Lock()
+
+    def _try_lock(self):
+        if msvcrt is not None:
+            self._fh.seek(0)
+            msvcrt.locking(self._fh.fileno(), msvcrt.LK_NBLCK, 1)
+        elif fcntl is not None:
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _unlock(self):
+        try:
+            if msvcrt is not None:
+                self._fh.seek(0)
+                msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
+            elif fcntl is not None:
+                fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+
+    def __enter__(self):
+        if msvcrt is None and fcntl is None:
+            return self                     # 裸平台：不加锁，也不报错
+        self._thread_lock.acquire()
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._fh = open(self.path, "a+b")
+            if self.path.stat().st_size == 0:   # 要锁 1 字节，文件先得有那 1 字节
+                self._fh.write(b"\0")
+                self._fh.flush()
+            deadline = time.monotonic() + self.timeout
+            while True:
+                try:
+                    self._try_lock()
+                    return self
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            f"等待{self.site}串行闸超过 {self.timeout:.0f} 秒——"
+                            f"说明另有进程正在打{self.site}。并发会被限流"
+                            f"（且不一定回 429），请等它跑完，或调大对应的"
+                            f"TAX_*_LOCK_TIMEOUT 环境变量。")
+                    time.sleep(0.2)
+        except BaseException:
+            if self._fh is not None:
+                self._fh.close()
+                self._fh = None
+            self._thread_lock.release()
+            raise
+
+    def __exit__(self, *exc):
+        if self._fh is not None:
+            self._unlock()
+            self._fh.close()
+            self._fh = None
+        self._thread_lock.release()
+        return False
+
 
 
 def request(method: str, url: str, *, headers: dict, timeout: float,

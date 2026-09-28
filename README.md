@@ -4,7 +4,7 @@
 
 > **文档分工（单一事实来源）**：本 README 是**项目总览**（面向人：定位 / 架构 / 用法 / 目录）。
 > Agent 的操作手册在 `SKILL.md`（面向 AI 的检索与回答规范），二者不重复描述同一细节。
-> **版本号以 `SKILL.md` frontmatter 的 `version` 为唯一来源**（当前 `3.0.0`）；其余 `*.md` 为历史留档，不代表当前版本。
+> **版本号以 `SKILL.md` frontmatter 的 `version` 为唯一来源**（当前 `3.0.1`）；其余 `*.md` 为历史留档，不代表当前版本。
 
 ---
 
@@ -33,8 +33,9 @@
 
 ```
 前端  frontend/index.html（零框架单文件）
-  搜索栏 · 高级筛选（范围/类型/时效/排序/来源/省份/日期区间）
+  搜索栏 · 高级筛选（范围/类型/时效/排序/来源/日期区间）
   智能引导 4 步向导 · 结果卡片 · 法规弹窗 4 标签页（原文｜官方解读｜AI 解读｜相关网页）
+  地方口径省份下拉在"官方解读"页顶部（它只对该页生效，所以不放搜索栏）
         │ HTTP
         ▼
 接口层  scripts/tax_server.py（Flask）
@@ -81,7 +82,6 @@
 | **输出格式化** | `tax_formatter.py` | 四段式 Markdown、多源聚合输出；本身也是个命令行工具：`python scripts/tax_formatter.py --intent policy_lookup < result.json`（stdin 收 JSON、stdout 出 markdown，加 `--mode aggregated` 走多源归并；stdin 的字段要求见「命令行搜索」） |
 | **模型通道** | `tax_llm.py` | 外部模型调用的唯一出口：付费闸门只认环境变量、不探测本机 CLI、额度类错误分型上抛 |
 | **后端 API** | `tax_server.py` | Flask 路由、法规原文提取、解读搜索、AI 解读（走付费闸门）、取数失败与空结果分离 |
-| **辅助（可选）** | `tunnel_daemon.py` | 把本地 5080 经 serveo.net 暴露到公网，供外网/手机访问；依赖免费第三方隧道、稳定性无保证，**非主链路**（SKILL.md 不引用） |
 | **测试** | `test_tax_search.py` | 端到端 + 离线用例：parent_law 真实存在、聚合路由与跨源时间序、拦截页判别、sort=date、答题判分与解析、分层抽样、主依据健康度分档、净贡献配对覆盖、付费闸门与分发扫描 |
 | **测试** | `test_eval_set.py` | 评测集规则的离线用例：时效判档、去重键、分类表同步 |
 | **测试** | `test_tax_fgk.py` | fgk 离线用例：翻页上限与自适应收尾、文字/视频/空容器正文、缓存不含正文、命中标记与防污染（全打桩，不联网） |
@@ -89,6 +89,8 @@
 | **测试** | `test_detail_cache.py` | 详情缓存用例：键算法与历史缓存逐字节一致、命名空间不越界、命中留痕、老条目读时转正、缓存不含条文正文（红线）、原子写不留半截文件 |
 | **测试** | `test_server_routes.py` | 服务端 9 路由用例：状态码与错误码、分支路由（npc/chinatax/fgk/aggregated）、付费闸门关着时不许碰模型、上游报错如实透出不吞成空结果（全打桩，不联网） |
 | **测试** | `test_http_layer.py` | 统一请求层守门：AST 扫全项目、除白名单外禁止绕过 `tax_http` 的裸请求（含别名写法）、参数只透传不补全、`verify` 必填 |
+| **测试** | `test_frontend_province_ui.py` | 前端省份控件契约：控件长在"官方解读"页而非搜索栏、高级筛选恰为 6 组、搜索请求不带 `province`、结果头不再显示省市标签、前端站点清单与 `tax_server.search_interpretations` 的默认 sources 逐字一致（读文件断言，不开浏览器） |
+| **测试** | `test_source_defects.py` | 源缺陷回归：fgk 深页标 `medium`、聚合缺口归因（税屋空归到 360）、网页渲染 `degraded_note`、定级层认 `_reliability`（low 出局 / 全 low 拒挑主依据 / 无标记口径不变）、搜狗串行闸与最小间隔（并发峰值 == 1）、NPC 下载单一路径收口 |
 | **门禁** | `check_doc_cli.py` | 文档-代码契约，两类检查：**命令级**（同行里点了脚本名的命令行，逐参数比对代码的参数表）+ **片段级**（孤立的 `` `--a --b` `` 必须能落在某一个脚本上），挡住"文档写了、代码没有"与"参数挂错脚本" |
 | **测试** | `test_check_doc_cli.py` | 文档契约规则自检：构造样例钉住片段级检查既能报出坏片段、也不误报好片段。规则一旦改对就永远绿，没有自检就无法证明它还在工作 |
 | **门禁入口** | `run_all.py` | 统一测试入口：默认跑离线组，`--online` 加联网组；退出码可直接接 CI（根目录 `run_tests.bat` 双击即跑） |
@@ -446,7 +448,6 @@ tax-policy-search/
 │   ├── tax_formatter.py            # 四段式 Markdown 输出
 │   ├── tax_llm.py                  # 外部模型调用的唯一出口：付费闸门 + 额度异常分型
 │   ├── tax_server.py               # Flask API + 前端托管
-│   ├── tunnel_daemon.py            # 隧道守护（可选：经 serveo.net 暴露本地 5080，非主链路）
 │   └── generate_manual.py          # 已废弃：不再生成 Word 手册，运行只打印提示并退出 1
 ├── frontend/index.html             # 单文件界面：搜索栏 / 4 步向导 / 结果卡片 / 法规弹窗四标签页
 ├── references/                     # tax_categories · search_strategies · tax_risk_framework
@@ -458,6 +459,8 @@ tax-policy-search/
 │   ├── test_detail_cache.py        # 详情缓存用例：键一致 / 命名空间不越界 / 原子写（全打桩）
 │   ├── test_server_routes.py       # 服务端路由用例：9 个路由的状态码与分支（全打桩，不联网）
 │   ├── test_http_layer.py          # 统一请求层守门：AST 扫全项目、禁止绕过 tax_http 的裸请求
+│   ├── test_frontend_province_ui.py # 前端省份控件契约：控件在哪 / 筛选组数 / 站点清单与后端一致
+│   ├── test_source_defects.py      # 源缺陷回归：深页标记 / 缺口说明 / 可靠性否决 / 搜狗闸与下载收口
 │   ├── test_eval_set.py            # 评测集规则的离线用例：时效判档、去重键、分类表同步
 │   ├── check_doc_cli.py            # 文档-代码契约：SKILL.md / README.md 里的参数 vs 代码 add_argument
 │   ├── test_check_doc_cli.py       # 文档契约规则自检：坏片段必须被报、好片段必须放行
@@ -472,7 +475,7 @@ tax-policy-search/
 └── run_tests.bat                   # 一键门禁（双击即跑，等价 python tests/run_all.py）
 ```
 
-（`tests/results/` 是评测运行的输出目录，已进 `.gitignore`，不入库。）
+（`tests/results/` 是评测运行的输出目录：依据缓存、模型输出缓存与 `--out` 结果都落这里。目录在需要时**自动创建**，已进 `.gitignore`、不入库，所以仓库里看不到它。）
 
 评测集原始数据不入仓库，放在 `../eval_data/`：FinanceIQ 与 FinEval 是 CC BY-NC-SA-4.0，
 IDEAFinBench 上游没有 LICENSE 文件，再分发前得先找上游确认。构建命令从那里读、也写到那里：

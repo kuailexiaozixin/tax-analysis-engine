@@ -60,6 +60,66 @@ SOURCE_LABELS = {
     "wechat": "💬 微信公众号(实务解读)",
 }
 
+# 每个源挂掉时"缺的到底是哪一层"。原先这件事写在文档里，要读的人自己把
+# "某源 0 条"翻译成"哪一层没了、能不能拿别的源顶"。现在由程序说清楚：
+# 缺哪层、什么后果、以及不要用其他源顶替。
+SOURCE_IMPACT = {
+    "npc": "全国性法律法规层（法律/行政法规/司法解释）缺失，没有别的源能覆盖它",
+    "chinatax": "总局公告、部门规章与官方解读层缺失",
+    "so360": "地方口径层与税屋的链接发现层缺失（税屋靠 360 的 site:shui5.cn 检索取链接）",
+    "shui5": "税屋的实务解读层缺失",
+    "wechat": "微信公众号的实务解读层缺失",
+}
+
+
+def _build_gaps(sources: list, errors: dict, source_summary: dict) -> list:
+    """把源级失败翻译成"缺了哪一层 + 怎么处理"，供上层照抄，不用自己推断。
+
+    两条判定：
+      1. 该源自己报了错（被拦、接口异常）→ 记一条缺口；
+      2. 税屋的链接靠 360 的 site:shui5.cn 检索取得，所以 360 被拦而税屋又
+         0 条时，税屋那条空结果不是"税屋没有内容"，是被 360 连带的——必须
+         标成 blocked_by，否则会被读成"该主题没有实务解读"。
+    """
+    gaps = []
+    for src in sources:
+        if src in errors:
+            gaps.append({
+                "source": src,
+                "label": SOURCE_LABELS.get(src, src),
+                "reason": errors[src],
+                "impact": SOURCE_IMPACT.get(src, "该源本次没有取到内容"),
+                "do_not_substitute": True,
+            })
+
+    if ("so360" in errors and "shui5" in sources
+            and not source_summary.get("shui5")
+            and not any(g["source"] == "shui5" for g in gaps)):
+        gaps.append({
+            "source": "shui5",
+            "label": SOURCE_LABELS.get("shui5", "shui5"),
+            "reason": "360 被拦，而税屋链接是靠 360 的 site:shui5.cn 检索取得的",
+            "impact": "税屋这一层的空结果是被 360 连带的，不代表税屋没有内容",
+            "blocked_by": "so360",
+            "do_not_substitute": True,
+        })
+    return gaps
+
+
+def _degraded_note(sources: list, gaps: list, source_summary: dict) -> str:
+    """把缺口拼成一句可以直接抄进答案的话；没有缺口时给空串。
+
+    这段话是给"答案里必须明说该层缺失"这条要求用的：原先要读文档的人自己
+    组织措辞，现在程序给成句，照抄即可，也不必自己判断哪层算缺。
+    """
+    if not gaps:
+        return ""
+    hit = sum(1 for s in sources if source_summary.get(s))
+    missing = "、".join(g["label"] for g in gaps)
+    return (f"本次多源检索 {hit}/{len(sources)} 个源有命中，缺失：{missing}。"
+            "缺失只说明这次没取到，不代表该层没有对应内容；"
+            "不要用其他源的条目顶替缺失层，答案里要明说缺的是哪一层。")
+
 
 def _jaccard_similarity(s1: str, s2: str) -> float:
     """Simple Jaccard similarity on character trigrams for title dedup."""
@@ -197,16 +257,21 @@ def aggregate_search(keyword: str, *,
             0 if x.get("publish_date") else 1,
         ))
 
+    source_summary = {
+        s: len(results[s].get("results", [])) if results.get(s) else 0
+        for s in sources
+    }
+    gaps = _build_gaps(sources, errors, source_summary)
     return {
         "keyword": keyword,
         "total_sources": len(sources),
         "total_items": len(all_items),
         "items": all_items[:size * 3],  # Cap total results
-        "source_summary": {
-            s: len(results[s].get("results", [])) if results.get(s) else 0
-            for s in sources
-        },
+        "source_summary": source_summary,
         "errors": errors,
+        # 缺了哪一层、什么后果、要不要拿别的源顶 → 由程序说，不靠读者推断
+        "gaps": gaps,
+        "degraded_note": _degraded_note(sources, gaps, source_summary),
         "searched_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
 
@@ -264,6 +329,12 @@ Examples:
                 hint = ("不得作为权威依据引用" if lvl == "low"
                         else "可用于定位法规，确定条文归属请改用标题检索")
                 print(f"   ⚠️ {n} 条结果带 _reliability: {lvl}，{hint}")
+    if result.get("gaps"):
+        print(f"   ⚠️ 缺失的层 {len(result['gaps'])} 处（答案里要明说，不要用其他源顶替）：")
+        for g in result["gaps"]:
+            by = f"［被 {g['blocked_by']} 连带］" if g.get("blocked_by") else ""
+            print(f"      - {g['label']}{by}：{g['impact']}")
+        print(f"      {result['degraded_note']}")
     print()
 
     for item in result.get("items", [])[:20]:

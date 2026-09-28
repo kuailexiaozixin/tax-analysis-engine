@@ -16,15 +16,13 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from tax_search import search_tax, detect_intent, resolve_tax_type
-from tax_detail import fetch_detail, get_download_url, SXX_MAP, _parse_docx_from_bytes
+from tax_detail import fetch_detail, download_bytes, SXX_MAP, _parse_docx_from_bytes
 from tax_web_search import search_chinatax
 from tax_fgk import search_fgk
 from tax_so360 import so360_search
 from tax_shui5 import search_shui5
 from tax_wechat import search_wechat
 from tax_aggregator import aggregate_search, DEFAULT_SOURCES
-import tax_http
-from tax_http import VERIFY_SSL
 import tax_llm
 
 from flask import Flask, request, jsonify, send_from_directory
@@ -301,21 +299,16 @@ def _download_and_extract(bbbs_id: str) -> list[str]:
     if bbbs_id in _text_cache:
         return _text_cache[bbbs_id]
 
-    dl_url = get_download_url(bbbs_id, "docx")
-    if not dl_url:
+    # 取下载地址与取文件都走 tax_detail 的同一套节流 + 串行闸：
+    # 原先这两步各自裸调 tax_http，闸外发请求，网页端连点几次就能和检索撞车。
+    try:
+        content = download_bytes(bbbs_id, "docx")
+    except Exception:
+        # 本层的契约是"取不到就当没有正文"：拿不到地址、上游非 200、网络异常
+        # 都归为取不到，由调用方按"未能获取全文"呈现，不把底层异常抛到路由外。
         return []
 
-    # verify 改用统一的 VERIFY_SSL：这里原来硬编码 verify=False，是全项目
-    # 唯一一处绕开环境变量的例外。默认值下两者等价（VERIFY_SSL 未设时也是
-    # False），只有显式 TAX_SEARCH_VERIFY_SSL=1 时才会跟着一起打开校验。
-    resp = tax_http.get(dl_url, verify=VERIFY_SSL, timeout=30, headers={
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Referer": "https://flk.npc.gov.cn/",
-    })
-    if resp.status_code != 200:
-        return []
-
-    paragraphs = _parse_docx_from_bytes(resp.content)
+    paragraphs = _parse_docx_from_bytes(content)
     if paragraphs:
         _text_cache[bbbs_id] = paragraphs
     return paragraphs

@@ -49,6 +49,10 @@ OFFLINE_GROUP = [
     ("NPC 串行闸用例（含跨进程）", [PY, str(TESTS_DIR / "test_npc_gate.py")]),
     ("detail 缓存用例（命名空间/留痕/正文红线）", [PY, str(TESTS_DIR / "test_detail_cache.py")]),
     ("服务端路由用例（9 路由/状态码/打桩上游）", [PY, str(TESTS_DIR / "test_server_routes.py")]),
+    ("前端省份控件契约（控件在官方解读页、站点清单与后端一致）",
+     [PY, str(TESTS_DIR / "test_frontend_province_ui.py")]),
+    ("源缺陷修复回归（深页标记/缺口说明/可靠性否决/搜狗闸/下载收口）",
+     [PY, str(TESTS_DIR / "test_source_defects.py")]),
     ("评测集规则用例", [PY, str(TESTS_DIR / "test_eval_set.py")]),
 ]
 

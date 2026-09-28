@@ -21,6 +21,10 @@
      提示哪些依据只能当参考。
   4. 合并去重与冲突提示：同一件事有多层依据时，把位阶最高的那条挑出来当主依据。
 
+第 3 步还要叠加各源自己给的可靠性标记（`_reliability`）。这是本层原先漏掉的一
+环：标记只在输出里印一行给人看，定级这里完全不读，于是 `low` 的条目照样能被挑
+成"主依据"并打出"可作依据引用（法律）"。把判定权留给读文档的人，等于没判定。
+
 它不做判断题，只给判断提供刻度。真正的判断由上层按 tax_analyze 判出的
 问题类型组织。
 
@@ -206,22 +210,41 @@ def authority_score(rank: str, validity: str) -> float:
 # 能当主依据的最低分。低于它只能当参考材料，不能当结论支撑。
 PRIMARY_THRESHOLD = 60.0
 
+# ── 可靠性标记的否决权 ─────────────────────────────────────────────────────
+# 各源在结果上打的 _reliability（全文检索偏题、fgk 深页、整源被判低可靠）。
+# 它优先于位阶与时效：一条《XX法》如果检索结果本身跑题，位阶再高也不能引用。
+# low  → 完全不可引用
+# medium → 只能用来定位法规，不能作为条文依据
+# 其余/缺失 → 不影响，按位阶时效正常判
+RELIABILITY_BLOCK = {
+    "low": "不得作为依据引用：_reliability=low（结果与查询无关）",
+    "medium": "仅用于定位法规，不得作为条文依据：_reliability=medium",
+}
+
+
+def _reliability_of(item: dict) -> str:
+    """读出条目上的可靠性标记，归一成小写；没有或认不出就返回空串。"""
+    rel = str(item.get("_reliability") or "").strip().lower()
+    return rel if rel in RELIABILITY_BLOCK else ""
+
 
 def grade(item: dict, at: str = "") -> dict:
     """给一条检索结果打完整定级。
 
     Args:
         item: 检索结果字典，至少含 title，可含 category/source/status/
-            effective_date/publish_date/url。
+            effective_date/publish_date/url/_reliability。
         at: 观察时点 YYYY-MM-DD。
 
     Returns:
-        原字段 + rank/label/score/validity/citation_hint 三组。
+        原字段 + rank/label/score/validity/citation_hint 三组，以及
+        归一后的 reliability（无标记时为 "ok"）。
     """
     rank = rank_of(item.get("title", ""), item.get("category", ""),
                    item.get("source", ""))
     val = judge_validity(item, at)
     score = authority_score(rank["rank"], val["validity"])
+    rel = _reliability_of(item)
     out = dict(item)
     out["rank"] = rank["rank"]
     out["rank_label"] = rank["label"]
@@ -230,12 +253,25 @@ def grade(item: dict, at: str = "") -> dict:
     out["validity_label"] = val["label"]
     out["validity_note"] = val["note"]
     out["score"] = score
-    out["citation_hint"] = _hint(rank, val, score)
+    out["reliability"] = rel or "ok"
+    # 标了 low/medium 时，可引用性分不再是"能不能用"的依据，清成 0 免得下游
+    # 看到 85 分又把它当高可信；能不能用由 citation_hint 说了算。
+    if rel:
+        out["score"] = 0.0
+    out["citation_hint"] = _hint(rank, val, score, rel,
+                                 item.get("_reliability_note", ""))
     return out
 
 
-def _hint(rank: dict, val: dict, score: float) -> str:
-    """一句人话，说明这条依据该以什么身份引用。"""
+def _hint(rank: dict, val: dict, score: float,
+          rel: str = "", rel_note: str = "") -> str:
+    """一句人话，说明这条依据该以什么身份引用。
+
+    可靠性否决排在最前：位阶再高，检索结果跑题也不能拿来引用。
+    """
+    if rel:
+        tail = ("。" + rel_note) if rel_note else "。"
+        return RELIABILITY_BLOCK[rel] + tail
     if val["validity"] == "repealed":
         return ("已废止，不能作为结论依据；只可用于说明政策沿革，"
                 "且要写明原施行期间")
@@ -253,25 +289,45 @@ def _hint(rank: dict, val: dict, score: float) -> str:
 def pick_primary(graded: list) -> dict:
     """从一组已定级的依据里挑主依据。
 
-    规则：先按可引用性分降序；同分取位阶更高的；再同取来源更权威的
-    （NPC 库 > 总局 > 税屋/公众号）。返回的 dict 带 _why 说明为什么选它，
-    以及 _runners_up 记下其余候选，供答案里做依据分层展示。
+    规则：带 low 的一律出局（不得作为依据引用）；带 medium 的排在同分数的
+    正常依据之后，只有在没有别的可用依据时才轮到它，并附一句限制说明。
+    其余先按可引用性分降序，同分取位阶更高的。
+
+    返回的 dict 带 _why 说明为什么选它，以及 _runners_up 记下其余候选，
+    供答案里做依据分层展示。
     """
     if not graded:
         return {"_why": "没有任何依据", "_runners_up": []}
 
+    usable = [g for g in graded if (g.get("reliability") or "ok") != "low"]
+    if not usable:
+        return {
+            "_why": "本组依据全部带 _reliability: low，不得作为依据引用",
+            "_runners_up": [
+                {"title": g.get("title", ""), "rank_label": g.get("rank_label", ""),
+                 "score": g.get("score", 0), "reliability": g.get("reliability", "")}
+                for g in graded
+            ],
+        }
+
     def sort_key(g):
-        return (g.get("score", 0),
+        # 第一个键把可靠性变成排序权重：low 排最后（其实已被剔除），medium 次之。
+        # 原先只按分数排，标了 low 的《XX法》照样排第一当主依据。
+        return (-{"low": 2, "medium": 1}.get(g.get("reliability") or "ok", 0),
+                g.get("score", 0),
                 LEGAL_RANK.get(g.get("rank", "unknown"), 0))
 
-    ordered = sorted(graded, key=sort_key, reverse=True)
+    ordered = sorted(usable, key=sort_key, reverse=True)
     best = dict(ordered[0])
     best["_why"] = (f"{best.get('rank_label','未定性')}、"
                     f"{best.get('validity_label','时效未标明')}，"
                     f"可引用性 {best.get('score',0)} 分，为本组最高")
+    if best.get("reliability") == "medium":
+        best["_why"] += "；但本组其余依据都不比它更可靠，这条仍只能用于定位，不得作为条文依据"
     best["_runners_up"] = [
         {"title": g.get("title", ""), "rank_label": g.get("rank_label", ""),
-         "validity_label": g.get("validity_label", ""), "score": g.get("score", 0)}
+         "validity_label": g.get("validity_label", ""), "score": g.get("score", 0),
+         "reliability": g.get("reliability", "ok")}
         for g in ordered[1:]
     ]
     return best

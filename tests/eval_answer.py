@@ -170,16 +170,14 @@ def npc_articles(bbbs_id: str, limit: int = 120) -> list:
     上限取到 120 条而不是 40 条：《关税法》七十余条、《税收征收管理法》
     九十余条，截在前四十条会把后面那些真正决定选项对错的条文剪掉，
     评测就会把"依据没送全"算成"模型答错"。
+
+    走 tax_detail.download_bytes 而不是自己 requests.get：那个版本绕过了
+    tax_http 与 NPC 串行闸，评测逐题取依据时会连发几十次，等于在评测里
+    自己给自己限流。现在取地址与取文件都在闸内。
     """
     try:
-        url = DT.get_download_url(bbbs_id, "docx")
-        if not url:
-            return []
-        import requests
-        r = requests.get(url, headers=DT.HEADERS, verify=DT.VERIFY_SSL, timeout=45)
-        if r.status_code != 200:
-            return []
-        paras = DT._parse_docx_from_bytes(r.content)
+        data = DT.download_bytes(bbbs_id, "docx")
+        paras = DT._parse_docx_from_bytes(data)
         arts = [p for p in paras if re.match(r"^第[一二三四五六七八九十百千\d]+条", p)]
         return arts[:limit] or paras[:limit]
     except Exception:
@@ -890,6 +888,9 @@ def main():
         print(text)
         return
     if args.out:
+        # 文档里的 --out 落在 tests/results/，而那个目录已进 .gitignore、不入库，
+        # 新克隆上并不存在。父目录不存在就先建，别让"目录没建"看起来像评测出错。
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         Path(args.out).write_text(text, encoding="utf-8")
         print(f"已写入 {args.out}", file=sys.stderr)
     print_report(results, args)

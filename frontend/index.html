@@ -4,6 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>规则的起点 — 财税政策搜索引擎</title>
+<!-- 空 data: 图标：浏览器默认会去要 /favicon.ico，而服务端没有这个路由，
+     每次加载都在控制台留一条 404，让"页面无报错"这类自动化检查永远误红。
+     用 data: 占位比加路由省事：不动路由数量，也不用多带一个图标文件。 -->
+<link rel="icon" href="data:,">
 <style>
 :root {
   --black: #111;
@@ -352,6 +356,11 @@ body{
 .is-practical{border-color:var(--g300);color:var(--g700)}
 .is-web{border-color:var(--g200);color:var(--g500)}
 .interp-empty{text-align:center;padding:40px 20px;color:var(--g500)}
+/* 地方口径只对"官方解读"这一个标签页生效，所以控件长在这个页里，不放搜索栏 */
+.interp-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:14px 24px;border-bottom:1px solid var(--g100);font-size:12px;color:var(--g500)}
+.interp-toolbar select{padding:4px 8px;border:1px solid var(--g200);border-radius:2px;font-size:12px;outline:none;background:var(--white);color:var(--black);font-family:inherit}
+.interp-toolbar select:focus{border-color:var(--black)}
+.interp-toolbar .it-hint{color:var(--g400);font-size:11px;line-height:1.5}
 
 /* ── Guidance Panel ── */
 .guidance-panel{
@@ -432,6 +441,7 @@ body{
   .results-area{padding:0 12px 40px}
   .modal{max-width:100%;max-height:95vh;margin:8px;border:none}
   .modal-body .body-padded{padding:12px 16px}
+  .interp-toolbar{padding:12px 16px}
   .modal-tabs{overflow-x:auto;padding:0 12px}
   .modal-tabs .tab-btn{padding:8px 12px;font-size:12px}
   .toggle-row{flex-direction:column;gap:6px;align-items:center}
@@ -478,7 +488,6 @@ body{
   <div class="filter-group"><label>时效</label><select id="filterStatus"><option value="3" selected>现行有效</option><option value="">全部</option></select></div>
   <div class="filter-group"><label>排序</label><select id="filterSort"><option value="relevance">相关度</option><option value="date">日期↓</option></select></div>
   <div class="filter-group"><label>数据源</label><select id="filterSource"><option value="npc">NPC法规库</option><option value="aggregated">多源聚合</option><option value="chinatax">税务总局</option><option value="fgk">税务法规库</option></select></div>
-  <div class="filter-group"><label>省份</label><select id="filterProvince"><option value="">全国</option></select></div>
   <div class="filter-group"><label>日期</label><input type="date" id="filterDateFrom">—<input type="date" id="filterDateTo"></div>
 </div>
 
@@ -514,7 +523,7 @@ let lastResults=[],lastKeyword='',guideState={},activeTab='law';
 const NEXT_STEP={user_type:'tax_type',tax_type:'intent',intent:'conditions'};
 
 document.addEventListener('DOMContentLoaded',()=>{
-  loadQuickTax();loadProvinces();renderGuideStep('user_type');
+  loadQuickTax();renderGuideStep('user_type');
   document.getElementById('searchInput').addEventListener('keydown',e=>{if(e.key==='Enter')doSearch();});
 });
 
@@ -540,10 +549,20 @@ async function loadQuickTax(){
 }
 function pickTax(kw){document.getElementById('searchInput').value=kw;document.getElementById('searchInput').focus();}
 
-async function loadProvinces(){
-  const sel=document.getElementById('filterProvince');
-  const provs=[{name:'全国',subdomain:''},{name:'北京',subdomain:'beijing'},{name:'上海',subdomain:'shanghai'},{name:'天津',subdomain:'tianjin'},{name:'重庆',subdomain:'chongqing'},{name:'广东',subdomain:'guangdong'},{name:'深圳',subdomain:'shenzhen'},{name:'浙江',subdomain:'zhejiang'},{name:'江苏',subdomain:'jiangsu'},{name:'山东',subdomain:'shandong'},{name:'四川',subdomain:'sichuan'},{name:'湖北',subdomain:'hubei'},{name:'湖南',subdomain:'hunan'},{name:'河南',subdomain:'henan'},{name:'河北',subdomain:'hebei'},{name:'福建',subdomain:'fujian'},{name:'厦门',subdomain:'xiamen'},{name:'安徽',subdomain:'anhui'},{name:'辽宁',subdomain:'liaoning'},{name:'大连',subdomain:'dalian'},{name:'吉林',subdomain:'jilin'},{name:'黑龙江',subdomain:'heilongjiang'},{name:'江西',subdomain:'jiangxi'},{name:'山西',subdomain:'shanxi'},{name:'陕西',subdomain:'shaanxi'},{name:'甘肃',subdomain:'gansu'},{name:'青海',subdomain:'qinghai'},{name:'云南',subdomain:'yunnan'},{name:'贵州',subdomain:'guizhou'},{name:'广西',subdomain:'guangxi'},{name:'海南',subdomain:'hainan'},{name:'内蒙古',subdomain:'neimenggu'},{name:'宁夏',subdomain:'ningxia'},{name:'新疆',subdomain:'xinjiang'},{name:'西藏',subdomain:'xizang'},{name:'青岛',subdomain:'qingdao'},{name:'宁波',subdomain:'ningbo'}];
-  sel.innerHTML=provs.map(p=>`<option value="${p.subdomain}">${p.name}</option>`).join('');
+/* ═══════════ PROVINCES ═══════════ */
+// 省份清单只有这一处（原先 loadProvinces 与 getProvinceName 各存一份，改一处漏一处）。
+// value 是省税务局的子域名，服务端直接拼 {value}.chinatax.gov.cn（见 tax_server.search_interpretations）。
+const PROVINCES=[{name:'全国',subdomain:''},{name:'北京',subdomain:'beijing'},{name:'上海',subdomain:'shanghai'},{name:'天津',subdomain:'tianjin'},{name:'重庆',subdomain:'chongqing'},{name:'广东',subdomain:'guangdong'},{name:'深圳',subdomain:'shenzhen'},{name:'浙江',subdomain:'zhejiang'},{name:'江苏',subdomain:'jiangsu'},{name:'山东',subdomain:'shandong'},{name:'四川',subdomain:'sichuan'},{name:'湖北',subdomain:'hubei'},{name:'湖南',subdomain:'hunan'},{name:'河南',subdomain:'henan'},{name:'河北',subdomain:'hebei'},{name:'福建',subdomain:'fujian'},{name:'厦门',subdomain:'xiamen'},{name:'安徽',subdomain:'anhui'},{name:'辽宁',subdomain:'liaoning'},{name:'大连',subdomain:'dalian'},{name:'吉林',subdomain:'jilin'},{name:'黑龙江',subdomain:'heilongjiang'},{name:'江西',subdomain:'jiangxi'},{name:'山西',subdomain:'shanxi'},{name:'陕西',subdomain:'shaanxi'},{name:'甘肃',subdomain:'gansu'},{name:'青海',subdomain:'qinghai'},{name:'云南',subdomain:'yunnan'},{name:'贵州',subdomain:'guizhou'},{name:'广西',subdomain:'guangxi'},{name:'海南',subdomain:'hainan'},{name:'内蒙古',subdomain:'neimenggu'},{name:'宁夏',subdomain:'ningxia'},{name:'新疆',subdomain:'xinjiang'},{name:'西藏',subdomain:'xizang'},{name:'青岛',subdomain:'qingdao'},{name:'宁波',subdomain:'ningbo'}];
+function fillProvinces(el,keep){
+  if(!el)return;
+  el.innerHTML=PROVINCES.map(p=>`<option value="${p.subdomain}">${p.name}</option>`).join('');
+  if(keep&&PROVINCES.some(p=>p.subdomain===keep))el.value=keep;
+}
+// "官方解读"实际去哪些站点检索：必须与 tax_server.search_interpretations 的默认 sources 一致，
+// 否则页面上写的站点就不是真正被查的站点（这是原先省份下拉最大的问题：查的是全国站，界面却显示省名）。
+function interpSites(prov){
+  if(prov)return [`${prov}.chinatax.gov.cn`,'chinatax.gov.cn','www.gov.cn'];
+  return ['chinatax.gov.cn','fgk.chinatax.gov.cn','mof.gov.cn','www.gov.cn'];
 }
 
 /* ═══════════ SEARCH ═══════════ */
@@ -582,13 +601,14 @@ async function doSearch(){
   c.innerHTML=`<div class="loading-state"><div class="loading-spinner"></div><p>正在查询…</p><p style="font-size:12px;color:var(--g400)">"${esc(keyword)}"</p></div>`;
   btn.disabled=true;btn.textContent='查询中…';
   try{
+    // 这里刻意没有 province：本接口查的是 NPC 全国性法规，没有省级维度，
+    // 服务端收到 province 也只是原样回填、不过滤。地方口径走弹窗里的"官方解读"（换站点检索）。
     const payload={
       keyword,scope:document.getElementById('filterScope').value,
       exact:document.getElementById('filterType').value==='exact',
       status:parseInt(document.getElementById('filterStatus').value)||null,
       sort:document.getElementById('filterSort').value,
       source:document.getElementById('filterSource').value,
-      province:document.getElementById('filterProvince').value,
       date_from:document.getElementById('filterDateFrom').value||null,
       date_to:document.getElementById('filterDateTo').value||null,
     };
@@ -615,12 +635,14 @@ function renderResults(data){
     h+='<div class="meta-bar">';
     if(data.intent_label)h+=`<span class="tag tag-intent">🎯 ${data.intent_label}</span>`;
     if(data.tax_type)h+=`<span class="tag tag-source">📂 ${data.tax_type}</span>`;
-    if(data.province)h+=`<span class="tag" style="border-color:var(--g300);color:var(--g700)">📍 ${getProvinceName(data.province)}</span>`;
     h+=`<span class="tag tag-count">📋 ${total}条</span>`;
     if(searchedAt)h+=`<span class="tag tag-time">🕐 ${searchedAt}${cacheTag}</span>`;
     h+='</div>';
   }
   if(result?.source_summary){const s=result.source_summary;h+='<div class="meta-bar">';if(s.npc)h+=`<span class="source-label src-npc">📜 NPC ${s.npc}条</span>`;if(s.chinatax)h+=`<span class="source-label src-chinatax">🏛️ 总局 ${s.chinatax}条</span>`;if(s.so360)h+=`<span class="source-label src-anysearch">🔎 360 ${s.so360}条</span>`;if(s.shui5)h+=`<span class="source-label src-anysearch">🏠 税屋 ${s.shui5}条</span>`;if(s.wechat)h+=`<span class="source-label src-anysearch">💬 公众号 ${s.wechat}条</span>`;h+='</div>';}
+  // 缺了哪一层由后端给成句照抄（见 tax_aggregator._degraded_note）。这里不自己
+  // 判断、也不把缺失渲染成普通的"0 条"——0 条看起来像"该层确实没有内容"。
+  if(result?.degraded_note){h+=`<div class="meta-bar" style="border-bottom:none"><span class="source-label" style="border-color:var(--accent);color:var(--accent);white-space:normal">⚠️ ${esc(result.degraded_note)}</span></div>`;}
   if(items.length===0){h+=`<div class="empty-state"><div style="font-size:28px;margin-bottom:8px">🔍</div><p><b>未找到相关政策</b></p><p style="font-size:13px;color:var(--g400)">关键词:"${esc(data.keyword)}"</p><p style="font-size:12px;margin-top:8px;color:var(--g400)">试试更短的关键词（如"增值税"而非"增值税优惠政策最新规定"） / 切换到"多源聚合"模式覆盖税屋与公众号</p></div>`;}
 
   items.forEach((item,i)=>{
@@ -657,11 +679,15 @@ function renderLawTextTab(data,bbbsId,title){
 }
 
 /* ═══════════ INTERPRETATIONS TAB ═══════════ */
+// 省份在当前标签页内被读取——只有 /api/interpretations 真的按省份换站点检索，
+// 所以这个控件只长在这一页里，搜索栏不再有它（见 doSearch 的 payload 注释）。
 async function loadInterpretationsTab(bbbsId){
-  const c=document.getElementById('tabInterpContent');
-  c.innerHTML=`<div class="interp-empty"><div class="loading-spinner"></div><p style="margin-top:10px">正在搜索官方政策解读…</p><p style="font-size:12px;color:var(--g400)">chinatax.gov.cn · mof.gov.cn · gov.cn</p></div>`;
+  const c=document.getElementById('interpResults');
+  if(!c)return;
+  const prov=_interpProvince,sites=interpSites(prov);
+  c.innerHTML=`<div class="interp-empty"><div class="loading-spinner"></div><p style="margin-top:10px">正在搜索官方政策解读…</p><p style="font-size:12px;color:var(--g400)">检索站点：${sites.join(' · ')}</p></div>`;
   try{
-    const data=await fetchWithRetry(`/api/interpretations/${bbbsId}?keyword=${encodeURIComponent(lastKeyword)}&province=${encodeURIComponent(document.getElementById('filterProvince').value)}`);
+    const data=await fetchWithRetry(`/api/interpretations/${bbbsId}?keyword=${encodeURIComponent(lastKeyword)}&province=${encodeURIComponent(prov)}`);
     if(data.error)throw new Error(data.error);
     let h='';
     if(data.sources&&data.sources.length>0){
@@ -677,8 +703,8 @@ async function loadInterpretationsTab(bbbsId){
             ${item.url?`<span style="color:var(--g600)">🔗 查看 →</span>`:''}
           </div></a>`;
       });
-    }else if(data.engine_error){h='<div class="interp-empty"><div style="font-size:24px;margin-bottom:8px">⚠️</div><p><b>官方解读暂时取不到</b></p><p style="font-size:13px;margin-top:4px;color:var(--g400)">'+esc(data.engine_error)+'（拦截 '+esc(data.queries_blocked||'')+' 次检索）。这是取数失败，不代表该法规没有解读文件；可稍后重试或改用 /api/search 的 fgk 源。</p></div>';}
-    else{h='<div class="interp-empty"><div style="font-size:24px;margin-bottom:8px">📭</div><p><b>未找到官方解读</b></p><p style="font-size:13px;margin-top:4px;color:var(--g400)">该法规可能暂无公开的政策解读文件</p></div>';}
+    }else if(data.engine_error){h='<div class="interp-empty"><div style="font-size:24px;margin-bottom:8px">⚠️</div><p><b>官方解读暂时取不到</b></p><p style="font-size:13px;margin-top:4px;color:var(--g400)">'+esc(data.engine_error)+'（拦截 '+esc(data.queries_blocked||'')+' 次检索）。检索站点：'+esc(sites.join(' · '))+'。这是取数失败，不代表该法规没有解读文件；可稍后重试或改用 /api/search 的 fgk 源。</p></div>';}
+    else{h='<div class="interp-empty"><div style="font-size:24px;margin-bottom:8px">📭</div><p><b>未找到官方解读</b></p><p style="font-size:13px;margin-top:4px;color:var(--g400)">已在 '+esc(sites.join(' · '))+' 检索，均未命中；该法规可能暂无公开的政策解读文件</p></div>';}
     c.innerHTML=h;
   }catch(e){c.innerHTML=`<div class="interp-empty">⚠️ 搜索失败: ${esc(e.message)}</div>`;}
 }
@@ -720,7 +746,7 @@ async function loadWebRelatedTab(bbbsId,title){
 }
 
 /* ═══════════ MODAL ═══════════ */
-let _modalLawId='',_modalTitle='';
+let _modalLawId='',_modalTitle='',_interpProvince='';
 
 async function viewLaw(bbbsId,title){
   _modalLawId=bbbsId;_modalTitle=title;activeTab='law';
@@ -736,7 +762,10 @@ async function viewLaw(bbbsId,title){
     </div>
     <div class="modal-body">
       <div class="tab-panel active" id="tabLawContent"><div style="text-align:center;padding:60px"><div class="loading-spinner"></div><p style="margin-top:10px;font-size:13px;color:var(--g500)">正在获取法规全文…</p></div></div>
-      <div class="tab-panel" id="tabInterpContent"></div>
+      <div class="tab-panel" id="tabInterpContent">
+        <div class="interp-toolbar"><label for="interpProvince">地方口径</label><select id="interpProvince" onchange="onInterpProvinceChange()"></select><span class="it-hint">只影响本页"官方解读"：选中省份后改去该省税务局的站点检索。不会改变上一步的法规搜索结果。</span></div>
+        <div id="interpResults"></div>
+      </div>
       <div class="tab-panel" id="tabAiContent"><div class="interp-empty" style="padding:40px"><div style="font-size:28px;margin-bottom:10px">🤖</div><p><b>AI 政策解读</b></p><p style="font-size:13px;margin-top:4px;color:var(--g500)">点击下方按钮，AI 将用通俗语言解读本法规</p><button onclick="generateAiInterpret()" style="margin-top:14px;padding:9px 22px;background:var(--black);color:#fff;border:none;font-size:13px;font-weight:600;cursor:pointer">✨ 生成 AI 解读</button><p id="aiGateNote" style="font-size:11px;color:var(--g400);margin-top:6px">费用由所配置的外部模型账号承担 · 仅供参考</p></div></div>
       <div class="tab-panel" id="tabWebContent"></div>
     </div>
@@ -745,6 +774,9 @@ async function viewLaw(bbbsId,title){
       <button class="primary" onclick="window.open('https://flk.npc.gov.cn/detail?id=${bbbsId}','_blank')">NPC 原页面</button>
       <button onclick="closeModal()">关闭</button>
     </div></div>`;
+
+  // 省份下拉随弹窗模板一起重建，模板换完才能填；记住上次的选择，跨弹窗保留。
+  fillProvinces(document.getElementById('interpProvince'),_interpProvince);
 
   // Load law text immediately
   try{
@@ -760,6 +792,18 @@ async function viewLaw(bbbsId,title){
   loadInterpretationsTab(bbbsId);
 }
 
+function interpFooterLabel(){
+  return '检索站点：'+interpSites(_interpProvince).join(' · ')+'（仅官方来源）';
+}
+
+function onInterpProvinceChange(){
+  const el=document.getElementById('interpProvince');
+  _interpProvince=el?el.value:'';
+  // 页脚写的就是"这次实际查了哪些站点"，换省等于换站点，页脚必须跟着换。
+  if(activeTab==='interp')document.getElementById('footerInfo').textContent=interpFooterLabel();
+  loadInterpretationsTab(_modalLawId);
+}
+
 function switchTab(tab){
   activeTab=tab;
   document.querySelectorAll('.modal-body .tab-panel').forEach(el=>el.classList.remove('active'));
@@ -773,7 +817,8 @@ function switchTab(tab){
   if(tab==='web')loadWebRelatedTab(_modalLawId,_modalTitle);
   // 措辞要说"实际直连了哪些源"：小颖言税/税海涛声/会计网/税小课/朴税只用来给
   // 命中条目打来源标签（TAX_PRACTICE_SOURCES），程序并不会去搜它们，写进这里会变成假承诺。
-  const footerLabels={law:'实时获取自NPC国家法规库',interp:'检索站点：chinatax.gov.cn · fgk.chinatax.gov.cn · mof.gov.cn · www.gov.cn（仅官方来源）',ai:'AI 生成 · 仅供参考 · 以官方为准',web:'直连税屋(shui5.cn) + 微信公众号，另经 360 全网补充；来源标签按命中条目的域名/标题识别'};
+  // interp 的站点清单随省份变，所以走 interpFooterLabel() 现算，不写死。
+  const footerLabels={law:'实时获取自NPC国家法规库',interp:interpFooterLabel(),ai:'AI 生成 · 仅供参考 · 以官方为准',web:'直连税屋(shui5.cn) + 微信公众号，另经 360 全网补充；来源标签按命中条目的域名/标题识别'};
   document.getElementById('footerInfo').textContent=footerLabels[tab]||'';
 }
 
@@ -831,7 +876,6 @@ function renderGuideStep(step){
 
 function executeGuidedSearch(){const taxMap={vat:'增值税',cit:'企业所得税',iit:'个人所得税',invoice:'发票管理办法',prefer:'税收优惠',stamp:'印花税',deed:'契税',property:'房产税',consumption:'消费税',tariff:'关税',land_vat:'土地增值税',admin:'税收征收管理法'};const intentMap={policy:'',preference:'优惠',risk:'风险 合规',filing:'申报',invoice:'发票',calc:'标准 扣除'};const entMap={small:'小规模纳税人',general:'一般纳税人',micro:'小微企业',hitech:'高新技术企业'};let parts=[];const taxK=guideState.tax_type?taxMap[guideState.tax_type]||guideState.tax_type:'';if(taxK)parts.push(taxK);if(guideState.intent&&intentMap[guideState.intent])parts.push(intentMap[guideState.intent]);if(guideState.enterprise_type&&entMap[guideState.enterprise_type])parts.push(entMap[guideState.enterprise_type]);const custom=document.getElementById('customKeyword')?.value?.trim();if(custom)parts.push(custom);document.getElementById('searchInput').value=parts.join(' ')||'增值税';if(guideState.timeframe==='latest')document.getElementById('filterSort').value='date';if(guideState.timeframe==='2024')document.getElementById('filterDateFrom').value='2024-01-01';if(guideState.scope==='national')document.getElementById('filterStatus').value='3';if(guideState.scope==='all_status')document.getElementById('filterStatus').value='';toggleGuidance();doSearch();}
 
-function getProvinceName(sub){const m={beijing:'北京',shanghai:'上海',tianjin:'天津',chongqing:'重庆',guangdong:'广东',shenzhen:'深圳',zhejiang:'浙江',jiangsu:'江苏',shandong:'山东',sichuan:'四川',hubei:'湖北',hunan:'湖南',henan:'河南',hebei:'河北',fujian:'福建',xiamen:'厦门',anhui:'安徽',liaoning:'辽宁',dalian:'大连',jilin:'吉林',heilongjiang:'黑龙江',jiangxi:'江西',shanxi:'山西',shaanxi:'陕西',gansu:'甘肃',qinghai:'青海',yunnan:'云南',guizhou:'贵州',guangxi:'广西',hainan:'海南',neimenggu:'内蒙古',ningxia:'宁夏',xinjiang:'新疆',xizang:'西藏',qingdao:'青岛',ningbo:'宁波'};return m[sub]||sub;}
 function esc(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
 </script>
 </body>

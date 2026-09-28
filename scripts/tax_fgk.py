@@ -67,6 +67,16 @@ CACHE_TTL = 3600
 # 只是白烧请求。要严格翻满某个页数，用 --pages 显式指定（那时不做自适应）。
 IDLE_PAGE_LIMIT = 3
 
+# 第几页之内算"浅页"。总局检索按相关度排序，越往后越松：第 1 页基本都在主题
+# 上，第 2 页起开始出现只沾一个词的条目。浅页之外的条目一律标 _reliability:
+# medium（只可用于定位），这样聚合、定级、格式化三处既有机制会自动按"不能当
+# 条文依据"处理——原先"深页要回 L1 核对上位法"只能靠人记住。
+FGK_SHALLOW_PAGES = 1
+
+FGK_DEEP_NOTE = (
+    "取自总局检索第 {page} 页：翻得越深排序越松，深页条目可能只是沾了检索词。"
+    "仅用于定位法规，引用具体条文前必须回上一级数据库核对上位法。")
+
 _cache = CacheManager(enabled=False, namespace="fgk")
 
 HEADERS = {
@@ -184,7 +194,7 @@ def _scan_list(keyword: str, size: int, max_pages: int,
             if item["url"] in seen:
                 continue
             seen.add(item["url"])
-            results.append({
+            entry = {
                 "title": item["title"],
                 "url": item["url"],
                 "date": item.get("date", ""),
@@ -193,7 +203,13 @@ def _scan_list(keyword: str, size: int, max_pages: int,
                 "snippet": item.get("snippet", ""),
                 "source": "税务总局法规库",
                 "source_label": "税务总局法规库",
-            })
+                # 记下取自第几页：下游要靠它判断"这条是主题命中还是深页凑数"
+                "page": page,
+            }
+            if page > FGK_SHALLOW_PAGES:
+                entry["_reliability"] = "medium"
+                entry["_reliability_note"] = FGK_DEEP_NOTE.format(page=page)
+            results.append(entry)
             if len(results) >= size:
                 break
         if len(results) >= size:
