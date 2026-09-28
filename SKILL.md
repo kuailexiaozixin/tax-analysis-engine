@@ -804,7 +804,7 @@ python scripts/tax_evidence.py --rank "国家税务总局公告2018年第28号" 
 | 360 被封 → 地方口径与税屋这一层是空的 | `tax_aggregator` 返回的 `gaps` 与 `degraded_note` | 缺了哪层、为什么缺、能不能拿别的源顶，都写成一句可直接照抄的话；网页端渲染成警示条，不再冒充普通的"0 条" |
 | fgk 翻得越深相关性越差 | `tax_fgk` 第 2 页起标 `_reliability: medium`（`FGK_SHALLOW_PAGES = 1`），`tax_evidence` 认这个标记 | 深页条目仍留在结果里（它是找法规的线索），但 `citation_hint` 明写"仅用于定位法规"，挑主依据时排到无标记条目之后 |
 | 公众号并发加压触发反爬 | `tax_wechat._sogou_get`：1 秒最小间隔 + 搜狗专用串行闸（`%TEMP%\tax-policy-search-sogou.lock`） | 打 `weixin.sogou.com` 的请求（检索、链接还原）统一进闸；离线并发用例断言同一时刻在跑的请求数峰值为 1 |
-| `_reliability: medium` 只能定位 | `tax_evidence.grade` / `pick_primary` 解析该标记 | 可引用性分清零、`citation_hint` 换成否决句；同分时排在正常依据之后 |
+| `_reliability: medium` 只能定位 | `tax_evidence.grade` / `pick_primary` 解析该标记；`tax_formatter` 的两条渲染路径都会印出来 | 可引用性分清零、`citation_hint` 换成否决句；同分时排在正常依据之后。原先单源渲染路径会把这句吞掉，只印"共 N 条法规"，现在单源与多源归并都会先印警告 |
 | `_reliability: low` 不得当权威依据 | 同上，`pick_primary` 把 low 整组剔除 | 整组都是 low 时干脆不挑主依据，`_why` 写"本组依据全部带 `_reliability: low`，不得作为依据引用" |
 
 两个细节值得单独说明：

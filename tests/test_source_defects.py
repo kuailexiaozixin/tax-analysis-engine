@@ -31,6 +31,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 import tax_detail as DT      # noqa: E402
 import tax_evidence as E     # noqa: E402
 import tax_fgk as FGK        # noqa: E402
+import tax_formatter as FMT  # noqa: E402
 import tax_http              # noqa: E402
 import tax_search as T       # noqa: E402
 import tax_wechat as W       # noqa: E402
@@ -207,6 +208,45 @@ class TestReliabilityVetoInGrading(unittest.TestCase):
         best = E.pick_primary([E.grade({"title": self.LAW, "_reliability": "medium"})])
         self.assertEqual("medium", best["reliability"])
         self.assertIn("不得作为条文依据", best["_why"])
+
+
+# ── ⑤' 显示层也不许把标记吞掉 ──────────────────────────────────────────────
+class TestFormatterShowsReliability(unittest.TestCase):
+    """标记进了数据、却印不出来，等于没标记。
+
+    `tax_formatter.py --mode single` 原先不读响应级的 `_reliability`：把 NPC 全文
+    检索（恒带 medium）的结果灌进去，输出里一个字都不提"可能偏题"，读者只看到
+    "共 N 条法规"，会当成能引用的清单。多源归并那条路径印了，单源这条漏了。
+    """
+
+    def _render(self, **extra):
+        """喂一份 tax_search 真实会返回的最小响应，返回渲染出的 markdown。"""
+        resp = {
+            "keyword": "研发费用加计扣除", "total": 8833,
+            "scope": "fulltext", "search_type": "fuzzy",
+            "results": [{"title": "中华人民共和国企业所得税法", "id": "x1",
+                         "status_code": 3, "publish_date": "2018-12-29"}],
+        }
+        resp.update(extra)
+        return FMT.format_search_response(resp, intent="policy_lookup")
+
+    def test_medium_marker_reaches_the_markdown(self):
+        md = self._render(_reliability="medium",
+                          _reliability_note="结果已排序但可能偏题（全文分词匹配）")
+        self.assertIn("可靠性 medium", md)
+        self.assertIn("可能偏题", md)
+        # 警告要出现在条目之前，不能等读者看完清单才看到
+        self.assertLess(md.index("可靠性"), md.index("中华人民共和国企业所得税法"))
+
+    def test_local_wording_is_the_fallback(self):
+        """数据里没带说明时用本地兜底文案，而不是印出空的破折号。"""
+        md = self._render(_reliability="medium")
+        self.assertIn("可靠性 medium", md)
+        self.assertIn(FMT._RELIABILITY_NOTE, md)
+
+    def test_no_marker_no_warning(self):
+        """回归：标题检索不带标记，就不能凭空多出一句警告。"""
+        self.assertNotIn("可靠性", self._render())
 
 
 # ── ④ 搜狗微信要进闸，不能靠"别并发"的提醒 ────────────────────────────────

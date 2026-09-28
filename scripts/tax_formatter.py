@@ -94,9 +94,20 @@ def format_search_response(results: dict, intent: str = "policy_lookup",
         f"共 {results['total']} 条法规",
         f"**搜索范围**: {results['scope']} ({results['search_type']})",
         "",
-        "---",
-        "",
     ]
+
+    # 响应级的可靠性标记必须印出来。NPC 全文检索恒带 `_reliability: medium`，
+    # 只看"共 N 条法规"会以为这些条目都能当依据，而它只够用来定位法规。
+    # 原先只有多源归并那条路径印了这个标记，单源路径漏了——同一份数据换个入口
+    # 就少一句警告，等于把判断权又交回给读的人。文案优先用数据自带的说明，
+    # 免得同一句话在本仓库存第三份。
+    if results.get("_reliability"):
+        lines.append(f"> ⚠️ 可靠性 {results['_reliability']} — "
+                     f"{results.get('_reliability_note') or _RELIABILITY_NOTE}")
+        lines.append("")
+
+    lines.append("---")
+    lines.append("")
 
     for i, item in enumerate(results.get("results", []), 1):
         if i > 10:
