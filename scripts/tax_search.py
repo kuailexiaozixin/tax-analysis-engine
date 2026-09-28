@@ -798,7 +798,9 @@ Examples:
     p.add_argument("--exact", action="store_true",
                    help="Exact title match (default: fuzzy)")
     p.add_argument("--status", type=int, default=3,
-                   help="Status filter: 1=abolished, 2=amended, 3=effective, 4=pending. Omit for all.")
+                   help="Status filter: 1=abolished, 2=amended, 3=effective, "
+                        "4=pending. One value per run (this CLI cannot ask for "
+                        "all statuses); omitted means 3.")
     p.add_argument("--from", dest="date_from", help="Publish date from (YYYY-MM-DD)")
     p.add_argument("--to", dest="date_to", help="Publish date to (YYYY-MM-DD)")
     p.add_argument("--page", type=int, default=1)

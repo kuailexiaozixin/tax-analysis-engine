@@ -9,6 +9,15 @@ Agent 就会照着跑出一条报错命令——而这种错误不会触发任�
 检查方向是**单向**的：只查「文档用了、代码没有」，不查「代码有、文档没写」
 （文档不必穷举参数，代码留内部开关是正常的）。
 
+两类检查：
+
+1. **命令级**：同一行里有 `scripts/xxx.py` 时，取该行其余参数，比对那个脚本的参数表。
+2. **片段级**：文档里还有大量**孤立**的行内参数片段（反引号括起来、不带脚本名），
+   例如"总局条目用 `--source fgk --body`"。这类片段没有脚本上下文，若只按
+   "参数名在全项目是否存在"去查，`--source`（属 tax_formatter.py）与
+   `--body`（属 tax_fgk.py）都"存在"，错法就被放过去。所以改判一件事：
+   这组参数能不能在**某一个**脚本上同时成立。成立才认为可执行。
+
 配套约定：脚本一律用 argparse 声明参数。若某脚本自己解析 sys.argv，
 本工具静态取不到参数表，会报 SKIP 而不是误判成「参数不存在」——
 早期用只认 add_argument 的写法检查时，tax_browser.py 就被误报过一次。
@@ -36,6 +45,9 @@ _FLAG_RE = re.compile(r"(?<![\w-])(--[A-Za-z][\w-]*|-[A-Za-z])(?![\w-])")
 
 # argparse 自动提供、代码里不会显式声明的选项
 _IMPLICIT = {"-h", "--help"}
+
+# 反引号括起来的行内片段，例如 `--source fgk --body`
+_INLINE_RE = re.compile(r"`([^`\n]+)`")
 
 
 def _flags_of(script: Path):
@@ -78,9 +90,45 @@ def _flags_of(script: Path):
     return flags, None
 
 
+def _flag_sets_by_script():
+    """全部脚本 → 各自声明的选项集合；静态取不到参数表的脚本直接略过。"""
+    out = {}
+    for script in sorted(SCRIPTS_DIR.glob("*.py")):
+        flags, _why = _flags_of(script)
+        if flags is not None:
+            out[script.name] = flags
+    return out
+
+
+def _check_orphan_flag_groups(doc, text, by_script):
+    """抓「参数名写对了、但挂在错的脚本上」的行内片段。
+
+    只在片段含**两个及以上**参数时才判：单个参数没有归属歧义，
+    笼统提一句"--verbose 会打详细日志"是正常写法，不该报。
+    """
+    problems = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        for seg in _INLINE_RE.findall(line):
+            if "scripts/" in seg or ".py" in seg:
+                continue          # 带脚本名的片段归 main 里那条命令级规则管
+            flags = {f for f in _FLAG_RE.findall(seg) if f not in _IMPLICIT}
+            if len(flags) < 2:
+                continue
+            if any(flags <= fs for fs in by_script.values()):
+                continue
+            owners = sorted(n for n, fs in by_script.items() if flags & fs)
+            hint = "、".join(owners) if owners else "没有任何脚本"
+            problems.append(
+                f"{doc}:{lineno}：`{seg}` 这组参数在任何一个脚本上都跑不通"
+                f"（{'、'.join(sorted(flags))} 分别属于 {hint}，凑不成同一条命令）；"
+                f"请写明脚本名，改成能整条执行的命令")
+    return problems
+
+
 def main():
     problems, skips = [], []
     checked, mentioned = set(), set()
+    by_script = _flag_sets_by_script()
 
     for doc in DOCS:
         path = PROJECT_ROOT / doc
@@ -111,6 +159,8 @@ def main():
                 problems.append(
                     f"{doc}：scripts/{name} 用了 {'、'.join(missing)}，"
                     f"但代码里没有这个参数")
+
+        problems.extend(_check_orphan_flag_groups(doc, text, by_script))
 
     print(f"文档-代码契约检查（{'、'.join(DOCS)} → scripts/）")
     print(f"  抽查脚本 {len(checked)} 个，全部脚本 {len(list(SCRIPTS_DIR.glob('*.py')))} 个")

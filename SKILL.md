@@ -183,10 +183,15 @@ python scripts/tax_search.py "<关键词>" --sort date --size 20
 # 特定时间段政策
 python scripts/tax_search.py "<关键词>" --from 2024-01-01 --sort date
 
-# 含已废止法规（用户明确要求"含已废止/看历史版本"时才用）
-python scripts/tax_search.py "<关键词>" --size 20
-# 注意：上面这条刻意不带 --status，省略即代表所有状态
+# 看已废止版本（用户明确要求"含已废止/看历史版本"时才用）
+python scripts/tax_search.py "<关键词>" --status 1 --size 20
+# 已修改 / 尚未生效同理：--status 2、--status 4
 ```
+
+`--status` 的取值与默认值：`1` 已废止、`2` 已修改、`3` 现行有效（**默认**）、`4` 尚未生效。
+**不带 `--status` 等于 `3`，不等于"全部状态"**——命令行一次只能要一种状态，"全部时效"
+在 CLI 上表达不出来。要一次覆盖多种时效，只能按需要的状态各查一次；网页端可以做到
+（时效选"全部"时前端传 `"status": null`，服务端据此不加时效过滤）。
 
 **取 L1 时的两条硬规则**，违反其一就会取错依据：
 
@@ -328,10 +333,13 @@ cookie 交给普通 HTTP 客户端连读多篇——**一个浏览器内核都�
 "该专题在 NPC 库检索无效，改查总局"。
 
 ```bash
-# 法规详情 — 元数据与全文
-python scripts/tax_detail.py --info <法规ID>
-python scripts/tax_detail.py --preview <法规ID>
+# 法规详情 — 元数据、摘要、全文
+python scripts/tax_detail.py --info <法规ID>      # 元数据：标题/分类/状态/日期/机关
+python scripts/tax_detail.py --preview <法规ID>   # 摘要：法条数、编号格式、前 5 条
+python scripts/tax_detail.py --download <法规ID>  # 全文：下载 docx 到当前目录
 ```
+
+注意 `--preview` 给的是**摘要**不是全文——只有法条数、编号格式与前 5 条（每条截断 100 字）。
 
 🔴 CHECKPOINT · `--download <法规ID>` 会取回完整法规文本，先用 `--info` 与
 `--preview` 看过摘要再决定，用户确认后才执行。理由：下载可能产生大文件。
@@ -897,7 +905,7 @@ AI 直接调用网页同款后端接口完成取数，再用自动化打开页�
 - 结果卡片分两种，别对用户说"都能点开看原文"：带 `id`（NPC bbbs_id）的条目点开是
   四标签弹窗；多源聚合里总局、税屋、公众号的条目没有这个 ID，卡面只给条目自带的
   原文链接，点开无弹窗。要这些条目的正文得回命令行——总局/法规库条目用
-  `--source fgk --body`，税屋与公众号用各自的取正文入口
+  `python scripts/tax_fgk.py "<关键词>" --body`，税屋与公众号用各自的取正文入口
 - 4 Tab 法规弹窗：📖 法规原文（关键词高亮）/ 🔍 官方解读 / 🤖 AI 解读 / 🌐 相关网页；
   弹窗底部一行写的是这一屏实际直连了哪些源，不是候选源清单。🤖 AI 解读这一页在
   切进去时会把闸门状态写在按钮下方——未开启时那里就是开启步骤，不是"生成失败"
@@ -948,7 +956,8 @@ AI 直接调用网页同款后端接口完成取数，再用自动化打开页�
 → 类型: option_judge（选项判断），因为"包括（ ）"要逐项列
 → 命令: python scripts/tax_answer.py "<原话>" --answer --at 2026-09-27
 → 输出: 逐条比对表，每条给出处；不能只说正确的是哪几项
-→ 配套: python scripts/tax_detail.py --preview <法规ID>  取该法全文
+→ 配套: python scripts/tax_detail.py --download <法规ID>  取该法全文
+   （`--preview` 只给摘要与前 5 条，看不出全文；下载前按 🔴 CHECKPOINT 征得用户同意）
 ```
 
 ---
@@ -1030,7 +1039,8 @@ answer_type / validity / flags`。
 | `tests/test_detail_cache.py` | 详情缓存：键算法对得上老缓存、命名空间不越界、命中留痕、缓存里不许出现条文正文 | 否 |
 | `tests/test_server_routes.py` | 服务端 9 个路由：状态码、分支路由、闸门关着时不许碰模型、上游报错如实透出 | 否 |
 | `tests/test_http_layer.py` | 请求层守门：除白名单外不许绕过 `tax_http` 直接发请求（别名写法也会被扫出来） | 否 |
-| `tests/check_doc_cli.py` | 文档-代码契约：文档里写过的命令行参数，代码里必须真有 | 否 |
+| `tests/check_doc_cli.py` | 文档-代码契约，两类：命令级（同行带脚本名的命令比对参数表）+ 片段级（孤立 `` `--a --b` `` 必须能落在某一个脚本上） | 否 |
+| `tests/test_check_doc_cli.py` | 契约规则自检：片段级检查必须报出坏片段、放行好片段（规则改对后永远绿，靠它证明还在工作） | 否 |
 | `tests/test_tax_search.py` | 检索与格式化的端到端行为，含每个 `parent_law` 在库里真实存在 | 是 |
 | `tests/eval_answer.py` | **主指标**：模型照技能流程作答，答案与标准答案是否一致 | 是 |
 | `tests/eval_analysis.py` | 诊断：分析输出的四项质量 | 是 |

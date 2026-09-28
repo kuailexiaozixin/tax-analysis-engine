@@ -43,6 +43,7 @@ def _compile_all():
 OFFLINE_GROUP = [
     ("语法编译（scripts + tests）", _compile_all),
     ("文档-代码契约（CLI 参数是否真的存在）", [PY, str(TESTS_DIR / "check_doc_cli.py")]),
+    ("文档契约规则自检（片段级检查确实有效）", [PY, str(TESTS_DIR / "test_check_doc_cli.py")]),
     ("统一请求层守门（禁止绕过 tax_http）", [PY, str(TESTS_DIR / "test_http_layer.py")]),
     ("fgk 离线用例（翻页/正文/缓存）", [PY, str(TESTS_DIR / "test_tax_fgk.py")]),
     ("NPC 串行闸用例（含跨进程）", [PY, str(TESTS_DIR / "test_npc_gate.py")]),

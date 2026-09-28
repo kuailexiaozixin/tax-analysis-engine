@@ -77,7 +77,7 @@
 | **实务解读** | `tax_shui5.py` | 税屋：360 检索 + 浏览器过 WAF 后 HTTP 连读 |
 | **实务解读** | `tax_wechat.py` | 微信公众号：搜狗微信 + 移动 UA |
 | **多源聚合** | `tax_aggregator.py` | 五源并发、Jaccard 去重、权威度排序、源级失败上抛、跨源时间序 |
-| **输出格式化** | `tax_formatter.py` | 四段式 Markdown、多源聚合输出；本身也是个命令行工具：`python scripts/tax_formatter.py --intent policy_lookup < result.json`（stdin 收 JSON、stdout 出 markdown，加 `--mode aggregated` 走多源归并） |
+| **输出格式化** | `tax_formatter.py` | 四段式 Markdown、多源聚合输出；本身也是个命令行工具：`python scripts/tax_formatter.py --intent policy_lookup < result.json`（stdin 收 JSON、stdout 出 markdown，加 `--mode aggregated` 走多源归并；stdin 的字段要求见「命令行搜索」） |
 | **模型通道** | `tax_llm.py` | 外部模型调用的唯一出口：付费闸门只认环境变量、不探测本机 CLI、额度类错误分型上抛 |
 | **后端 API** | `tax_server.py` | Flask 路由、法规原文提取、解读搜索、AI 解读（走付费闸门）、取数失败与空结果分离 |
 | **辅助（可选）** | `tunnel_daemon.py` | 把本地 5080 经 serveo.net 暴露到公网，供外网/手机访问；依赖免费第三方隧道、稳定性无保证，**非主链路**（SKILL.md 不引用） |
@@ -88,7 +88,8 @@
 | **测试** | `test_detail_cache.py` | 详情缓存用例：键算法与历史缓存逐字节一致、命名空间不越界、命中留痕、老条目读时转正、缓存不含条文正文（红线）、原子写不留半截文件 |
 | **测试** | `test_server_routes.py` | 服务端 9 路由用例：状态码与错误码、分支路由（npc/chinatax/fgk/aggregated）、付费闸门关着时不许碰模型、上游报错如实透出不吞成空结果（全打桩，不联网） |
 | **测试** | `test_http_layer.py` | 统一请求层守门：AST 扫全项目、除白名单外禁止绕过 `tax_http` 的裸请求（含别名写法）、参数只透传不补全、`verify` 必填 |
-| **门禁** | `check_doc_cli.py` | 文档-代码契约：把 SKILL.md / README.md 里出现过的命令行参数与代码的 `add_argument` 做单向比对，挡住"文档写了、代码没有" |
+| **门禁** | `check_doc_cli.py` | 文档-代码契约，两类检查：**命令级**（同行里点了脚本名的命令行，逐参数比对代码的参数表）+ **片段级**（孤立的 `` `--a --b` `` 必须能落在某一个脚本上），挡住"文档写了、代码没有"与"参数挂错脚本" |
+| **测试** | `test_check_doc_cli.py` | 文档契约规则自检：构造样例钉住片段级检查既能报出坏片段、也不误报好片段。规则一旦改对就永远绿，没有自检就无法证明它还在工作 |
 | **门禁入口** | `run_all.py` | 统一测试入口：默认跑离线组，`--online` 加联网组；退出码可直接接 CI（根目录 `run_tests.bat` 双击即跑） |
 | **已废弃** | `generate_manual.py` | 原先生成硬编码 Word 手册，因与 README/SKILL.md 重复且已漂移而停用；现在运行只打印废弃说明并退出码 1 |
 | **评测集** | `build_eval_set.py` | 归并公开财税题库为带出处与时效标记的统一评测集，按 SCOPE_EXCLUDE 剔除范围外题目 |
@@ -376,7 +377,36 @@ python scripts/tax_aggregator.py "小微企业优惠" --size 10
 
 # 搜索官方解读
 python scripts/tax_web_search.py "增值税" --size 10
+
+# 把检索结果 JSON 格式化成 Markdown（stdin 收 JSON、stdout 出 markdown）
+python scripts/tax_formatter.py --intent policy_lookup < result.json
 ```
+
+`tax_formatter.py` 的 stdin 需要一份带下列字段的 JSON：`keyword` / `total` 必填，
+`scope` 与 `search_type` 会原样印在"搜索范围"那行，`results` 里每条至少要有
+`title` 与 `id`（其余字段留空即不显示）：
+
+```json
+{
+  "keyword": "增值税",
+  "total": 1062,
+  "scope": "全文模糊",
+  "search_type": "现行有效",
+  "results": [
+    {
+      "title": "中华人民共和国增值税法",
+      "id": "abc123",
+      "status_code": 3,
+      "publish_date": "2024-12-25",
+      "effective_date": "2026-01-01"
+    }
+  ]
+}
+```
+
+加 `--mode aggregated` 则改吃多源结构：`keyword` + `npc` 对象 + `chinatax` / `so360` /
+`shui5` / `wechat` 四个数组（后三个数组里的条目用 `_source` 标来源）。两种模式的输入输出
+都实测跑通、退出码 0。
 
 ### 作为技能使用
 
@@ -406,7 +436,7 @@ tax-policy-search/
 │   ├── tax_web_search.py           # 税务总局 search5 JSON 检索
 │   ├── tax_so360.py                # 360 site: 站内检索（含拦截页识别）
 │   ├── tax_fgk.py                  # 税务总局法规库目录与正文（--body 取正文 / --cache 缓存 / 翻页自适应）
-│   ├── tax_cache.py                # 缓存唯一实现（tax_search 与 tax_fgk 共用；默认关闭；正文不缓存）
+│   ├── tax_cache.py                # 缓存唯一实现（tax_search / tax_fgk / tax_detail 三处共用；清单默认关、详情默认开；正文不缓存）
 │   ├── tax_shui5.py                # 税屋检索与正文
 │   ├── tax_wechat.py               # 微信公众号（搜狗微信）
 │   ├── tax_browser.py              # 复用本机浏览器过 WAF、导 cookie
@@ -423,18 +453,24 @@ tax-policy-search/
 │   ├── test_tax_search.py          # 检索与接口用例（离线组 + 联网组）
 │   ├── test_tax_fgk.py             # fgk 离线用例：翻页/正文/缓存（全打桩，不联网）
 │   ├── test_npc_gate.py            # NPC 串行闸用例（含跨进程互斥）
+│   ├── test_detail_cache.py        # 详情缓存用例：键一致 / 命名空间不越界 / 原子写（全打桩）
+│   ├── test_server_routes.py       # 服务端路由用例：9 个路由的状态码与分支（全打桩，不联网）
+│   ├── test_http_layer.py          # 统一请求层守门：AST 扫全项目、禁止绕过 tax_http 的裸请求
 │   ├── test_eval_set.py            # 评测集规则的离线用例：时效判档、去重键、分类表同步
+│   ├── check_doc_cli.py            # 文档-代码契约：SKILL.md / README.md 里的参数 vs 代码 add_argument
+│   ├── test_check_doc_cli.py       # 文档契约规则自检：坏片段必须被报、好片段必须放行
 │   ├── build_eval_set.py           # 归并公开财税题库 → 统一评测集
 │   ├── eval_answer.py              # 主指标：答题正确率（模型在环，双组对照）
 │   ├── eval_analysis.py            # 诊断：分析质量四指标
 │   ├── eval_retrieval.py           # 诊断：检索质量两级指标
 │   └── analysis_labels.json        # 分析题目标注集
-├── data_source_analysis.json       # 数据源调研留档
+├── archive/                        # 立项阶段研究资料（清单见 archive/README.md，7 文档 + 1 数据）
 ├── requirements.txt
 ├── start_local.bat                 # 启动本地服务（端口 5080）
-├── run_tests.bat                   # 一键门禁（双击即跑，等价 python tests/run_all.py）
-└── *.md                            # 各阶段可行性与架构分析留档
+└── run_tests.bat                   # 一键门禁（双击即跑，等价 python tests/run_all.py）
 ```
+
+（`tests/results/` 是评测运行的输出目录，已进 `.gitignore`，不入库。）
 
 评测集原始数据不入仓库，放在 `../eval_data/`：FinanceIQ 与 FinEval 是 CC BY-NC-SA-4.0，
 IDEAFinBench 上游没有 LICENSE 文件，再分发前得先找上游确认。构建命令从那里读、也写到那里：
