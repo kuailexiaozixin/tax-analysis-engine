@@ -46,11 +46,13 @@
 "计入当期损益""账面价值"，重组与抵债的条款讲"债务重组""企业合并"，优惠条款讲
 "会计上确认的收入"——会计怎么处理写进了税法适用要件里，税上的结论就跟着会计的
 认定走。除会计外，用户还会直接问审计、内控、评估、证券监管口径的原文（"审计准则
-第XX号怎么说""内控应用指引对X的要求"），这些都不属于税收规定，五个税收源一条都不收
-（各自的覆盖范围见 SKILL.md ⑪），L1→L4 走到头也取不到"准则原文怎么说"这一层。
-这一层取不到，答案是拿训练数据里的旧准则记忆补出来的，正是本项目最忌讳的那种答法。
+第XX号怎么说""内控应用指引对X的要求"），也会问证券交易所层面的自律规则（"深交所
+上市规则/交易规则怎么说""减持、回购、信息披露的交易所规定原文"）。这些都不属于
+税收规定，五个税收源一条都不收（各自的覆盖范围见 SKILL.md ⑪），L1→L4 走到头也取不到
+"准则原文怎么说"这一层。这一层取不到，答案是拿训练数据里的旧准则记忆补出来的，正是
+本项目最忌讳的那种答法。
 
-**这一层分两个子技能，按要的东西选**：
+**这一层分三个子技能，按要的东西选**：
 
 - 要**规范逐条原文全文**（某准则/指引第 X 条到底怎么写的）→ `subskills/maodocs/`
   （纯标准库直连 docs.maoyanqing.com 静态站，覆盖企业/政府/小企业会计准则、注协审计准则、
@@ -58,13 +60,18 @@
 - 要**实务答疑 / 监管处罚案例 / 某准则衍生哪些问答** → `subskills/chenyiwei-bbs/`
   （公开 REST，匿名访问，不调模型；它也能附带给企业准则原文，但取原文优先走 maodocs，
   静态、可复现、不吃第三方接口）。
+- 要**证券交易场所自律规则、或某部门规章/规范性文件在交易所官网的原文定位** →
+  `subskills/szse-lawrules/`（www.szse.cn/www/lawrules，先 `build` 建本地索引再离线
+  `query`；法律/行政法规/司法解释/证监会规章·指引·规范性文件/废止公告走标准库直连，
+  十二类"本所业务规则"走浏览器渲染，都不调模型）。
 
 **什么时候用**：① 判型报出【会计口径缺口】就走这一层——`tax_answer.py` 的 `--plan`
 与 `--answer` 都会打这一栏（词表在 `tax_analyze.ACCOUNTING_SIGNALS`，右边是"要先问清
 会计的哪一件事"）。程序没认出来、但你正要引的那条税法条文里写着"会计上……""账面
 价值""确认收入的时点"，同样是这个信号，照样去取。**审计/内控/评估/证券口径不由词表
 自动触发**（词表只盯"税法借用会计结果"这一条路径），题面直接问某一专业规范原文时，
-按题面判断走 maodocs。
+按题面判断走 maodocs；问证券交易所层面的自律规则（上市/交易/披露/回购/减持等）走
+szse-lawrules。
 
 **什么时候不用**：题目只问税率、期限、地点、单证这类与专业确认无关的规则。取准则
 换不来任何税法结论；认错了多半是多一次检索，但别为了"答得看起来更全"顺手引准则。
@@ -91,6 +98,18 @@ python subskills/maodocs/maodocs.py search cas "长期股权投资"   # 会计/�
 python subskills/maodocs/maodocs.py fetch "https://docs.maoyanqing.com/accounting/ent/cas/02.html"
 ```
 
+szse-lawrules 三条命令（脚本在 `subskills/szse-lawrules/szse.py`；先 `build` 建索引，之后离线 `query`）：
+
+```bash
+# 1) 建本地索引（默认只走标准库可枚举的七类通道，约 724 条；--snapshot 并入落地页快照）
+python subskills/szse-lawrules/szse.py build --snapshot
+# 2) 离线按关键词查，命中给"规则名+发布日期+原文链接+所属分类"
+python subskills/szse-lawrules/szse.py query 回购 --limit 10
+# 3) 取某一条原文（HTML 直连取正文；PDF/DOC 附件只回链接）
+python subskills/szse-lawrules/szse.py fetch "http://www.szse.cn/lawrules/rule/trade/current/t20260424_620190.html"
+# 需要"本所业务规则"（股票/债券/基金…）那一类时补浏览器渲染：python …szse.py build --browser --channel stock
+```
+
 **取到之后放哪**：准则原文与实务答疑都**不是税收法定依据**，不进 ⑧ 的位阶表打分，
 也不与税法条文并列。它们只占两个位置——【适用边界】里当前提
 （"本结论假定会计上按 X 确认；会计口径变了结论要重算"），或"只能参考（非法定依据）"
@@ -98,12 +117,13 @@ python subskills/maodocs/maodocs.py fetch "https://docs.maoyanqing.com/accountin
 
 **两条硬规矩**：
 
-- **接口/标题里的 `docNo` 不能当版次用**。实测 chenyiwei `/api/public/ref/cas-33` 报
+- **接口/标题里的 `docNo`、URL 里的 t 编号不能当版次用**。实测 chenyiwei `/api/public/ref/cas-33` 报
   `docNo=财会〔2006〕3号`、`doc.officialUrl` 指向 2008 年的页面，而第二条正文已经是
   "拥有对被投资方的权力"并出现"结构化主体"——那是 2014 年修订后的措辞；maodocs
   `cas/02.html` 标题带"（财会〔2014〕14号）"、正文是修订后文本，同分类 `cas/01.html`
-  却仍标"（财会〔2006〕3号）"。文号是录入项、不跟修订走，写出处只写规范名与条款号，
-  版本另找证据。
+  却仍标"（财会〔2006〕3号）"；szse `…/t20250327_612564.html` 标题写"（2023年修订）"、
+  列表日期 2023-12-15，而 URL 的 t20250327 只是站方 CMS 生成序号。文号与序号都是录入项、
+  不跟修订走，写出处只写规范名与条款号，版本另找证据。
 - **`status` /"现行有效"标注不能替时效判定**。chenyiwei 取到的准则条目 `status` 全是
   `current`、`supersededBy` 全是 `null`，分不出版次；maodocs 详情页写着"时效性：现行
   有效"是站方文字标注、无修订链。`tax_evidence.judge_validity` 都不接管，也别在答案里
@@ -117,7 +137,9 @@ python subskills/maodocs/maodocs.py fetch "https://docs.maoyanqing.com/accountin
 chenyiwei 的其余接口差异（`recent?days=1` 可以整天空、`penalties` 的分页字段是字符串、
 `slug` 命名不带统一年份后缀）记在 `subskills/chenyiwei-bbs/NOTE.md`，那份文件与上游字节
 一致，改动都只写在 NOTE.md 里；maodocs 的站内实测差异（索引页混挂全局导航、小企业准则
-不按主题分篇、Git Bash 路径改写）记在 `subskills/maodocs/NOTE.md`。
+不按主题分篇、Git Bash 路径改写）记在 `subskills/maodocs/NOTE.md`；szse 的站内实测差异
+（业务规则页运行时模板需浏览器、规范性文件多为 PDF/DOC 附件、偶发 502 重试、t 编号不表
+版次）记在 `subskills/szse-lawrules/NOTE.md`。
 
 ## 立法过程文件：草案那一层也不在 L1–L4 之内
 

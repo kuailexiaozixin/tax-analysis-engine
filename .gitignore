@@ -8,3 +8,6 @@ __pycache__/
 *.pyo
 *.log
 tests/results/
+
+# 子技能 build 生成的本地索引（可再生，随技能分发不含）
+subskills/*/szse_index.json

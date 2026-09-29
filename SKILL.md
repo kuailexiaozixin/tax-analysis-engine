@@ -160,11 +160,13 @@ python tests/probe_classify.py --stats --real --oracle    # 判型体检（离�
   那份才认目标（`tax_terms.title_identity`），否则不得拿同域文件顶位；只取到官方解读
   时出 `cited_note`（"原文待核"）。
 - **专业口径缺口**（`tax_analyze.accounting_gap` 认出"税法借用会计结果"这一路；审计/
-  内控/评估/证券口径的原文则按题面直接判，不由词表触发）：这一层走两个并排子技能——
+  内控/评估/证券口径的原文则按题面直接判，不由词表触发）：这一层走三个并排子技能——
   要**规范逐条原文**优先走 `subskills/maodocs/`（纯标准库直连静态站，覆盖会计/审计/内控/
   评估/证券五域，不调模型），要**实务答疑/处罚案例/准则衍生问答**走 `subskills/chenyiwei-bbs/`
-  （三条 curl，公开 REST，不调模型）；都不进五源、不进 ⑧ 定级。引原文只能引"规范名＋条款号"，
-  标题/接口 `docNo` 不能当版次、`status`/"现行有效"标注不能替时效判定。
+  （三条 curl，公开 REST，不调模型），要**证券交易场所自律规则/规章原文定位**走
+  `subskills/szse-lawrules/`（先 `build` 建本地索引再离线 `query`，标准库直连为主、业务规则
+  通道复用既有浏览器能力，不调模型）；都不进五源、不进 ⑧ 定级。引原文只能引"规范名＋条款号"，
+  标题/接口 `docNo`、URL 里的 t 编号不能当版次、`status`/"现行有效"标注不能替时效判定。
 - **立法过程文件**（草案/征求意见稿）：判据只看题面用词不看检索结果
   （`tax_analyze.LEGISLATIVE_STAGES`），`legislative_note` 写成整句，命令行与界面共用。
   草案取证轮走 `legis`+`shui5`+`wechat`（草案逐条解读文章在税屋与公众号里），
@@ -247,8 +249,9 @@ python scripts/tax_aggregator.py "<关键词>" --sources npc,chinatax --size 10 
 20. **禁止拿会计准则当税收依据**：准则答的是"会计上怎么确认与计量"，是税法适用的
     前提而非税法规定，只能在【适用边界】或"只能参考"栏出现。
 21. **禁止用训练数据里的准则记忆补专业口径缺口**：会计/审计/内控/评估/证券的准则与
-    指引都在修订，接口 `docNo`、页面"现行有效"标注都不跟着修订走；缺口只能靠
-    `subskills/maodocs/`（原文）或 `subskills/chenyiwei-bbs/`（实务答疑）实时取，取到再引。
+    指引、证券交易场所的业务规则都在修订，接口 `docNo`、URL 里的 t 编号、页面"现行有效"
+    标注都不跟着修订走；缺口只能靠 `subskills/maodocs/`（原文）、`subskills/chenyiwei-bbs/`
+    （实务答疑）或 `subskills/szse-lawrules/`（交易所自律规则目录与原文定位）实时取，取到再引。
 
 ---
 
@@ -305,6 +308,7 @@ python scripts/tax_aggregator.py "<关键词>" --sources npc,chinatax --size 10 
 | 微信公众号 | 实务解读、申报实操 | ⭐⭐ | 实时 | 搜狗微信 + 移动 UA |
 | 会计视野论坛（子技能 chenyiwei-bbs） | 陈版主实务答疑、监管处罚案例、准则衍生问答，附带企业会计准则原文。**答会计口径，不是税收规定** | 专业口径 ⭐⭐⭐⭐；税收依据 无 | 上游每日更新（未实测） | 公开 REST API，`curl` 直连，无需 key；见 `subskills/chenyiwei-bbs/` |
 | 审计文库 MaoDocs（子技能 maodocs） | docs.maoyanqing.com 规范原文全文：企业/政府/小企业会计准则、注协审计准则、企业内控规范、资产评估准则、证监会监管规则适用指引。**答专业口径原文，不是税收规定** | 专业口径 ⭐⭐⭐⭐；税收依据 无 | 实时（sitemap lastmod 到 2026-09-28） | 纯标准库直连静态站，无 WAF、无浏览器、无 key；见 `subskills/maodocs/` |
+| 深交所法律规则（子技能 szse-lawrules） | www.szse.cn/www/lawrules 目录：法律/行政法规/司法解释/证监会规章·指引·规范性文件/废止公告（标准库直连可枚举）＋十二类"本所业务规则"自律规则（浏览器渲染）。**答证券交易场所口径与原文定位，不是税收规定** | 专业口径 ⭐⭐⭐；税收依据 无 | 实时（当日枚举 724 条入索引） | 先 `build` 建本地索引再离线 `query`；直连 HTTP，业务规则通道复用 `scripts/tax_browser`，无 key、不调模型；见 `subskills/szse-lawrules/` |
 
 ---
 

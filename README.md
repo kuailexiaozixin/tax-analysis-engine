@@ -65,6 +65,7 @@
         mp.weixin.qq.com      微信公众号（经搜狗微信检索）
         bbs.auditdog.cn       陈版主实务答疑、监管处罚、准则衍生问答（子技能，补专业口径）
         docs.maoyanqing.com   审计文库 MaoDocs：会计/审计/内控/评估/证券规范逐条原文（子技能）
+        www.szse.cn           深交所法律规则：交易所自律规则/规章目录与原文定位（子技能）
 ```
 
 ### 代码构成
@@ -289,6 +290,7 @@ GET /api/text/ff808181927b083b0193fd65a0eb02cb
 | **微信公众号** | 实务解读、申报实操 | ⭐⭐ | 实时 | 搜狗微信 + 移动 UA |
 | **bbs.auditdog.cn**（子技能 chenyiwei-bbs） | 陈版主实务答疑、监管处罚案例、准则衍生问答，附带企业会计准则原文。补的是专业口径那一层，不答税法 | 专业口径 ⭐⭐⭐⭐；税收依据 无 | 上游每日更新（子技能文档记载，未实测） | 公开 REST API，`curl` 直连，无 key；操作手册在 `subskills/chenyiwei-bbs/` |
 | **docs.maoyanqing.com**（子技能 maodocs） | 审计文库 MaoDocs：企业/政府/小企业会计准则、注协审计准则、企业内控规范、资产评估准则、证监会监管规则适用指引的**逐条原文全文**。补专业口径原文，不答税法 | 专业口径 ⭐⭐⭐⭐；税收依据 无 | 实时（sitemap lastmod 至 2026-09-28） | 纯标准库直连静态站，无 WAF、无浏览器、无 key；脚本与手册在 `subskills/maodocs/` |
+| **www.szse.cn**（子技能 szse-lawrules） | 深交所「法律规则」栏目：法律/行政法规/司法解释/证监会规章·指引·规范性文件/废止公告＋十二类"本所业务规则"自律规则的**目录与原文定位**。补证券交易场所口径，不答税法 | 专业口径 ⭐⭐⭐；税收依据 无 | 实时（当日枚举 724 条入索引） | 先 `build` 建本地索引再离线 `query`；标准库直连为主，业务规则通道复用 `scripts/tax_browser`，无 key、不调模型；脚本与手册在 `subskills/szse-lawrules/` |
 
 ### 缓存策略
 
@@ -466,10 +468,14 @@ tax-analysis-engine/
 │   ├── chenyiwei-bbs/
 │   │   ├── SKILL.md                # 陈版主实务答疑与准则原文（上游文件，与 https://bbs.auditdog.cn 字节一致）
 │   │   └── NOTE.md                 # 收录来源、SHA-256、实测校正（docNo 不表版次、recent 可空、分页字段类型不一）
-│   └── maodocs/
-│       ├── SKILL.md                # 审计文库 MaoDocs 原文检索：会计/审计/内控/评估/证券五域逐条原文
-│       ├── NOTE.md                 # 来源、sitemap 分布、实测校正（文号不表版次、索引页混挂全局导航、Git Bash 路径改写）
-│       └── maodocs.py              # 纯标准库取文脚本（categories/search/fetch，无 WAF、无浏览器、不调模型）
+│   ├── maodocs/
+│   │   ├── SKILL.md                # 审计文库 MaoDocs 原文检索：会计/审计/内控/评估/证券五域逐条原文
+│   │   ├── NOTE.md                 # 来源、sitemap 分布、实测校正（文号不表版次、索引页混挂全局导航、Git Bash 路径改写）
+│   │   └── maodocs.py              # 纯标准库取文脚本（categories/search/fetch，无 WAF、无浏览器、不调模型）
+│   └── szse-lawrules/
+│       ├── SKILL.md                # 深交所法律规则目录检索（查询式：build 建索引后离线 query）
+│       ├── NOTE.md                 # 来源、两种渲染形态、实测校正（t 编号不表版次、业务规则需浏览器、多为 PDF 附件）
+│       └── szse.py                 # categories/build/query/fetch；标准库直连为主，业务规则通道复用 scripts/tax_browser，不调模型
 ├── references/                     # tax_categories · search_strategies · tax_risk_framework
 ├── tests/
 │   ├── run_all.py                  # 统一门禁入口（默认离线组；--online 加联网组）
