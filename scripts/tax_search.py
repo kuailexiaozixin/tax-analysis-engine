@@ -37,6 +37,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tax_http  # noqa: E402
+import tax_terms as TT  # noqa: E402
 from tax_http import VERIFY_SSL  # noqa: E402,F401
 
 # ── Constants ───────────────────────────────────────────────────────────────
@@ -78,7 +79,10 @@ _cache = CacheManager(enabled=False, namespace="search")
 TAX_TYPE_KEYWORDS = {
     # 流转税
     "增值税": {
-        "aliases": ["增值税", "VAT", "进项税", "销项税", "留抵退税", "增值税专用发票", "增值税普通发票"],
+        # "简易计税"是增值税专有的计税方法名（一般计税相对），题面常只写它、
+        # 不写"增值税"三字。试过"营改增"，但它会把非居民企业扣缴类题改判过来，没收。
+        "aliases": ["增值税", "VAT", "进项税", "销项税", "留抵退税", "增值税专用发票", "增值税普通发票",
+                    "简易计税"],
         "parent_law": "中华人民共和国增值税法",
         "priority": 1,
     },
@@ -98,7 +102,23 @@ TAX_TYPE_KEYWORDS = {
     },
     # 所得税
     "企业所得税": {
-        "aliases": ["企业所得税", "应税所得", "税前扣除", "加计扣除", "高新技术企业", "小微企业", "西部大开发"],
+        # "所得税"单列：题目常写"所得税处理""所得税优惠"而不带"企业"二字，
+        # 原先只能靠"企业所得税"整串命中，未路由的题就拿原话去检索了。
+        # 最长别名优先，所以"个人所得税"仍然归个税，不会被这条抢走。
+        # 后半批是"只讲业务事实、不点税种名"的事务词：题面写"长期待摊费用"
+        # "政策性搬迁"时全句不出现"企业所得税"，归类为空就只好拿原话去标题检索。
+        # 2026-09-29 用评测集 1001 题逐题回归：这 11 条净增 13 题命中、零改判。
+        # 试过而没收的候选及其代价——应纳税所得额（改判 13 题，把个税、土增、
+        # 关税的题抢过来）、业务招待费/广告费（6 题）、收入确认（1 题，且题面已
+        # 点名个税）、公益性捐赠（1 题，个人捐赠归个税）、限售股（个人转让限售股
+        # 按财产缴个税，不是企税）。共同原因是这些词跨税种通用，而排序按别名长度
+        # 定胜负，长通用词会压过题面里真正的税种名。要收它们得先给别名加税域标注。
+        "aliases": ["企业所得税", "所得税", "企业重组", "特殊性税务处理",
+                    "一般性税务处理", "应税所得", "税前扣除", "加计扣除",
+                    "高新技术企业", "小微企业", "西部大开发",
+                    "非货币性资产交换", "长期股权投资", "长期待摊费用",
+                    "开办费", "生产性生物资产", "政策性搬迁", "资产损失",
+                    "股权收购", "资产收购", "债资比例", "股权转让"],
         "parent_law": "中华人民共和国企业所得税法",
         "priority": 1,
     },
@@ -109,7 +129,11 @@ TAX_TYPE_KEYWORDS = {
         # 只新增 1 条命中、零抢占、零丢失（语料里没有上述问法；那不等于零误差）。
         # 保留它的理由是收益明确——"个税起征点""个税怎么算"这类提问高频；误命中的场景
         # 靠返回值里的 matched_alias == "个税" 可识别，SKILL.md 已把它写成一条踩空提示。
-        "aliases": ["个人所得税", "个税", "综合所得", "专项附加扣除", "年度汇算", "劳务报酬", "经营所得"],
+        "aliases": ["个人所得税", "个税", "综合所得", "专项附加扣除", "年度汇算",
+                    "劳务报酬", "稿酬所得", "稿酬", "特许权使用费", "远洋船员",
+                    # 个税法原文写作"工资、薪金所得"，带顿号；只收"工资薪金"这类
+                    # 连写会漏掉按法条原文出题的题面。两种写法都收。
+                    "经营所得", "工资、薪金", "工资薪金"],
         "parent_law": "中华人民共和国个人所得税法",
         "priority": 1,
     },
@@ -120,7 +144,10 @@ TAX_TYPE_KEYWORDS = {
         "priority": 4,
     },
     "土地增值税": {
-        "aliases": ["土地增值税", "土增税", "清算"],
+        # "土地増值税"是题库原文里的日式字形（増 U+5827，不是"增"）。它不是 NFKC
+        # 能折叠的兼容字符，归一化救不了，只能按字面收进别名表；eval_retrieval 的
+        # 表面词表早就收了它，路由表却没收，于是这类题拿原话去检索。
+        "aliases": ["土地增值税", "土地増值税", "土增税", "清算"],
         "parent_law": "中华人民共和国土地增值税暂行条例",
         "priority": 4,
     },
@@ -134,9 +161,26 @@ TAX_TYPE_KEYWORDS = {
         "parent_law": "中华人民共和国城镇土地使用税暂行条例",
         "priority": 4,
     },
+    # 耕地占用税原先整张表里都没有，题面写"占用耕地要缴什么税"时无税种可归，
+    # 只能拿原话去 NPC 标题检索。它与城镇土地使用税是两个税种、两部法规：
+    # 占地建房缴耕地占用税，持有期间逐年缴城镇土地使用税。
+    "耕地占用税": {
+        "aliases": ["耕地占用税", "占用耕地", "耕地"],
+        "parent_law": "中华人民共和国耕地占用税法",
+        "priority": 4,
+    },
     "车船税": {
-        "aliases": ["车船税", "车船使用税", "船舶吨税"],
+        # "船舶吨税"不再挂在这条别名里：吨税由海关按《船舶吨税法》单独征收，
+        # 车船税法不含吨税。挂在车船税下，"船舶吨税免征情形"这类题会拿到
+        # 车船税法当本体法——上位法指错，后面引哪一条都白搭。
+        "aliases": ["车船税", "车船使用税"],
         "parent_law": "中华人民共和国车船税法",
+        "priority": 5,
+    },
+    "船舶吨税": {
+        # "吨税"是"船舶吨税"的连续子串，单列只为题面只写简称的情形
+        "aliases": ["船舶吨税", "吨税"],
+        "parent_law": "中华人民共和国船舶吨税法",
         "priority": 5,
     },
     # 车辆购置税是独立税种、独立立法，不归入车船税：车船税法不含车辆购置税，
@@ -192,9 +236,11 @@ TAX_TYPE_KEYWORDS = {
     # search_term 是实测能翻出依据的检索词，不填就拿键名去搜。键名只是分类标签，
     # 不是检索词："税收争议救济"、"纳税担保与信用"当检索词都取不到依据。
     "税收协定": {
-        "aliases": ["税收协定", "双重征税", "税收居民身份", "居民企业身份",
-                    "税收条约"],
-        "search_term": "税收协定",
+        "aliases": ["税收协定", "双重征税", "重复征税", "国际重复征税",
+                    "双重居民身份", "税收居民身份", "居民企业身份", "税收条约"],
+        # "税收协定"这个检索词已经翻不出法规库条目了：2026-09-29 实测总局命中 965 条，
+        # 前 3 页一条法规库文件都没有；换成"双重征税"首条就是执行双边协定的条文解释。
+        "search_term": "双重征税",
         "parent_law": None,
         "authority": "sta",
         "priority": 1,
@@ -332,24 +378,56 @@ def resolve_tax_type(query: str) -> dict:
     authority（该专题的依据在哪一源，"npc" 或 "sta"）、search_term（该专题
     实测可用的检索词，authority="sta" 时拿它去查，别拿分类名去搜）。
     见到 authority="sta" 就不要再查 NPC，改为 tax_fgk.py 查税务总局。
+
+    两处排序规则：
+    1. 先用题干归类，题干里一个税种信号都没有时才拿整句（含选项）兜底。
+       选项是干扰项文本，参与归类会把题带偏；但实测全量题库里有不少题
+       只在选项里出现税种名（"哪一种税制实行了多次课征制"就是这样），
+       一刀切只读题干会让这部分题从命中退回未路由，所以保留回退，
+       并在返回值里用 matched_from="options" 标出来。见 strip_options()。
+    2. 同样长度的别名命中时，有本体法的税种排在横切专题之前；横切专题要
+       赢过税种，别名得比它长两个字以上。理由是税种能直接给出条文，
+       横切专题给出的是一堆公告清单——"海关滞纳金按关税还是增值税算"这种
+       题归到关税还能拿到税则，归到税务行政处罚就什么都拿不到。
     """
-    q = query.strip()
-    best = None
-    best_len = 0
-    for tax_type, info in TAX_TYPE_KEYWORDS.items():
-        for alias in info["aliases"]:
-            if alias in q and len(alias) > best_len:
-                best = {"type": tax_type, "matched_alias": alias, **info}
-                best_len = len(alias)
+    def _match(text: str):
+        best, best_key = None, None
+        for tax_type, info in TAX_TYPE_KEYWORDS.items():
+            has_parent = bool(info.get("parent_law"))
+            for alias in info["aliases"]:
+                if alias not in text:
+                    continue
+                key = (len(alias) - (0 if has_parent else 1), has_parent, len(alias))
+                if best_key is None or key > best_key:
+                    best_key = key
+                    best = {"type": tax_type, "matched_alias": alias, **info}
+        return best
+
+    full = (query or "").strip()
+    best = _match(TT.strip_options(full))
+    if best is None and TT.strip_options(full) != full:
+        best = _match(full)
+        if best is not None:
+            best["matched_from"] = "options"
     if best is not None:
         best.setdefault("authority", "npc")
     return best
 
 
+# detect_intent 的取值域，按判定优先级从前往后排（发票 → 风险 → 申报 → 资格 → 兜底）。
+# 展示层那两张标签表拿它对齐，漏一档就会在界面上印出原始英文码。
+INTENTS = ("invoice", "risk_check", "filing_guide", "eligibility", "policy_lookup")
+
+
 def detect_intent(query: str) -> str:
     """
     Classify user intent to determine search strategy.
-    Returns: 'policy_lookup' | 'filing_guide' | 'risk_check' | 'eligibility' | 'invoice'
+    Returns one of INTENTS.
+
+    这一档词表只管检索路的展示（`tax_formatter.INTENT_HEADERS` 出 markdown 标题、
+    `tax_server.INTENT_LABELS` 出界面意图标签），不影响实际检索参数；主线的判型
+    是另一套九类词表（`tax_analyze.QUESTION_TYPES`）。三处键集合必须一致，
+    由 `tests/test_routing_terms.py::test_intent_vocabularies_agree` 钉住。
     """
     q = query.strip()
 
@@ -420,7 +498,7 @@ _last_request_at = 0.0
 # 一个进程打 NPC。锁在进程退出时由操作系统自动释放，崩溃不会留死锁。
 # 闸本体在 tax_http.SerialGate（搜狗微信共用同一份实现），这里只钉 NPC 的默认值。
 SERIAL_LOCK_TIMEOUT = float(os.getenv("TAX_NPC_LOCK_TIMEOUT", "180"))
-_SERIAL_LOCK_PATH = Path(tempfile.gettempdir()) / "tax-policy-search-npc.lock"
+_SERIAL_LOCK_PATH = Path(tempfile.gettempdir()) / "tax-analysis-engine-npc.lock"
 
 
 class NpcSerialGate(tax_http.SerialGate):

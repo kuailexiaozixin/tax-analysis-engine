@@ -22,6 +22,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import requests
+
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
@@ -202,6 +204,38 @@ class TestTaxHttpPassthrough(unittest.TestCase):
     def test_headers_timeout_also_have_no_default(self):
         with self.assertRaises(TypeError):
             tax_http.get("https://example.test/d", verify=False)
+
+
+class TestShortReason(unittest.TestCase):
+    """取数失败那句话的整形：界面那一行不能塞进 urllib3 的内部结构。"""
+
+    def test_drops_the_url_but_keeps_the_readable_cause(self):
+        exc = requests.exceptions.TooManyRedirects(
+            "Redirect response '302 Found' for "
+            "https://m.so.com/s?q=%E5%A2%9E%E5%80%BC%E7%A8%8E%E8%A7%A3%E8%AF%BB&pn=1 "
+            "Redirecting too many times! (25 redirects)")
+        why = tax_http.short_reason(exc)
+        self.assertIn("TooManyRedirects", why)     # 类名留着，读的人有词可查
+        self.assertNotIn("%E5%A2%9E", why)         # 编码后的查询串不进界面
+        self.assertIn("Redirecting too many times", why)
+
+    def test_flattens_and_cuts_without_breaking_a_word(self):
+        """实测形态：一次 SSL/域名失败给的是三百多字、带折行的 urllib3 结构。
+
+        这里限到 60 字，要求它一行到底、不在词中间断开、把 "(Caused by ...)"
+        那层嵌套原因丢掉——嵌套里说的是 urllib3 的实现，不是用户能行动的事。
+        """
+        exc = requests.exceptions.ConnectionError(
+            "HTTPSConnectionPool(host='m.so.com', port=443): Max retries exceeded "
+            "with url: /?q=%E5%A2%9E\n  (Caused by SSLError(SSLEOFError(8, "
+            "'EOF occurred in violation of protocol')))")
+        why = tax_http.short_reason(exc, limit=60)
+        self.assertNotIn("\n", why)
+        self.assertNotIn("Caused by", why)
+        self.assertNotIn("%E5%A2%9E", why)
+        self.assertLessEqual(len(why), len("ConnectionError：") + 60)
+        # 60 字这一刀落在 "retries" 之后，不是 "excee"：截断点回退到空格
+        self.assertTrue(why.endswith("Max retries"), why)
 
 
 def main():

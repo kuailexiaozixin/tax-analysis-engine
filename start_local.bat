@@ -42,7 +42,7 @@ REM 在独立窗口里起服务：日志留在那个窗口，关掉它即停服务。
 REM 这里不必套 cmd /k "chcp 65001 && ..."：tax_server.py 启动时会自己把控制台
 REM 代码页切成 65001，所以一个最简单的 start 就够，没有嵌套引号要操心。
 REM 监听地址跟随 tax_server.py 的 TAX_BIND（默认 127.0.0.1，只本机可访问）。
-start "tax-policy-search server" python scripts\tax_server.py
+start "tax-analysis-engine server" python scripts\tax_server.py
 
 REM 等端口真的就绪再开浏览器。原来这里是先 start 浏览器再起服务，
 REM 页面抢在 Flask 前面加载，只会看到"无法访问此网站"。
@@ -51,7 +51,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='Sil
 if %ERRORLEVEL% neq 0 (
     echo.
     echo [警告] 服务器约 1 分钟内没有就绪，仍尝试打开浏览器。
-    echo        请查看那个 "tax-policy-search server" 窗口里的报错。
+    echo        请查看那个 "tax-analysis-engine server" 窗口里的报错。
     echo.
 )
 
@@ -59,7 +59,7 @@ start "" http://127.0.0.1:%PORT%
 
 :done
 echo.
-echo 服务器运行在独立的 "tax-policy-search server" 窗口里。
+echo 服务器运行在独立的 "tax-analysis-engine server" 窗口里。
 echo 停止服务：关闭那个窗口即可。
 echo.
 pause

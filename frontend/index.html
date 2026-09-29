@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>规则的起点 — 财税政策搜索引擎</title>
+<title>规则的起点 — 税务问题分析与依据核查</title>
 <!-- 空 data: 图标：浏览器默认会去要 /favicon.ico，而服务端没有这个路由，
      每次加载都在控制台留一条 404，让"页面无报错"这类自动化检查永远误红。
      用 data: 占位比加路由省事：不动路由数量，也不用多带一个图标文件。 -->
@@ -643,9 +643,43 @@ function renderResults(data){
   // 缺了哪一层由后端给成句照抄（见 tax_aggregator._degraded_note）。这里不自己
   // 判断、也不把缺失渲染成普通的"0 条"——0 条看起来像"该层确实没有内容"。
   if(result?.degraded_note){h+=`<div class="meta-bar" style="border-bottom:none"><span class="source-label" style="border-color:var(--accent);color:var(--accent);white-space:normal">⚠️ ${esc(result.degraded_note)}</span></div>`;}
-  if(items.length===0){h+=`<div class="empty-state"><div style="font-size:28px;margin-bottom:8px">🔍</div><p><b>未找到相关政策</b></p><p style="font-size:13px;color:var(--g400)">关键词:"${esc(data.keyword)}"</p><p style="font-size:12px;margin-top:8px;color:var(--g400)">试试更短的关键词（如"增值税"而非"增值税优惠政策最新规定"） / 切换到"多源聚合"模式覆盖税屋与公众号</p></div>`;}
+  // 检索词被换成什么、有没有换成，由后端给整句（tax_server 的 _routed）。
+  // 归不出税种时这句是"这批结果是按原话字面匹配出来的"——不写出来，
+  // 一摞无关法条看起来就像按本题找到的依据。
+  if(result?._routed){h+=`<div class="meta-bar" style="border-bottom:none"><span class="source-label" style="border-color:var(--g700);color:var(--g700);white-space:normal">🧭 ${esc(result._routed)}</span></div>`;}
+  // 税法要件落在会计确认与计量上时，后端给整句提示（tax_analyze.accounting_note），
+  // 这里照抄不自己判断：准则不在五源覆盖范围内，只能由子技能取，且不是税收依据。
+  if(data.accounting_note){h+=`<div class="meta-bar" style="border-bottom:none"><span class="source-label" style="border-color:var(--g700);color:var(--g700);white-space:normal">📘 ${esc(data.accounting_note)}</span></div>`;}
+  // 点名的是草案/征求意见稿时，这一栏列出的同名文件是现行有效版本、不是草案内容。
+  // 整句由后端给（tax_analyze.legislative_note），这里照抄，不在前端判断库的收录范围。
+  if(data.legislative_note){h+=`<div class="meta-bar" style="border-bottom:none"><span class="source-label" style="border-color:var(--accent);color:var(--accent);white-space:normal">收录范围 ${esc(data.legislative_note)}</span></div>`;}
+  // 空清单的两种成因由接口写在 _empty_reason 里（见 tax_web_search.search_chinatax）：
+  // 翻过末页是翻页参数的用法问题，末页之内却没给清单要换检索词再取一轮。
+  // 这一句要原样显示，不能让空结果读起来像"库里没有这份文件"。
+  if(items.length===0){h+=`<div class="empty-state"><div style="font-size:28px;margin-bottom:8px">🔍</div><p><b>未找到相关政策</b></p><p style="font-size:13px;color:var(--g400)">关键词:"${esc(data.keyword)}"</p>${result?._empty_reason?`<p style="font-size:12px;margin-top:8px;color:var(--accent)">${esc(result._empty_reason)}</p>`:''}<p style="font-size:12px;margin-top:8px;color:var(--g400)">试试更短的关键词（如"增值税"而非"增值税优惠政策最新规定"） / 切换到"多源聚合"模式覆盖税屋与公众号</p></div>`;}
 
-  items.forEach((item,i)=>{
+  /* NPC 条目给数字状态码，总局法规库条目给的是录入项文本（"全文有效"）。
+   两种都要认，否则文本时效会掉进"时效未标注"——那等于把明明标了有效的文件
+   显示成没标，用户在界面上就看不出它能不能引用。 */
+function statusBadge(item){
+  const t=String(item.status||'');
+  let cls=item.status_code!=null?statusMap[item.status_code]:null;
+  let name=item.status_code!=null?statusNames[item.status_code]:'';
+  let icon=cls?statusIcons[item.status_code]:'⚪';
+  if(cls==null||!cls){
+    if(/废止|失效/.test(t)){cls='s-abolished';icon='🔴';}
+    else if(/尚未生效|未生效/.test(t)){cls='s-pending';icon='🔵';}
+    else if(/修改|修订/.test(t)){cls='s-amended';icon='🟡';}
+    else if(/有效/.test(t)){cls='s-effective';icon='🟢';}
+    else{cls='s-unknown';icon='⚪';}
+    // NPC 那条链路的占位串是程序自己拼的"未知(None)"，不是来源给的时效；
+    // 直接显示会把程序的缺省说成法规的缺省，统一换成"时效未标注"。
+    name=(t&&!/^未知/.test(t))?t:'时效未标注';
+  }
+  return `<span class="status-badge ${cls}">${icon} ${esc(name)}</span>`;
+}
+
+items.forEach((item,i)=>{
     const st=highlightText(item.title,lastKeyword),sid=item.id||'',rawTitle=esc(item.title);
     // 弹窗四个标签页全靠 NPC 的 bbbs_id 取原文与元信息；总局、公众号、税屋的条目
     // 没有这个 ID，挂上 viewLaw 点开只会得到"获取全文失败"。这类卡片不接弹窗，
@@ -659,7 +693,7 @@ function renderResults(data){
       :`<div class="id-row">${safeUrl?`🔗 原文：<a href="${esc(safeUrl)}" target="_blank" rel="noopener">${esc((safeUrl.match(/https?:\/\/(?:www\.)?([^/]+)/)||[,'非本库链接'])[1])}</a> · 非 NPC 库条目，点开无弹窗`:'非 NPC 库条目，点开无弹窗'}</div>`;
     h+=`${openTag}
       <div class="title"><span style="font-size:11px;color:var(--g400);margin-right:6px">#${i+1}</span> ${item._source?`<span class="source-label src-${item._source}">${srcIcons[item._source]||''} ${srcLabels[item._source]||''}</span>`:''}${st}</div>
-      <div class="meta"><span><span class="status-badge ${statusMap[item.status_code]||'s-unknown'}">${statusIcons[item.status_code]||'⚪'} ${statusNames[item.status_code]||'时效未标注'}</span></span>${item.publish_date?`<span>📅 公布:${item.publish_date}</span>`:''}${item.effective_date?`<span>施行:${item.effective_date}</span>`:''}${item.issuing_authority?`<span>🏛️ ${esc(item.issuing_authority)}</span>`:''}</div>
+      <div class="meta"><span>${statusBadge(item)}</span>${item.document_number?`<span>文号:${esc(item.document_number)}</span>`:''}${item.effect_level?`<span>效力级别:${esc(item.effect_level)}</span>`:''}${(item.publish_date||item.date)?`<span>📅 公布:${esc(item.publish_date||item.date)}</span>`:''}${item.effective_date?`<span>施行:${esc(item.effective_date)}</span>`:''}${item.issuing_authority?`<span>🏛️ ${esc(item.issuing_authority)}</span>`:''}</div>
       ${idRow}</div>`;
   });
   if(total>items.length)h+=`<p style="text-align:center;font-size:12px;color:var(--g400);margin-top:12px">显示前${items.length}条，共${total}条 · 缩小搜索范围以获取更精确结果</p>`;

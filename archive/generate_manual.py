@@ -12,12 +12,14 @@
     SKILL.md    Agent 操作手册，也是版本号的唯一来源
 
 保留本文件只为兼容历史引用；运行它只会打印这段说明并以非 0 退出码结束。
+本文件原先在 scripts/ 下，2026-09-29 移到 archive/：scripts/ 只留在用的脚本，
+免得照目录列表挑脚本的人挑到一个只会报错的入口。
 """
 
 import sys
 
 _MESSAGE = """\
-scripts/generate_manual.py 已废弃，不再生成 Word 手册。
+generate_manual.py 已废弃（现在在 archive/ 下，原在 scripts/），不再生成 Word 手册。
 
 项目文档请直接看：
   README.md   项目总览（面向人）

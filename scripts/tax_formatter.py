@@ -12,6 +12,16 @@ Output always includes:
   - Query timestamp
   - Data source provenance
   - Legal disclaimer
+
+归属：本模块是**检索路**的渲染器，stdin 收的是 `tax_search.py` / `tax_aggregator.py`
+取回的原始 JSON，把它排成四段式 Markdown。主线（判型→分轮检索→定级→分层作答）
+不经过这里——主线的答案骨架由 `tax_answer.compose` 产出、`tax_answer._print_answer`
+打印。两者模板不共用，改一处不会影响另一处。
+
+`--intent` 的五个取值是检索路自己的意图词表（`tax_search.detect_intent`），
+只用来决定标题那一行说什么，与主线的九类题型（`tax_analyze.QUESTION_TYPES`）
+不是同一套词表，选项不能互换。三处词表的键集合由
+`tests/test_routing_terms.py::test_intent_vocabularies_agree` 钉住。
 """
 
 import json

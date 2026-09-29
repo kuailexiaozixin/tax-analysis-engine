@@ -1,10 +1,12 @@
-# 财税政策实时搜索引擎 — 项目介绍
+# 税务问题分析引擎 — 项目介绍
 
-> **Tax Policy Real-Time Search** — 通过多源实时检索，为企业和个人提供权威、准确、最新的中国税收政策法规查询与解读服务。
+> **Tax Analysis Engine**（包名 `tax-analysis-engine`，原名 `tax-policy-search`）—
+> 先判问题类型与缺失前提，再多源实时取证、按效力位阶与时效给依据定级，最后输出
+> 带限制条件的分析结论。检索只是这道流水线的中间步骤，不是产品本身。
 
 > **文档分工（单一事实来源）**：本 README 是**项目总览**（面向人：定位 / 架构 / 用法 / 目录）。
-> Agent 的操作手册在 `SKILL.md`（面向 AI 的检索与回答规范），二者不重复描述同一细节。
-> **版本号以 `SKILL.md` frontmatter 的 `version` 为唯一来源**（当前 `3.0.1`）；其余 `*.md` 为历史留档，不代表当前版本。
+> Agent 的操作手册在 `SKILL.md`（面向 AI 的分析与回答规范），二者不重复描述同一细节。
+> **版本号以 `SKILL.md` frontmatter 的 `version` 为唯一来源**；其余 `*.md` 为历史留档，不代表当前版本。
 
 ---
 
@@ -44,14 +46,16 @@
         │
         ▼
 编排层  tax_answer.py（判型 → 分轮检索 → 定级 → 依据分层）
-        依赖 tax_analyze.py（问题类型与四根前提轴）、tax_evidence.py（位阶 × 时效评分）
+        依赖 tax_analyze.py（问题类型、四根前提轴、会计口径缺口）、tax_evidence.py（位阶 × 时效评分）
         │
         ▼
 检索层  tax_search.py（NPC）· tax_detail.py（详情与 DOCX 正文）
         tax_web_search.py（总局 search5）· tax_fgk.py（法规库目录与正文）
         tax_so360.py（360 site: 站内）· tax_shui5.py（税屋）· tax_wechat.py（公众号）
         tax_browser.py（复用本机浏览器过 WAF）
-        tax_aggregator.py（五源并发聚合）· tax_formatter.py（四段式输出）
+        tax_aggregator.py（五源并发聚合）
+        旁路：tax_formatter.py 只把检索路的原始 JSON 排成 markdown，主线的四段式
+              答案由上面那层的 tax_answer._print_answer 打印，两条路不共用模板
         │
         ▼
 数据源  flk.npc.gov.cn        法律 · 行政法规 · 司法解释（官方 API）
@@ -59,48 +63,53 @@
         m.so.com              site: 检索，定位省局、财政部、国务院等站点
         www.shui5.cn          税屋：实务解读、专栏、答疑（正文可取）
         mp.weixin.qq.com      微信公众号（经搜狗微信检索）
+        bbs.auditdog.cn       陈版主实务答疑、监管处罚、准则衍生问答（子技能，补专业口径）
+        docs.maoyanqing.com   审计文库 MaoDocs：会计/审计/内控/评估/证券规范逐条原文（子技能）
 ```
 
 ### 代码构成
 
 | 层级 | 文件 | 职责 |
 |------|------|------|
-| **分析层** | `tax_analyze.py` | 9 类问题判定 + 四根前提轴识别（不联网） |
+| **分析层** | `tax_analyze.py` | 9 类问题判定 + 四根前提轴识别 + 会计口径缺口识别（`accounting_gap` / `accounting_note`）+ 立法过程文件识别（`legislative_stage` / `legislative_note`，问的是草案时说明库取不到草案）；都不联网 |
 | **分析层** | `tax_evidence.py` | 依据效力位阶与时效定级、主依据挑选 |
 | **分析层** | `tax_answer.py` | 判型→分轮检索→定级→依据分层的编排层 |
-| **核心搜索** | `tax_search.py` | 30 项税种与专题映射（含依据源路由）、NPC API 调用、意图识别、缓存、**NPC 串行闸**（跨进程文件锁，`NpcSerialGate`） |
+| **检索词整形** | `tax_terms.py` | 纯字符串规则，不联网：选项剥离、点名文件抽取、标题候选、文号抽取、标题字符命中率排序、**点名文件同一性判定**（`title_identity`：文种冲突即否，其余按核心标题互含或漏字缩略认"就是这一份"） |
+| **核心搜索** | `tax_search.py` | 32 项税种与专题映射（含依据源路由）、NPC API 调用、意图识别、缓存、**NPC 串行闸**（跨进程文件锁，`NpcSerialGate`） |
 | **浏览器** | `tax_browser.py` | 本机已装浏览器探测 + 过 WAF + 导 cookie（不装内核） |
 | **法规详情** | `tax_detail.py` | NPC 详情 API、DOCX 下载、全文提取、章节解析；详情元数据磁盘缓存（**默认开**、TTL 1h、命名空间 `detail`）；与 `tax_search` **共用同一把** NPC 串行闸 |
 | **Web 搜索** | `tax_web_search.py` | 税务总局 search5 JSON 检索（含 fgk 法规库） |
 | **站内搜索** | `tax_so360.py` | 360 `site:` 检索，定位省局与地方文件；识别"访问异常出错"拦截页并回报 |
 | **法规库目录与正文** | `tax_fgk.py` | 税务总局法规目录，`--body` 取正文、`--cache` 缓存清单（TTL 1h、正文不缓存）、翻页按需自适应（`--pages` 显式指定则关自适应） |
-| **统一请求层** | `tax_http.py` | 全项目对外 HTTP 请求的**唯一出口**；`verify` 设计成**必填参数**（`tax_detail`/`tax_search` 用默认关闭的 `VERIFY_SSL`，`tax_fgk` 用 requests 默认的 `True`，给默认值等于悄悄改行为）。各自维护 Session / WAF 应对的 `tax_shui5`、`tax_so360`、`tax_wechat`、`tax_web_search` 在白名单内，其余脚本直接发请求会被 `test_http_layer.py` 拦下 |
+| **统一请求层** | `tax_http.py` | 全项目对外 HTTP 请求的**唯一出口**；`verify` 设计成**必填参数**（`tax_detail`/`tax_search` 用默认关闭的 `VERIFY_SSL`，`tax_fgk` 用 requests 默认的 `True`，给默认值等于悄悄改行为）。各自维护 Session / WAF 应对的 `tax_shui5`、`tax_so360`、`tax_wechat`、`tax_web_search` 在白名单内，其余脚本直接发请求会被 `test_http_layer.py` 拦下。同层另有 `short_reason()`：把取数失败的裸异常压成一句能进界面的话（抹链接、压平折行、丢 `(Caused by ...)` 嵌套、留异常类名），`tax_so360` / `tax_web_search` / `tax_fgk` 的"请求失败："都走它 |
 | **共享缓存** | `tax_cache.py` | 缓存逻辑的**唯一实现**（`tax_search` / `tax_fgk` / `tax_detail` 三处共用）；按条目里的 `_ns` 字段分命名空间，各自的 `--cache-clear` 互不越界；只缓存清单 / 元数据，**正文永不缓存** |
 | **实务解读** | `tax_shui5.py` | 税屋：360 检索 + 浏览器过 WAF 后 HTTP 连读 |
 | **实务解读** | `tax_wechat.py` | 微信公众号：搜狗微信 + 移动 UA |
 | **多源聚合** | `tax_aggregator.py` | 五源并发、Jaccard 去重、权威度排序、源级失败上抛、跨源时间序 |
-| **输出格式化** | `tax_formatter.py` | 四段式 Markdown、多源聚合输出；本身也是个命令行工具：`python scripts/tax_formatter.py --intent policy_lookup < result.json`（stdin 收 JSON、stdout 出 markdown，加 `--mode aggregated` 走多源归并；stdin 的字段要求见「命令行搜索」） |
+| **输出格式化** | `tax_formatter.py` | **检索路**的渲染器：stdin 收 `tax_search` / `tax_aggregator` 的原始 JSON，stdout 出四段式 Markdown。主线不经过它——主线的答案骨架是 `tax_answer.compose` 产出、`tax_answer._print_answer` 打印，两处模板不共用。`--intent` 是检索路自己的五档意图（`tax_search.INTENTS`），只决定标题措辞，与主线九类题型（`tax_analyze.QUESTION_TYPES`）不能互换，键集合由 `test_routing_terms.py` 钉住。命令行形态：`python scripts/tax_formatter.py --intent policy_lookup < result.json`（加 `--mode aggregated` 走多源归并；stdin 的字段要求见「命令行搜索」） |
 | **模型通道** | `tax_llm.py` | 外部模型调用的唯一出口：付费闸门只认环境变量、不探测本机 CLI、额度类错误分型上抛 |
 | **后端 API** | `tax_server.py` | Flask 路由、法规原文提取、解读搜索、AI 解读（走付费闸门）、取数失败与空结果分离 |
 | **测试** | `test_tax_search.py` | 端到端 + 离线用例：parent_law 真实存在、聚合路由与跨源时间序、拦截页判别、sort=date、答题判分与解析、分层抽样、主依据健康度分档、净贡献配对覆盖、付费闸门与分发扫描 |
 | **测试** | `test_eval_set.py` | 评测集规则的离线用例：时效判档、去重键、分类表同步 |
+| **测试** | `test_routing_terms.py` | 判型词表与前提轴的离线用例：选项干扰词剥离、税种归类、判型的内容分与形态分主从、量过没收的信号词不许回表、会计口径缺口的命中与不命中、缺口贯通到作答层、点名文件同一性（引用式标题不许冒充被点名的那份）、立法阶段的命中与不命中（全打桩，不联网） |
+| **探针** | `probe_routing.py` · `probe_classify.py` | 只打印不断言的两份离线探针，改表前后各跑一次再 diff。路由那份额外带 `--stats`，报整份评测集的归类覆盖率；判型那份带三个指标——`--stats` 零信号兜底率（18/1001）、`--oracle` 数值选项标尺（四个选项全是数值的题该判成测算，实测 100/298，判据只吃选项不吃题干，能证伪词表）、`--real` 真实提问面板（考题以外的用户原话写法） |
 | **测试** | `test_tax_fgk.py` | fgk 离线用例：翻页上限与自适应收尾、文字/视频/空容器正文、缓存不含正文、命中标记与防污染（全打桩，不联网） |
 | **测试** | `test_npc_gate.py` | NPC 串行闸用例：跨进程互斥、同进程多线程排队、超时后不锁死、接线检查 |
 | **测试** | `test_detail_cache.py` | 详情缓存用例：键算法与历史缓存逐字节一致、命名空间不越界、命中留痕、老条目读时转正、缓存不含条文正文（红线）、原子写不留半截文件 |
-| **测试** | `test_server_routes.py` | 服务端 9 路由用例：状态码与错误码、分支路由（npc/chinatax/fgk/aggregated）、付费闸门关着时不许碰模型、上游报错如实透出不吞成空结果（全打桩，不联网） |
-| **测试** | `test_http_layer.py` | 统一请求层守门：AST 扫全项目、除白名单外禁止绕过 `tax_http` 的裸请求（含别名写法）、参数只透传不补全、`verify` 必填 |
+| **测试** | `test_server_routes.py` | 服务端 9 路由用例：状态码与错误码、分支路由（npc/chinatax/fgk/aggregated）、付费闸门关着时不许碰模型、上游报错如实透出不吞成空结果、会计口径与立法阶段两条提示都按用户原话判定而非按改写后的检索词、全网那一趟在真实边界（`so360_search`）打桩断言 1/2/3 条都能到载荷（全打桩，不联网） |
+| **测试** | `test_http_layer.py` | 统一请求层守门：AST 扫全项目、除白名单外禁止绕过 `tax_http` 的裸请求（含别名写法）、参数只透传不补全、`verify` 必填、取数失败那句错误说明的整形（丢链接与 `(Caused by ...)`、压平折行、截断不切词） |
 | **测试** | `test_frontend_province_ui.py` | 前端省份控件契约：控件长在"官方解读"页而非搜索栏、高级筛选恰为 6 组、搜索请求不带 `province`、结果头不再显示省市标签、前端站点清单与 `tax_server.search_interpretations` 的默认 sources 逐字一致（读文件断言，不开浏览器） |
-| **测试** | `test_source_defects.py` | 源缺陷回归：fgk 深页标 `medium`、聚合缺口归因（税屋空归到 360）、网页渲染 `degraded_note`、定级层认 `_reliability`（low 出局 / 全 low 拒挑主依据 / 无标记口径不变）、渲染层不吞标记（单源也会印出"可能偏题"）、搜狗串行闸与最小间隔（并发峰值 == 1）、NPC 下载单一路径收口 |
+| **测试** | `test_source_defects.py` | 源缺陷回归：fgk 深页标 `medium`、聚合缺口归因（税屋空归到 360）、网页渲染 `degraded_note`、定级层认 `_reliability`（low 出局 / 全 low 拒挑主依据 / 无标记口径不变）、渲染层不吞标记（单源也会印出"可能偏题"）、搜狗串行闸与最小间隔（并发峰值 == 1）、NPC 下载单一路径收口、**返回值契约**（AST 扫全项目：声明 `-> tuple[A, B]` 的函数不许 `return` 单值） |
 | **门禁** | `check_doc_cli.py` | 文档-代码契约，两类检查：**命令级**（同行里点了脚本名的命令行，逐参数比对代码的参数表）+ **片段级**（孤立的 `` `--a --b` `` 必须能落在某一个脚本上），挡住"文档写了、代码没有"与"参数挂错脚本" |
 | **测试** | `test_check_doc_cli.py` | 文档契约规则自检：构造样例钉住片段级检查既能报出坏片段、也不误报好片段。规则一旦改对就永远绿，没有自检就无法证明它还在工作 |
 | **门禁入口** | `run_all.py` | 统一测试入口：默认跑离线组，`--online` 加联网组；退出码可直接接 CI（根目录 `run_tests.bat` 双击即跑） |
-| **已废弃** | `generate_manual.py` | 原先生成硬编码 Word 手册，因与 README/SKILL.md 重复且已漂移而停用；现在运行只打印废弃说明并退出码 1 |
+| **已废弃** | `archive/generate_manual.py` | 原先生成硬编码 Word 手册，因与 README/SKILL.md 重复且已漂移而停用；现在运行只打印废弃说明并退出码 1。2026-09-29 从 `scripts/` 移到 `archive/`，让 `scripts/` 只剩真在用的入口 |
 | **评测集** | `build_eval_set.py` | 归并公开财税题库为带出处与时效标记的统一评测集，按 SCOPE_EXCLUDE 剔除范围外题目 |
 | **评测（主指标）** | `eval_answer.py` | 答题正确率：模型在环逐题判分，evidence/blind 双组对照；计费预告 + yes 确认 + 额度耗尽停批 |
 | **评测（诊断）** | `eval_analysis.py` | 分析质量四指标 |
 | **评测（诊断）** | `eval_retrieval.py` | 检索质量：路由覆盖 + 题库覆盖两级指标 |
 | **技能定义** | `SKILL.md` | 分析主线与禁止行为清单 |
-| **参考文档** | `references/*.md` | 税种映射、搜索策略、风险框架 |
+| **参考文档** | `references/*.md` | SKILL.md 主线判据的细节下沉：各源命令、输出模板、依据定级、税种映射、源缺陷、网页界面、评测方法、判型指标，另含搜索策略与风险框架 |
 | **前端** | `frontend/index.html` | 搜索界面 + 4 步向导 + 法规弹窗四标签页 |
 
 ---
@@ -110,7 +119,7 @@
 ### 1. 实时法规检索
 
 ```
-用户输入问题 → 9 类题型判定 → 四根前提轴识别 → 30 项税种与专题路由（按 authority 分派到 NPC 或总局）→ 依据定级与分层 → 分段作答
+用户输入问题 → 9 类题型判定 → 四根前提轴识别 → 32 项税种与专题路由（按 authority 分派到 NPC 或总局）→ 依据定级与分层 → 分段作答
 ```
 
 | 功能 | 说明 |
@@ -278,6 +287,8 @@ GET /api/text/ff808181927b083b0193fd65a0eb02cb
 | **gov.cn** | 国务院政策发布、答记者问 | ⭐⭐⭐⭐⭐ | 实时 | 360 `site:` 搜索 |
 | **税屋 shui5.cn** | 实务解读、专栏、答疑（正文可取） | ⭐⭐⭐ | 实时 | 360 检索 + 浏览器过 WAF 后连读 |
 | **微信公众号** | 实务解读、申报实操 | ⭐⭐ | 实时 | 搜狗微信 + 移动 UA |
+| **bbs.auditdog.cn**（子技能 chenyiwei-bbs） | 陈版主实务答疑、监管处罚案例、准则衍生问答，附带企业会计准则原文。补的是专业口径那一层，不答税法 | 专业口径 ⭐⭐⭐⭐；税收依据 无 | 上游每日更新（子技能文档记载，未实测） | 公开 REST API，`curl` 直连，无 key；操作手册在 `subskills/chenyiwei-bbs/` |
+| **docs.maoyanqing.com**（子技能 maodocs） | 审计文库 MaoDocs：企业/政府/小企业会计准则、注协审计准则、企业内控规范、资产评估准则、证监会监管规则适用指引的**逐条原文全文**。补专业口径原文，不答税法 | 专业口径 ⭐⭐⭐⭐；税收依据 无 | 实时（sitemap lastmod 至 2026-09-28） | 纯标准库直连静态站，无 WAF、无浏览器、无 key；脚本与手册在 `subskills/maodocs/` |
 
 ### 缓存策略
 
@@ -292,14 +303,14 @@ GET /api/text/ff808181927b083b0193fd65a0eb02cb
 | DOCX / PDF 全文 | **不缓存**，每次现下 | 体积大，且必须保证是现行版本 |
 | 服务端进程内缓存 | `tax_server.py` 的 `/api/text`、`/api/interpretations` | 仅在服务运行期间复用，重启即失效；与上面的磁盘缓存是两回事 |
 
-三个模块共用 `~/.cache/tax-policy-search`，靠条目里的 `_ns` 字段区分命名空间，
+三个模块共用 `~/.cache/tax-analysis-engine`，靠条目里的 `_ns` 字段区分命名空间，
 因此各自的 `--cache-stats` / `--cache-clear` 只作用于自己那一份。
 
 ---
 
 ## 六、与同类项目的对比
 
-| 维度 | tax-policy-knowledge | npc-law-db | **tax-policy-search** |
+| 维度 | tax-policy-knowledge | npc-law-db | **tax-analysis-engine** |
 |------|---------------------|------------|----------------------|
 | 架构 | 纯静态知识库 | API + 脚本引擎 | **API + 脚本引擎 + 前端 Demo** |
 | 数据新鲜度 | 静态（依赖手动更新） | 实时 API | **实时 API + 多源聚合** |
@@ -382,6 +393,7 @@ python scripts/tax_aggregator.py "小微企业优惠" --size 10
 python scripts/tax_web_search.py "增值税" --size 10
 
 # 把检索结果 JSON 格式化成 Markdown（stdin 收 JSON、stdout 出 markdown）
+# 只给检索路用：主线（tax_answer.py --answer）自己打印四段式，不经这一步
 python scripts/tax_formatter.py --intent policy_lookup < result.json
 ```
 
@@ -428,13 +440,14 @@ python scripts/tax_formatter.py --intent policy_lookup < result.json
 ## 九、项目目录结构
 
 ```
-tax-policy-search/
+tax-analysis-engine/
 ├── SKILL.md                        # 分析主线：判型 → 分轮检索 → 定级 → 比对 → 结论 → 输出
 ├── scripts/                        # 检索与分析模块（逐个职责见「代码构成」表）
 │   ├── tax_answer.py               # 编排层：判型→分轮检索→定级→依据分层
-│   ├── tax_analyze.py              # 问题类型判定、四根前提轴
+│   ├── tax_analyze.py              # 问题类型判定、四根前提轴、会计口径缺口、立法阶段识别
+│   ├── tax_terms.py                # 检索词整形：选项剥离 / 点名文件抽取 / 标题候选 / 标题同一性判定（纯字符串，不联网）
 │   ├── tax_evidence.py             # 依据效力位阶与时效定级
-│   ├── tax_search.py               # NPC 法规库检索 + 30 项税种专题映射 + NPC 串行闸
+│   ├── tax_search.py               # NPC 法规库检索 + 32 项税种专题映射 + NPC 串行闸
 │   ├── tax_detail.py               # 详情元信息 + DOCX 全文解析（共用同一把串行闸）
 │   ├── tax_web_search.py           # 税务总局 search5 JSON 检索
 │   ├── tax_so360.py                # 360 site: 站内检索（含拦截页识别）
@@ -445,11 +458,18 @@ tax-policy-search/
 │   ├── tax_wechat.py               # 微信公众号（搜狗微信）
 │   ├── tax_browser.py              # 复用本机浏览器过 WAF、导 cookie
 │   ├── tax_aggregator.py           # 五源并发聚合（源级失败上抛）
-│   ├── tax_formatter.py            # 四段式 Markdown 输出
+│   ├── tax_formatter.py            # 检索路的四段式 Markdown 渲染（stdin 收原始 JSON；主线输出在 tax_answer）
 │   ├── tax_llm.py                  # 外部模型调用的唯一出口：付费闸门 + 额度异常分型
-│   ├── tax_server.py               # Flask API + 前端托管
-│   └── generate_manual.py          # 已废弃：不再生成 Word 手册，运行只打印提示并退出 1
+│   └── tax_server.py               # Flask API + 前端托管
 ├── frontend/index.html             # 单文件界面：搜索栏 / 4 步向导 / 结果卡片 / 法规弹窗四标签页
+├── subskills/
+│   ├── chenyiwei-bbs/
+│   │   ├── SKILL.md                # 陈版主实务答疑与准则原文（上游文件，与 https://bbs.auditdog.cn 字节一致）
+│   │   └── NOTE.md                 # 收录来源、SHA-256、实测校正（docNo 不表版次、recent 可空、分页字段类型不一）
+│   └── maodocs/
+│       ├── SKILL.md                # 审计文库 MaoDocs 原文检索：会计/审计/内控/评估/证券五域逐条原文
+│       ├── NOTE.md                 # 来源、sitemap 分布、实测校正（文号不表版次、索引页混挂全局导航、Git Bash 路径改写）
+│       └── maodocs.py              # 纯标准库取文脚本（categories/search/fetch，无 WAF、无浏览器、不调模型）
 ├── references/                     # tax_categories · search_strategies · tax_risk_framework
 ├── tests/
 │   ├── run_all.py                  # 统一门禁入口（默认离线组；--online 加联网组）
@@ -457,11 +477,14 @@ tax-policy-search/
 │   ├── test_tax_fgk.py             # fgk 离线用例：翻页/正文/缓存（全打桩，不联网）
 │   ├── test_npc_gate.py            # NPC 串行闸用例（含跨进程互斥）
 │   ├── test_detail_cache.py        # 详情缓存用例：键一致 / 命名空间不越界 / 原子写（全打桩）
-│   ├── test_server_routes.py       # 服务端路由用例：9 个路由的状态码与分支（全打桩，不联网）
-│   ├── test_http_layer.py          # 统一请求层守门：AST 扫全项目、禁止绕过 tax_http 的裸请求
+│   ├── test_server_routes.py       # 服务端路由用例：9 个路由的状态码与分支、两条提示按原话判定、全网那趟在真实边界打桩（全打桩，不联网）
+│   ├── test_http_layer.py          # 统一请求层守门：AST 扫全项目、禁止绕过 tax_http 的裸请求、错误说明整形
 │   ├── test_frontend_province_ui.py # 前端省份控件契约：控件在哪 / 筛选组数 / 站点清单与后端一致
-│   ├── test_source_defects.py      # 源缺陷回归：深页标记 / 缺口说明 / 可靠性否决 / 搜狗闸与下载收口
+│   ├── test_source_defects.py      # 源缺陷回归：深页标记 / 缺口说明 / 可靠性否决 / 搜狗闸与下载收口 / tuple 返回值契约
 │   ├── test_eval_set.py            # 评测集规则的离线用例：时效判档、去重键、分类表同步
+│   ├── test_routing_terms.py       # 判型与词表用例：选项干扰剥离 / 会计口径缺口 / 点名文件同一性 / 立法阶段 / 意图词表三处对齐
+│   ├── probe_routing.py            # 路由探针（离线，不断言）：题面 → 归到哪个税种、装配出什么检索词，改表前后各跑一次 diff 改判条数
+│   ├── probe_classify.py           # 判型探针（离线，不断言）：--stats 零信号兜底率 / --oracle 数值选项标尺 / --real 真实提问面板
 │   ├── check_doc_cli.py            # 文档-代码契约：SKILL.md / README.md 里的参数 vs 代码 add_argument
 │   ├── test_check_doc_cli.py       # 文档契约规则自检：坏片段必须被报、好片段必须放行
 │   ├── build_eval_set.py           # 归并公开财税题库 → 统一评测集
@@ -469,7 +492,7 @@ tax-policy-search/
 │   ├── eval_analysis.py            # 诊断：分析质量四指标
 │   ├── eval_retrieval.py           # 诊断：检索质量两级指标
 │   └── analysis_labels.json        # 分析题目标注集
-├── archive/                        # 立项阶段研究资料（清单见 archive/README.md，7 文档 + 1 数据）
+├── archive/                        # 立项研究资料（7 文档 + 1 数据，清单见 archive/README.md）+ 已废弃脚本 generate_manual.py
 ├── requirements.txt
 ├── start_local.bat                 # 启动本地服务（端口 5080）
 └── run_tests.bat                   # 一键门禁（双击即跑，等价 python tests/run_all.py）

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end tests for tax-policy-search skill."""
+"""End-to-end tests for tax-analysis-engine skill."""
 import json
 import os
 import sys
@@ -437,10 +437,16 @@ def test_challenge_page_detection():
 
 
 def test_fgk_paging():
-    """总局检索接口把 pageSize 卡在 10 条，法规库条目排在后面的页上。
+    """总局检索接口把 pageSize 卡在 10 条，法规库条目散在靠后的屏上。
 
-    只读第 1 页会把"库里没有"错报成"确实没有"：搜"转让定价"命中 173 条，
-    第 1 页 10 条全是外国税改新闻，法规文件在第 2、3、5、6 页。
+    只读第 1 页会把"库里没有"错报成"确实没有"：宽词（「转让定价」命中上百条）
+    第 1 屏十条里法规库条目常是 0 条，实体文件落在第 3、4、6 屏；窄词
+    （「特别纳税调整实施办法」）第 1 屏就有 5 条。占比随检索词宽窄变，所以
+    用例只断言"至少翻了 2 页"和"取到实体文件"，不写死屏号与条数。
+
+    翻页基准是 0 起算（见 tax_web_search.search_chinatax）。基准用错时失效很
+    隐蔽：按 1 起算等于每次少读首屏，拿到的仍是结构正常的清单，条数、翻页
+    数都不报错，只是目标文件永远取不到。
     """
     print("\n[Test] fgk paging reaches documents past page 1")
     from tax_fgk import search_fgk
@@ -1182,7 +1188,7 @@ def test_server_routing_all_sources():
 
 def main():
     print("=" * 60)
-    print("tax-policy-search: End-to-End Tests")
+    print("tax-analysis-engine: End-to-End Tests")
     print("=" * 60)
 
     tests = [

@@ -46,9 +46,11 @@ class _RouteCase(unittest.TestCase):
 
 class TestStaticRoutes(_RouteCase):
     def test_index_serves_frontend(self):
-        r = self.client.get("/")
-        self.assertEqual(200, r.status_code)
-        self.assertIn(b"<html", r.data.lower())
+        # send_from_directory 把正文包成文件型响应，test client 不自动关；
+        # 不关就会在 `-W error::ResourceWarning` 下报未关闭文件句柄
+        with self.client.get("/") as r:
+            self.assertEqual(200, r.status_code)
+            self.assertIn(b"<html", r.data.lower())
 
     def test_quick_tax_types_shape(self):
         r = self.client.get("/api/quick-tax-types")
@@ -119,6 +121,30 @@ class TestSearchRoute(_RouteCase):
             self._post({"keyword": "诉讼费用"}, tax_type=None)
         self.assertEqual("诉讼费用", m.call_args[0][0])
 
+    def test_flags_unrouted_in_npc_branch(self):
+        """归不出税种时检索词是原话，一整摞字面匹配结果必须自己说清来路。
+
+        不写这句，687 条无关法条看起来就像按本题找出来的依据。
+        """
+        with mock.patch.object(tax_server, "search_tax", return_value={}):
+            r = self._post({"keyword": "诉讼费用"}, tax_type=None)
+        self.assertEqual(tax_server.UNROUTED_NOTE, r.get_json()["result"]["_routed"])
+
+    def test_flags_unrouted_in_aggregated_branch(self):
+        """聚合走的是同一套换词逻辑，漏了这句就会只在单查时提示。"""
+        with mock.patch.object(tax_server, "aggregate_search", return_value={}):
+            r = self._post({"keyword": "诉讼费用", "source": "aggregated"},
+                           tax_type=None)
+        self.assertEqual(tax_server.UNROUTED_NOTE, r.get_json()["result"]["_routed"])
+
+    def test_routed_note_says_which_law_not_unrouted(self):
+        """归类成功时不能同时冒出"未归类"，否则提示自相矛盾。"""
+        with mock.patch.object(tax_server, "search_tax", return_value={}):
+            r = self._post({"keyword": "增值税税率"}, tax_type=NPC_TAX_TYPE)
+        note = r.get_json()["result"]["_routed"]
+        self.assertNotEqual(tax_server.UNROUTED_NOTE, note)
+        self.assertIn("中华人民共和国增值税法", note)
+
     def test_routes_sta_topic_to_fgk(self):
         """sta 专题（转让定价等）在 NPC 库里检索无效，必须改查总局法规库。"""
         with mock.patch.object(tax_server, "search_fgk", return_value={}) as m:
@@ -176,6 +202,41 @@ class TestSearchRoute(_RouteCase):
         with mock.patch.object(tax_server, "search_tax", return_value={}):
             r = self._post({"keyword": "增值税"}, tax_type=None, intent="policy_lookup")
         self.assertEqual("政策查询", r.get_json()["intent_label"])
+
+    def test_accounting_note_keys_on_the_raw_question_not_the_search_term(self):
+        """税种归类会把关键词换成上位法名，会计缺口要按用户原话判。
+
+        换成法名之后"账面价值""债务重组"这类会计要件词就没了，缺口会整栏消失——
+        界面也就永远不会提示该去取准则。
+        """
+        with mock.patch.object(tax_server, "search_tax", return_value={}):
+            hit = self._post({"keyword": "以自产产品抵偿到期债务，债务重组的所得税怎么处理"},
+                             tax_type={"type": "企业所得税", "aliases": [],
+                                       "authority": "npc",
+                                       "parent_law": "企业所得税法"},
+                             intent="policy_lookup").get_json()
+            miss = self._post({"keyword": "小规模纳税人季度销售额30万元免征增值税吗"},
+                              tax_type=None, intent="policy_lookup").get_json()
+        self.assertIn("subskills/chenyiwei-bbs", hit["accounting_note"])
+        self.assertEqual("", miss["accounting_note"])
+
+    def test_legislative_note_survives_the_keyword_swap(self):
+        """点名草案时关键词会被换成本体法名，"草案"两个字只有原话里有。
+
+        换了名之后阶段判据消失，界面就把现行有效版当成草案内容列出来——
+        这一栏存在的理由正是提醒那不是同一份文本（判据见 tax_analyze.legislative_stage）。
+        """
+        with mock.patch.object(tax_server, "search_tax", return_value={}):
+            hit = self._post({"keyword": "新版《税收征管法》修订草案有哪些变化"},
+                             tax_type={"type": "税收征管", "aliases": [],
+                                       "authority": "npc",
+                                       "parent_law": "中华人民共和国税收征收管理法"},
+                             intent="policy_lookup").get_json()
+            miss = self._post({"keyword": "增值税的征税范围有哪些"},
+                              tax_type=None, intent="policy_lookup").get_json()
+        self.assertIn("立法过程文件", hit["legislative_note"])
+        self.assertIn("现行有效版本", hit["legislative_note"])
+        self.assertEqual("", miss["legislative_note"])
 
 
 class TestDetailRoute(_RouteCase):
@@ -360,6 +421,45 @@ class TestWebRelatedRoute(_RouteCase):
         with mock.patch.object(tax_server, "fetch_detail", return_value={}):
             r = self.client.get("/api/web-related/abc123")
         self.assertEqual(404, r.status_code)
+
+    # ── 打桩在引擎入口的那两条：桩形不能由被测函数自己决定 ──
+
+    def _web_only(self, n):
+        """让全网这一路真的经过 _search_web_broad，只在 so360_search 处打桩。"""
+        found = {"results": [{"title": "企业重组所得税处理的实务解读第%d篇" % i,
+                              "url": "https://shui5.cn/a/%d.html" % i,
+                              "snippet": "摘要"} for i in range(n)]}
+        return (
+            mock.patch.object(tax_server, "so360_search",
+                              lambda query, site="", size=10: found),
+            mock.patch.object(tax_server, "fetch_detail", return_value={"title": "增值税法"}),
+            mock.patch.object(tax_server, "_search_practice_sources", return_value=[]),
+        )
+
+    def test_broad_web_survives_to_the_payload(self):
+        """取回几条就该回几条：3 条曾经整批丢掉，接口却照样报 200。
+
+        上面几条用例把 `_search_web_broad` 打桩成 (结果, 说明) 二元组，而它当时
+        真实返回的是裸列表，调用方按二元组解包。桩形与被测函数自己的返回形态
+        不一致时，这一路在测试里永远绿——所以这一条从引擎入口打进去。
+        """
+        p1, p2, p3 = self._web_only(3)
+        with p1, p2, p3:
+            body = self.client.get("/api/web-related/abc123").get_json()
+        self.assertEqual(3, body["total"])
+        self.assertEqual(["https://shui5.cn/a/0.html", "https://shui5.cn/a/1.html",
+                          "https://shui5.cn/a/2.html"], [s["url"] for s in body["sources"]])
+
+    def test_two_web_results_are_not_a_server_error(self):
+        """恰好 2 条是解包错位的显形处：两个名字各接住一个 dict，回 500。
+
+        曾经实测 `{"error": "'str' object has no attribute 'get'"}`。
+        """
+        p1, p2, p3 = self._web_only(2)
+        with p1, p2, p3:
+            r = self.client.get("/api/web-related/abc123")
+        self.assertEqual(200, r.status_code)
+        self.assertEqual(2, r.get_json()["total"])
 
 
 def main():

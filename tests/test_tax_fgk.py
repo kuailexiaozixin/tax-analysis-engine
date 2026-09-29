@@ -17,7 +17,7 @@
   3. 缓存里**绝不能**出现正文
   4. 命中缓存要有标记，且命中时不再打网络、缓存不被正文污染
 
-所有缓存用例都把缓存目录指到临时目录，**不碰 ~/.cache/tax-policy-search**。
+所有缓存用例都把缓存目录指到临时目录，**不碰 ~/.cache/tax-analysis-engine**。
 """
 
 import contextlib

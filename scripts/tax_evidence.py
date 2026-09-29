@@ -85,7 +85,10 @@ _RANK_RULES = (
     # 部委名可能多到四字（国家税务总局）或带空格（财政部 国家税务总局），
     # 所以部委名段用"非空且不超过 12 字"来兜，不要写死部委清单。
     (r"^国家税务总局(?:公告)?\s*(?:第)?\d{4}\s*年?\s*第?\s*\d*\s*号", "normative"),
-    (r"^国家税务总局[一-龥]{0,40}?(?:公告|通知|批复|函|意见|决定|令)", "normative"),
+    # 中间段用 [^。] 而不是 [一-龥]：标题里带书名号时（"国家税务总局关于发布
+    # 《企业重组业务企业所得税管理办法》的公告"）汉字类会断在《上，整条判成
+    # 未定性，把一份规范性文件压到 23.4 分。
+    (r"^国家税务总局[^。]{0,60}?(?:公告|通知|批复|函|意见|决定|令)", "normative"),
     (r"^(?:财政部|国家发展改革委|商务部|海关总署|国家统计局|国家外汇管理局)"
      r"[^。]{0,60}?(?:公告|通知|批复|函|意见|决定)", "normative"),
     # 地方
@@ -115,6 +118,13 @@ def rank_of(title: str, category: str = "", source: str = "") -> dict:
     """
     title = (title or "").strip()
     cat = (category or "").strip()
+
+    # 解读件排在校验分类与形态规则之前判：它的标题里整份地嵌着被解读文件的
+    # 全名（"国家税务总局关于……的公告的解读"），任何按文件名形态或按
+    # effect_level 分类的规则都会先把它认成那份文件本身，把一份技术性口径
+    # 当成规范性文件引用出去。
+    if title.endswith("解读"):
+        return _mk("technical", "标题以「解读」收尾，是被解读文件的说明件")
 
     if cat:
         for key, label in (("宪法", "constitution"), ("法律", "law"),
@@ -177,16 +187,46 @@ def judge_validity(item: dict, at: str = "") -> dict:
         base = "repealed"
     elif code == 9:
         base = "repealed"
+    elif any(k in status for k in ("已修改", "已修订")):
+        # 法规库把"已修改"与"已废止/全文失效"分开发：标了已修改的仍然在效，
+        # 只是文本被改过。判成 unknown 会把仍在用的配套文件全压到 42.9 分、
+        # 一律赶进"只能参考"，而答案真正该说的是"引哪一版"。
+        base = "effective"
     else:
         base = "unknown"
+
+    # 状态判不出来时，"被现行有效的文件列为制定依据"是这个来源里唯一可得的
+    # 在效证据（财税文件那一栏根本不录时效，见 tax_answer 的
+    # corroborate_validity_from_target）。已标明废止或未生效的不走这条路，
+    # 明文状态优先于援引证据。
+    cited_by = (item.get("corroborated_by") or "").strip()
+    if base == "unknown" and cited_by:
+        when = f"，观察时点 {at}" if at else ""
+        return {"validity": "effective", "label": VALIDITY["effective"],
+                "as_of": at,
+                "note": f"本条无时效录入，按现行有效的《{cited_by}》正文将其列为"
+                        f"制定依据判定在效{when}；引用前按该文自身的时效复核"}
 
     if at and base in ("effective", "pending"):
         eff = (item.get("effective_date") or "").strip()
         if eff and eff > at:
             return {"validity": "pending", "label": VALIDITY["pending"],
                     "as_of": at, "note": f"生效日 {eff} 晚于观察时点 {at}"}
+        if base == "pending":
+            # 状态说"尚未生效"，就要靠施行日期证明它在观察时点前已经生效。
+            # 没有日期不能倒向 effective——那等于把"没查到日期"当成"日期必然
+            # 在过去"，一份还没开始施行的公告会直接顶成主依据。
+            if not eff:
+                return {"validity": "pending", "label": VALIDITY["pending"],
+                        "as_of": at,
+                        "note": f"状态标尚未生效，且无施行日期可证实在 {at} 前生效"}
+            return {"validity": "effective", "label": VALIDITY["effective"],
+                    "as_of": at, "note": f"生效日 {eff} 不晚于观察时点 {at}"}
+        tail = ("；文本已被修改，引用须按修改后的版本"
+                if any(k in status for k in ("已修改", "已修订")) else "")
         return {"validity": "effective", "label": VALIDITY["effective"],
-                "as_of": at, "note": f"按状态字段判定，效力期间含 {at}"}
+                "as_of": at,
+                "note": f"按状态字段判定，效力期间含 {at}{tail}"}
 
     return {"validity": base, "label": VALIDITY[base], "as_of": at,
             "note": "无状态字段可判" if base == "unknown" else "按状态字段判定"}
@@ -207,8 +247,15 @@ def authority_score(rank: str, validity: str) -> float:
     return round(base * factor, 1)
 
 
-# 能当主依据的最低分。低于它只能当参考材料，不能当结论支撑。
-PRIMARY_THRESHOLD = 60.0
+# 能当依据的最低分。低于它只能当参考材料，不能当结论支撑。
+# 60 分这道线原先把 ⑤ 的规范性文件（55 分）也挡在依据层之外，事实不通：
+# 总局公告、财税通知是税务机关据以执法、纳税人据以办理的直接依据，
+# 只是不得与上位法抵触。判据该是"现行有效的法定文件"，不是"位阶高于某条线"。
+# 50 分的取舍：
+#   规范性文件 55、地方性法规 50 → 现行有效才算依据
+#   规范性文件×时效未标明 42.9、×已修改后废止 19.3 → 落回参考，正是要的效果
+#   技术性口径 25、实务解读 10、地方规范性文件 40、未定性 30 → 一律只作参考
+PRIMARY_THRESHOLD = 50.0
 
 # ── 可靠性标记的否决权 ─────────────────────────────────────────────────────
 # 各源在结果上打的 _reliability（全文检索偏题、fgk 深页、整源被判低可靠）。
@@ -289,8 +336,10 @@ def _hint(rank: dict, val: dict, score: float,
 def pick_primary(graded: list) -> dict:
     """从一组已定级的依据里挑主依据。
 
-    规则：带 low 的一律出局（不得作为依据引用）；带 medium 的排在同分数的
-    正常依据之后，只有在没有别的可用依据时才轮到它，并附一句限制说明。
+    规则：带 low 的一律出局（不得作为依据引用）；立法过程件（人大网草案、
+    审议/征求意见公告，标 legislative_process）也一律出局——它只是"找到文本的
+    线索"，本身不是可引用的规定，跟 low 同处理，不能兜底当主依据。带 medium 的
+    排在同分数的正常依据之后，只有在没有别的可用依据时才轮到它，并附一句限制说明。
     其余先按可引用性分降序，同分取位阶更高的。
 
     返回的 dict 带 _why 说明为什么选它，以及 _runners_up 记下其余候选，
@@ -299,10 +348,19 @@ def pick_primary(graded: list) -> dict:
     if not graded:
         return {"_why": "没有任何依据", "_runners_up": []}
 
-    usable = [g for g in graded if (g.get("reliability") or "ok") != "low"]
+    # low 与立法过程线索都不能当主依据；两者一起从这里剔除。
+    def vetoed(g):
+        return (g.get("reliability") or "ok") == "low" or g.get("legislative_process")
+
+    usable = [g for g in graded if not vetoed(g)]
     if not usable:
+        if any(g.get("legislative_process") for g in graded):
+            why = ("本组只有立法过程线索（人大网草案、审议/征求意见公告），"
+                   "不是已公布的条文，不得作为主依据引用")
+        else:
+            why = "本组依据全部带 _reliability: low，不得作为依据引用"
         return {
-            "_why": "本组依据全部带 _reliability: low，不得作为依据引用",
+            "_why": why,
             "_runners_up": [
                 {"title": g.get("title", ""), "rank_label": g.get("rank_label", ""),
                  "score": g.get("score", 0), "reliability": g.get("reliability", "")}

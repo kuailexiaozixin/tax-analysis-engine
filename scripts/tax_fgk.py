@@ -11,11 +11,17 @@ HTTP 头的 ISO-8859-1 解码，于是中文全部变成乱码，看起来"正�
 页面头部还带一组 meta：ArticleTitle、PubDate、ContentSource、articleId
 （关联文件查询接口 queryManuscriptAssociation 的入参）。
 
-检索要翻页，否则永远筛不出法规文件。该接口把 pageSize 卡在 10，传更大的值
-也只回 10 条（实测传 20/60/100 一律返回 10 条），所以只能按页取。总局站里
-法规库条目占比不高且排在后面：搜"转让定价"命中 173 条，第 1 页 10 条全是
-经济日报、经合组织的外国税改新闻，法规文件在第 2、3、5、6 页，《特别纳税调整
-实施办法》直到第 5 页才出现。只读第 1 页会把"库里没有"错报成"确实没有"。
+检索要翻页，否则筛不出法规文件。该接口把 pageSize 卡在 10，传更大的值也只回
+10 条（实测传 20/60/100 一律返回 10 条），所以只能按页取。翻页基准：总局
+search5 的 pageNum 从 0 起算，收在 tax_web_search.search_chinatax 里（本模块
+的 page 参数从 1 起算）。基准用错时实测很隐蔽——「特别纳税调整实施办法」
+按 1 起算发出去，取回的是真实第二屏，目标文件落在第 5 屏；按 0 起算后它就是
+第 1 屏的首条。
+
+法规库条目在总局站里占比低，靠不靠前一屏要看检索词：窄词（「特别纳税调整
+实施办法」命中 21 条）第 1 屏就有 5 条法规库条目；宽词（「转让定价」命中
+174 条）第 1、2、5 屏各 0 条，法规文件散在第 3、4、6 屏。所以只读第 1 页
+会把"库里没有"错报成"确实没有"，必须按页筛。
 
 Usage:
   python tax_fgk.py "研发费用" --size 10
@@ -77,6 +83,11 @@ FGK_DEEP_NOTE = (
     "取自总局检索第 {page} 页：翻得越深排序越松，深页条目可能只是沾了检索词。"
     "仅用于定位法规，引用具体条文前必须回上一级数据库核对上位法。")
 
+# 清单缓存键的翻页基准版本号。总局接口的 pageNum 原是从 0 起算、我们按 1
+# 起算发送，等于每轮检索都丢掉相关度最高的首屏；2026-09-29 改正后，改前留存
+# 的清单缺的就是这一屏，必须让它整体失效重抓，所以把基准写进键里。
+LIST_KEY_REV = "pn0"
+
 _cache = CacheManager(enabled=False, namespace="fgk")
 
 HEADERS = {
@@ -118,7 +129,7 @@ def fetch_fgk_body(url: str) -> dict:
         # 与 tax_search 用的则是默认关闭的 VERIFY_SSL），这一处保持原行为。
         r = tax_http.get(url, headers=HEADERS, timeout=25, verify=True)
     except requests.RequestException as e:
-        out["_error"] = f"请求失败：{e}"
+        out["_error"] = f"请求失败：{tax_http.short_reason(e)}"
         return out
     if r.status_code != 200:
         out["_error"] = f"HTTP {r.status_code}"
@@ -176,6 +187,7 @@ def _scan_list(keyword: str, size: int, max_pages: int,
     idle_pages = 0          # 连续多少页没新增法规库条目
     stopped_early = False   # 是否因自适应而提前收尾
     first_error = ""
+    empty_reason = ""
     total_hits = 0
     for page in range(1, max(1, max_pages) + 1):
         found = search_chinatax(keyword, page=page, size=PAGE_SIZE)
@@ -183,6 +195,7 @@ def _scan_list(keyword: str, size: int, max_pages: int,
             first_error = found["_error"]
         if page == 1:
             total_hits = found.get("total", 0)
+            empty_reason = found.get("_empty_reason", "")
         page_items = found.get("results", [])
         pages += 1
         if not page_items:
@@ -206,6 +219,14 @@ def _scan_list(keyword: str, size: int, max_pages: int,
                 # 记下取自第几页：下游要靠它判断"这条是主题命中还是深页凑数"
                 "page": page,
             }
+            # 文号、时效、效力级别都从接口的录入项带下来。缺了这三栏，法规库
+            # 条目每条都只能报"时效未标明"，定级环节就没法把 2026 年新发的
+            # 公告和已被废止的公告分开。
+            for k in ("status", "status_from", "effect_level", "publish_date"):
+                if item.get(k):
+                    entry[k] = item[k]
+            if entry.get("effect_level"):
+                entry["category"] = entry["effect_level"]
             if page > FGK_SHALLOW_PAGES:
                 entry["_reliability"] = "medium"
                 entry["_reliability_note"] = FGK_DEEP_NOTE.format(page=page)
@@ -237,6 +258,11 @@ def _scan_list(keyword: str, size: int, max_pages: int,
     # 检索本身失败要透出错误，不要和"库里没有"混为一谈
     if first_error:
         result["_error"] = first_error
+    elif empty_reason:
+        # 接口给了命中数、这一页没给清单：不能写成"翻完 N 页未筛出法规库条目"，
+        # 那是把接口的返回形态当成库的内容。
+        result["_error"] = empty_reason
+        result["_empty_reason"] = empty_reason
     elif not results:
         tail = (f"（连续 {idle_pages} 页无新法规库条目，已自适应收尾）"
                 if stopped_early else "")
@@ -269,8 +295,8 @@ def search_fgk(keyword: str, size: int = 10, with_body: bool = False,
         body（正文）。正文是视频/图片的条目另带 media_only=True——表示"本来
         就没有文字"，与取失败的 body_error 区分开，上层据此判断无需重试。
     """
-    cache_key = _cache._key("fgk", keyword, str(size), str(max_pages),
-                            str(adaptive))
+    cache_key = _cache._key("fgk", LIST_KEY_REV, keyword, str(size),
+                            str(max_pages), str(adaptive))
     result = _cache.get(cache_key, max_age=CACHE_TTL)
     if result is not None:
         # 深拷贝，避免下面写 body 时污染缓存文件

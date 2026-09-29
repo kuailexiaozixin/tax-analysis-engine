@@ -35,9 +35,15 @@ tax_shui5 / tax_so360 / tax_wechat / tax_web_search 各自维护 requests.Sessio
 "同一时刻只让一个进程打某个站"这件事有两个站要用：NPC（检索 + 详情同上限流）
 与搜狗微信（并发加压触发反爬）。闸的实现在下面只写一份，两个站各配一个锁文件，
 免得同一段文件锁逻辑抄两遍、只改一处。
+
+上面那条边界只管"请求怎么发"，不管"失败怎么说"。short_reason() 不碰 requests，
+只把一个异常压成给用户看的一句话，所以上面那几个自管 Session 的客户端和
+tax_fgk 也共用它——否则同一段 urllib3 内部结构要在三处各解释一遍，
+界面与命令行各说各话。
 """
 
 import os
+import re
 import tempfile
 import threading
 import time
@@ -81,7 +87,7 @@ class SerialGate:
     site = "该站"
 
     def __init__(self, path: Path = None, timeout: float = 180.0):
-        self.path = Path(path) if path else Path(tempfile.gettempdir()) / "tax-policy-search.lock"
+        self.path = Path(path) if path else Path(tempfile.gettempdir()) / "tax-analysis-engine.lock"
         self.timeout = float(timeout)
         self._fh = None
         self._thread_lock = threading.Lock()
@@ -165,3 +171,24 @@ def get(url: str, *, headers: dict, timeout: float, verify: bool,
     """
     return requests.get(url, headers=headers, timeout=timeout,
                         verify=verify, **kwargs)
+
+
+_LINK_RE = re.compile(r"(?:https?://|url:\s*)\S+")
+
+
+def short_reason(exc: Exception, limit: int = 90) -> str:
+    """把一个 requests 异常压成能给用户看的一句话。
+
+    str(exc) 给的是 urllib3 的内部结构：连接池、端口、参数编码之后的整条查询串。
+    实测一次域名解析失败就有三百多字。这一串落在 `_error` 上，命令行按错误行打印，
+    界面把它原样接进 `engine_error` 显示在结果头部（`tax_server.api_web_related`），
+    行被撑满之后真正的原因——超时、连不上、被反复重定向到验证页——反而读不出来。
+    所以先抹掉链接与参数串（host 留在消息里，那是有用的信息），折行压平成一行，
+    丢掉 urllib3 追加的 "(Caused by ...)" 嵌套原因，按空格边界截断，末尾带上异常
+    类名，让读的人有词可查。
+    """
+    text = _LINK_RE.sub("[链接已省略]", " ".join(str(exc).split()))
+    text = text.split(" (Caused by")[0]
+    if len(text) > limit:
+        text = text[:limit].rsplit(" ", 1)[0]      # 不在词中间切断
+    return f"{type(exc).__name__}：{text}"

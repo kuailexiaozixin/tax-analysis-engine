@@ -26,6 +26,8 @@ from html import unescape
 import requests
 import urllib3
 
+import tax_http
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 SEARCH_URL = "https://m.so.com/s"
@@ -87,7 +89,7 @@ def so360_search(keyword: str, site: str = "", size: int = 10,
             r = requests.get(url, headers=HEADERS, timeout=TIMEOUT, verify=False)
             break
         except requests.RequestException as e:
-            err = str(e)
+            err = tax_http.short_reason(e)
             r = None
             if attempt < MAX_RETRIES - 1:
                 time.sleep(1.5 * (attempt + 1))

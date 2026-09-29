@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Flask API server for tax-policy-search frontend."""
+"""Flask API server for tax-analysis-engine frontend."""
 import os
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
@@ -16,6 +16,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from tax_search import search_tax, detect_intent, resolve_tax_type
+from tax_analyze import accounting_gap, accounting_note
+from tax_analyze import legislative_stage, legislative_note
 from tax_detail import fetch_detail, download_bytes, SXX_MAP, _parse_docx_from_bytes
 from tax_web_search import search_chinatax
 from tax_fgk import search_fgk
@@ -41,6 +43,24 @@ FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 #              此时把暴露面收在宿主机侧： docker run -p 127.0.0.1:5080:5080
 BIND_HOST = os.getenv("TAX_BIND", "127.0.0.1").strip() or "127.0.0.1"
 PORT = int(os.getenv("TAX_PORT", "5080"))
+
+# 检索意图在界面上显示成什么。取值域是 tax_search.INTENTS；这里的措辞比
+# tax_formatter.INTENT_HEADERS 短，因为界面那一栏是个标签，不是 markdown 标题。
+# 两张表各管一个界面，键集合由 tests/test_routing_terms.py::test_intent_vocabularies_agree 对齐。
+INTENT_LABELS = {
+    "policy_lookup": "政策查询",
+    "filing_guide": "申报指导",
+    "risk_check": "合规风险",
+    "eligibility": "资格判定",
+    "invoice": "发票处理",
+}
+
+# 归不出税种时检索词就是用户原话，NPC 的标题检索按字面匹配，会还给一大摞无关
+# 法条（实测整句提问回 687 条、首条是证券投资基金法）。结果本身挑不出来，就把
+# "没归类"这件事交给界面去说，不假装这一摞是按题找出来的。
+# 两条分支（聚合 / 单查 NPC）共用同一句，措辞改一处就够，不会各说各话。
+UNROUTED_NOTE = ("未能归类到税种或专题：以上是按原话字面检索标题的结果，"
+                 "与本题是否相关需逐条核对")
 
 _text_cache = {}
 _interp_cache = {}
@@ -363,6 +383,8 @@ def api_search():
                                       exact=bool(parent_law), sort=sort)
             if parent_law:
                 result["_routed"] = f"按{tax_type_info['type']}的本体法检索：{parent_law}"
+            else:
+                result["_routed"] = UNROUTED_NOTE
     elif source == "chinatax":
         result = search_chinatax(keyword, size=size)
     elif source == "fgk":
@@ -390,22 +412,29 @@ def api_search():
             )
             if parent_law:
                 result["_routed"] = f"按{tax_type_info['type']}的本体法检索：{parent_law}"
+            else:
+                result["_routed"] = UNROUTED_NOTE
+
+    # 会计口径缺口这句话由 tax_analyze 写成整句，前端只照抄——不在界面里自己
+    # 判断准则能不能当依据（判据在 SKILL.md ③ 末）。按用户原话判，不看被改写后
+    # 用来检索的 keyword。
+    raw_keyword = data.get("keyword", "").strip()
+    gap_note = accounting_note(accounting_gap(raw_keyword))
+    # 点名的是草案/征求意见稿时同样只照抄：库里收的都是已公布文本，界面这一栏
+    # 列出的同名文件是它的现行有效版本，不是草案内容（判据见 legislative_stage）。
+    stage_note = legislative_note(legislative_stage(raw_keyword))
 
     return jsonify({
         "keyword": keyword,
         "user_keyword": data.get("keyword", "").strip(),
         "intent": intent,
         "province": province,
-        "intent_label": {
-            "policy_lookup": "政策查询",
-            "filing_guide": "申报指导",
-            "risk_check": "合规风险",
-            "eligibility": "资格判定",
-            "invoice": "发票处理",
-        }.get(intent, intent),
+        "intent_label": INTENT_LABELS.get(intent, intent),
         "tax_type": tax_type_info["type"] if tax_type_info else None,
         "tax_type_aliases": tax_type_info["aliases"] if tax_type_info else [],
         "authority": (tax_type_info or {}).get("authority", "npc"),
+        "accounting_note": gap_note,
+        "legislative_note": stage_note,
         "result": result,
     })
 
@@ -589,7 +618,11 @@ def _search_web_broad(query: str, n: int = 8) -> tuple[list, str]:
             ),
             "snippet": item.get("snippet", ""),
         })
-    return results
+    # 必须带着空说明返回：调用方按 `items, why = ...` 解包（见 api_web_related），
+    # 只 `return results` 时解包按列表长度成败——1 条与 3 条都抛 ValueError 被
+    # `except Exception` 吞掉，等于全网这一路永远交白卷；正好 2 条时两个名字各
+    # 接住一个 dict，随后 `list(dict)` 拿到键名，接口回 500。
+    return results, ""
 
 
 @app.route("/api/web-related/<bbbs_id>", methods=["GET"])
@@ -703,7 +736,7 @@ if __name__ == "__main__":
         sys.stdout.reconfigure(encoding="utf-8")
     except (AttributeError, ValueError):
         pass                      # 容器里 stdout 是管道时可能不支持重配
-    print("\n  [tax-policy-search] API Server")
+    print("\n  [tax-analysis-engine] API Server")
     print(f"  监听 {BIND_HOST}:{PORT}")
     if BIND_HOST in ("127.0.0.1", "localhost"):
         print(f"  打开 http://localhost:{PORT}")

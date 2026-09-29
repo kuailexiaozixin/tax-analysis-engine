@@ -16,6 +16,7 @@ Usage:
 
 import argparse
 import json
+import math
 import re
 import sys
 import time
@@ -24,6 +25,8 @@ from typing import Optional
 
 import requests
 import urllib3
+
+import tax_http
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -57,8 +60,16 @@ def search_chinatax(keyword: str, page: int = 1, size: int = 10) -> dict:
 
     Args:
         keyword: 检索词
-        page: 页码，从 1 开始
+        page: 页码，从 1 开始（对应接口的 pageNum 从 0 开始，见下）
         size: 返回条数上限
+
+    页码基准：search5 的 pageNum 从 0 起算。实测同一检索词「企业重组」
+    发 pageNum=0 与 pageNum=1 各回 10 条、url 交集为空，且 pageNum=0 那组
+    才是相关度最高的一页；发 pageNum=1 等于整轮检索永远丢掉首屏，命中数
+    不足 10 条时（如「企业重组业务所得税处理」共 3 条）第一页就是唯一一页，
+    取回的空列表会被上层读成"库里没有这份文件"。本函数对外仍按 1 起算，
+    发请求时减 1。NPC 法规库那个接口（tax_search.py）经实测是从 1 起算，
+    两边基准不同，不要照抄。
 
     Returns:
         {"keyword","total","results","searched_at","source","_error"?,"_from_cache"}
@@ -69,8 +80,10 @@ def search_chinatax(keyword: str, page: int = 1, size: int = 10) -> dict:
         "siteCode": SITE_CODE,
         "searchWord": keyword,
         "type": "1",
+        # 接口这一维是从 0 起算的页码，本项目对外的 page 从 1 起算，
+        # 所以发请求时要减回去。
         "pageSize": max(size, 10),
-        "pageNum": page,
+        "pageNum": max(page, 1) - 1,
         "orderBy": "5",   # 相关度排序
         "column": "",
         "label": "",
@@ -80,7 +93,7 @@ def search_chinatax(keyword: str, page: int = 1, size: int = 10) -> dict:
         r = requests.get(SEARCH_URL, params=params, headers=HEADERS,
                          timeout=TIMEOUT, verify=False)
     except requests.RequestException as e:
-        return _empty_result(keyword, str(e))
+        return _empty_result(keyword, tax_http.short_reason(e))
 
     if r.status_code != 200:
         return _empty_result(keyword, f"HTTP {r.status_code}")
@@ -101,9 +114,13 @@ def search_chinatax(keyword: str, page: int = 1, size: int = 10) -> dict:
         if not url or not title:
             continue
         content = _clean(it.get("content") or "")
-        # 文号优先从标题取，取不到再从正文摘要取
-        doc_num = _first_match(_DOC_NUM_RE, title) or _first_match(_DOC_NUM_RE, content)
-        results.append({
+        # 文号：接口把结构化文号放在 govDoc 里，比从标题正则抠更可靠
+        # （标题常不含文号，而 govDoc.docNum 是录入项）。实测 2026 年第 13 号
+        # 公告的 docNum = "国家税务总局公告2026年第13号"。
+        gov = it.get("govDoc") or {}
+        doc_num = (gov.get("docNum") or "").strip() or \
+            _first_match(_DOC_NUM_RE, title) or _first_match(_DOC_NUM_RE, content)
+        row = {
             "title": title,
             "url": url,
             "date": (it.get("pubDate") or "")[:10],
@@ -112,9 +129,23 @@ def search_chinatax(keyword: str, page: int = 1, size: int = 10) -> dict:
             "publisher": it.get("pubName") or "",
             "source": "chinatax.gov.cn",
             "source_label": "税务总局法规库" if FGK_MARKER in url else "税务总局",
-        })
+        }
+        # 时效与效力级别是接口的录入项（xxgk_aging / xxgk_effectLevel），只有
+        # 政策法规条目会填，解读和新闻这两栏为空。带上它们，法规库条目才有
+        # 明文时效可判——不带的话每条都只能报"时效未标明"。
+        aging = aging_of(it.get("xxgk_aging"))
+        if aging:
+            row["status"] = aging
+            row["status_from"] = "法规库录入项 xxgk_aging"
+        eff_level = (it.get("xxgk_effectLevel") or "").strip()
+        if eff_level:
+            row["effect_level"] = eff_level
+        cwrq = (it.get("cwrq") or "")[:10]
+        if cwrq:
+            row["publish_date"] = cwrq
+        results.append(row)
 
-    return {
+    out = {
         "keyword": keyword,
         "total": total,
         "results": results,
@@ -122,11 +153,38 @@ def search_chinatax(keyword: str, page: int = 1, size: int = 10) -> dict:
         "source": "chinatax.gov.cn",
         "_from_cache": False,
     }
+    # 命中数大于 0 但这一页没有条目。两种成因要分开写，处置完全不同：
+    # 页号越过末页（每页固定 10 条，命中 3 条时只有第 1 页）是正常收尾；
+    # 第 1 页就空则是接口这一轮没给清单，不能读成"库里没有"。
+    # 空页都不是请求失败，所以不进 _error。
+    if total and not items:
+        last_page = math.ceil(total / 10)
+        if page > last_page:
+            out["_empty_reason"] = (
+                f"已翻过末页：命中 {total} 条只占 {last_page} 页，"
+                f"第 {page} 页本来就空，按已取回的清单下结论即可")
+        else:
+            out["_empty_reason"] = (
+                f"接口报告命中 {total} 条，第 {page} 页却没给条目清单"
+                f"（该页在末页之内，不是翻页越界）；换一个检索词再取一轮"
+                f"才有结论，不能据此说库里没有")
+    return out
 
 
 def _clean(fragment: str) -> str:
     """去高亮标签、解实体、压空白。检索结果标题里带 <span> 标记命中词。"""
     return re.sub(r"\s+", " ", unescape(_TAG_RE.sub("", fragment))).strip()
+
+
+# 时效录入项里出现的"这一栏没填"写法。接口对没录时效的条目回的是字符串
+# "null"（实测财税〔2003〕16 号），照原样带上下游会把 null 当时效文本读。
+_AGING_BLANKS = {"", "null", "none", "nil", "-", "—", "/"}
+
+
+def aging_of(raw) -> str:
+    """把接口的 xxgk_aging 归一成状态文本或空串。"""
+    text = str(raw or "").strip()
+    return "" if text.lower() in _AGING_BLANKS else text
 
 
 def _first_match(pattern: re.Pattern, text: str) -> str:
