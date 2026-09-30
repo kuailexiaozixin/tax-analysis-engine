@@ -178,8 +178,18 @@ def judge_validity(item: dict, at: str = "") -> dict:
     status = (item.get("status") or "").strip()
     code = item.get("status_code")
 
+    # 时效性分类状态：按录入枚举的整串语义判，子串匹配排在其后。
+    # "部分失效/部分废止/部分无效"的含义是全文仍在效、仅个别条款失效，
+    # 必须排在"废止/失效"分支之前——否则会被子串"失效"误判成全文废止，
+    # 把仍在使用的文件压到不可引用。法规库与 getFileListByCodeId 的枚举
+    # （全文有效/全文废止/已修改/部分失效/尚未生效）都由这段覆盖。
+    partial = any(k in status for k in ("部分失效", "部分废止", "部分无效"))
+    amended = any(k in status for k in ("已修改", "已修订"))
+
     # NPC 的 sxx 码：3=有效，1=尚未生效，9=已废止（以 SXX_MAP 文字为准）
-    if "有效" in status and "尚未" not in status:
+    if partial:
+        base = "effective"
+    elif "有效" in status and "尚未" not in status:
         base = "effective"
     elif "尚未生效" in status or "未生效" in status:
         base = "pending"
@@ -187,13 +197,17 @@ def judge_validity(item: dict, at: str = "") -> dict:
         base = "repealed"
     elif code == 9:
         base = "repealed"
-    elif any(k in status for k in ("已修改", "已修订")):
+    elif amended:
         # 法规库把"已修改"与"已废止/全文失效"分开发：标了已修改的仍然在效，
         # 只是文本被改过。判成 unknown 会把仍在用的配套文件全压到 42.9 分、
         # 一律赶进"只能参考"，而答案真正该说的是"引哪一版"。
         base = "effective"
     else:
         base = "unknown"
+
+    tail = "；文本已被修改，引用须按修改后的版本" if amended else ""
+    if partial:
+        tail += "；仅部分条款已失效，引用前须核对具体条款"
 
     # 状态判不出来时，"被现行有效的文件列为制定依据"是这个来源里唯一可得的
     # 在效证据（财税文件那一栏根本不录时效，见 tax_answer 的
@@ -222,12 +236,13 @@ def judge_validity(item: dict, at: str = "") -> dict:
                         "note": f"状态标尚未生效，且无施行日期可证实在 {at} 前生效"}
             return {"validity": "effective", "label": VALIDITY["effective"],
                     "as_of": at, "note": f"生效日 {eff} 不晚于观察时点 {at}"}
-        tail = ("；文本已被修改，引用须按修改后的版本"
-                if any(k in status for k in ("已修改", "已修订")) else "")
         return {"validity": "effective", "label": VALIDITY["effective"],
                 "as_of": at,
                 "note": f"按状态字段判定，效力期间含 {at}{tail}"}
 
+    if base == "effective" and tail:
+        return {"validity": base, "label": VALIDITY[base], "as_of": at,
+                "note": "按状态字段判定" + tail}
     return {"validity": base, "label": VALIDITY[base], "as_of": at,
             "note": "无状态字段可判" if base == "unknown" else "按状态字段判定"}
 

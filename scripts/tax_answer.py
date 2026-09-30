@@ -35,6 +35,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import tax_analyze as A
+import tax_cited as CITED
 import tax_evidence as E
 import tax_fgk as FGK
 import tax_search as T
@@ -42,6 +43,10 @@ import tax_shui5 as S5
 import tax_so360 as S360
 import tax_terms as TT
 import tax_wechat as WX
+
+# 文号→官方链接缓存的路径覆盖（None 走默认 ~/.cache/.../cited_links.json）。
+# 存在只是为了让离线用例把缓存指到临时文件，不把真实 home 写脏。
+CITED_CACHE_PATH = None
 
 # 每类问题要走哪几轮检索。轮次编号从 1 起，ordered 类必须按序。
 # 每轮给 sources 是"该轮优先用的源"，不是"只能用这些源"。
@@ -323,6 +328,20 @@ def locate_cited_document(title: str, size: int = 6) -> tuple:
     Returns:
         (按标题命中率降序的条目列表, 实际试过的检索词)
     """
+    # 缓存优先：这份点名的文件以前核实过原文地址（按文号存），直接复用、不打网络。
+    # 复用的前提仍是"标题确实是被点名的那一份"——缓存只记文号→链接，认不认还得靠
+    # title_identity 现判；判不过就丢弃缓存、照常检索，绝不让旧命中冒充点名目标。
+    dn = TT.doc_number_of(title)
+    if dn:
+        hit = CITED.get_cited_link(dn, CITED_CACHE_PATH)
+        if hit:
+            row = {"title": title, "url": hit, "document_number": dn,
+                   "source": "文号链接缓存"}
+            if TT.title_identity(title, title) == "same":
+                row.update({"_title_match": 1.0, "_is_interpretation": False,
+                            "_cited_identity": "same", "_from_cache": True})
+                return [row], [dn]
+
     rows, tried = {}, []
     for cand in TT.title_candidates(title):
         tried.append(cand)
@@ -349,6 +368,14 @@ def locate_cited_document(title: str, size: int = 6) -> tuple:
         row["_title_match"] = round(sim[row.get("url", "")], 3)
         row["_is_interpretation"] = _is_jiedu(row)
         row["_cited_identity"] = ident[row.get("url", "")]
+    # 定位成功且能归出文号、来源又是总局官方域——把这枚文号→原文链接落进缓存，
+    # 下次同名文件直接命中、零网络。判不过点名同一性的不落（免得把误命中的链接
+    # 供养成"下次一定对"），非官方域由 put_cited_link 自身拒收。
+    if out and out[0].get("_cited_identity"):
+        top = out[0]
+        top_dn = top.get("document_number") or TT.doc_number_of(top.get("title", ""))
+        if top_dn and CITED.is_official(top.get("url", "")):
+            CITED.put_cited_link(top_dn, top["url"], CITED_CACHE_PATH)
     return out[:size], tried
 
 

@@ -1,7 +1,7 @@
 ---
 name: tax-analysis-engine
 description: "税务问题分析引擎：先判定问题类型与缺失前提，再从上位法逐层向下检索到行政法规、地方口径与实务案例，多源聚合后对依据做效力位阶与时效定级，最后输出带限制条件的分析结论。适用于一切涉及税与费的问题——某个税怎么算、能不能享受优惠、该按什么税目归类、怎么办理、多久之内办、有什么风险、两个方案选哪个，以及法规原文的条款填空与选项判断、政策与案例检索。回答前一律实时联网核查，不使用训练数据中的政策记忆。"
-version: "3.7.0"
+version: "3.9.0"
 ---
 
 # 税务问题分析引擎 (Tax Analysis Engine)
@@ -167,6 +167,13 @@ python tests/probe_classify.py --stats --real --oracle    # 判型体检（离�
   `subskills/szse-lawrules/`（先 `build` 建本地索引再离线 `query`，标准库直连为主、业务规则
   通道复用既有浏览器能力，不调模型）；都不进五源、不进 ⑧ 定级。引原文只能引"规范名＋条款号"，
   标题/接口 `docNo`、URL 里的 t 编号不能当版次、`status`/"现行有效"标注不能替时效判定。
+- **优惠封闭枚举**（`entitlement`/`liability` 题型要"某税种/某主体名下有哪些现行优惠"）：
+  这一问五源给不出——关键词召回只会带回单份文件，凑不出一个去重、带官方减免性质代码的
+  优惠全集。走 `subskills/tax-preference/`：先 `sync`（plain HTTP 抓目录直链、比版本、重建
+  `preference_index.json`），再离线 `query`/`list-types` 按税种·大类·减免性质代码穷举，命中给
+  文号与优惠条款。**与上面三个专业口径子技能不同**：它给的就是税收依据本体，文号取回后
+  **回 ⑧ 按位阶×时效定级**、可当主依据；`[失效]` 条目仅用于补充/更正申报历史业务。仍守边界——
+  目录只收中央层级，地方优惠不在库内；不据此作税务筹划建议，具体适用以主管税务机关口径为准。
 - **立法过程文件**（草案/征求意见稿）：判据只看题面用词不看检索结果
   （`tax_analyze.LEGISLATIVE_STAGES`），`legislative_note` 写成整句，命令行与界面共用。
   草案取证轮走 `legis`+`shui5`+`wechat`（草案逐条解读文章在税屋与公众号里），
@@ -267,9 +274,12 @@ python scripts/tax_aggregator.py "<关键词>" --sources npc,chinatax --size 10 
 `references/evidence_grading.md`。
 
 时效判定是引用前必做的一步：观察时点必须显式 `--at` 传入；"尚未生效"缺施行日期
-不得转正；"已修改"仍在效但须按修改后版本引；「财税文件」栏不录时效时靠**制定依据
-援引**补这一格（`corroborate_validity_from_target`），答案要照抄证据来源那句。
-`tax_answer.py --answer` 会自动完成定级并分层输出。
+不得转正；"已修改"仍在效但须按修改后版本引；**"部分失效/部分废止"含子串"失效"，
+按整串枚举判为仍在效（note 标"仅部分条款已失效，引用前须核对具体条款"），不得压成
+repealed**；「财税文件」栏不录时效时靠**制定依据援引**补这一格
+（`corroborate_validity_from_target`），答案要照抄证据来源那句。政策文件库清单源
+（⑪）每行带的官方"时效性"分类状态（全文有效/全文废止/已修改/部分失效/尚未生效）
+正是 `judge_validity` 的输入。`tax_answer.py --answer` 会自动完成定级并分层输出。
 
 ---
 
@@ -309,6 +319,8 @@ python scripts/tax_aggregator.py "<关键词>" --sources npc,chinatax --size 10 
 | 会计视野论坛（子技能 chenyiwei-bbs） | 陈版主实务答疑、监管处罚案例、准则衍生问答，附带企业会计准则原文。**答会计口径，不是税收规定** | 专业口径 ⭐⭐⭐⭐；税收依据 无 | 上游每日更新（未实测） | 公开 REST API，`curl` 直连，无需 key；见 `subskills/chenyiwei-bbs/` |
 | 审计文库 MaoDocs（子技能 maodocs） | docs.maoyanqing.com 规范原文全文：企业/政府/小企业会计准则、注协审计准则、企业内控规范、资产评估准则、证监会监管规则适用指引。**答专业口径原文，不是税收规定** | 专业口径 ⭐⭐⭐⭐；税收依据 无 | 实时（sitemap lastmod 到 2026-09-28） | 纯标准库直连静态站，无 WAF、无浏览器、无 key；见 `subskills/maodocs/` |
 | 深交所法律规则（子技能 szse-lawrules） | www.szse.cn/www/lawrules 目录：法律/行政法规/司法解释/证监会规章·指引·规范性文件/废止公告（标准库直连可枚举）＋十二类"本所业务规则"自律规则（浏览器渲染）。**答证券交易场所口径与原文定位，不是税收规定** | 专业口径 ⭐⭐⭐；税收依据 无 | 实时（当日枚举 724 条入索引） | 先 `build` 建本地索引再离线 `query`；直连 HTTP，业务规则通道复用 `scripts/tax_browser`，无 key、不调模型；见 `subskills/szse-lawrules/` |
+| 减免税政策代码目录（子技能 tax-preference） | 总局《减免税政策代码目录》xlsx：现行有效/已失效两栏、8 位减免性质代码、收入种类·政策大类、文号、优惠条款。**这是税收优惠的权威封闭枚举**——按税种/大类穷举某主体名下有哪些优惠，是五源关键词召回给不出的 | 税收依据 ⭐⭐⭐⭐（带文号，回 ⑧ 定级） | 官方每月定期更新（国家税务总局公告 2015 年第 73 号）；本地 `sync` 抓直链比版本 | 先 `sync` 下载重建 `preference_index.json`，再离线 `query`/`list-types`；plain HTTP，无 key、不调模型；见 `subskills/tax-preference/` |
+| 政策文件库清单（`scripts/tax_gov_list.py`） | chinatax.gov.cn 各栏目（税务规范性文件/财税文件/法律/行政法规/其他）的**封闭分页清单**，每条自带发文字号·效力等级·**时效性分类状态**·成文日期·税费类型·官方 url。补 search5 关键词召回给不了的"某栏目全部现行文件"横截面，也是 ⑧ 时效判定的官方"时效性"字段来源 | 税收依据 ⭐⭐⭐⭐（带官方 url，回 ⑧ 定级） | 集合 diff（`tax_sync.ListSynchronizer` 按 url+时效性+文号+标题算集合 SHA1；时效性翻转会检出重建） | `python scripts/tax_gov_list.py sync [--channel 名]` 抓全建 `data/sync/chinatax-list/` 索引，`lookup`/`stats` 离线查；`seed-cache` 把文号→官方 url 批量种进 `tax_cited` 缓存；plain HTTP POST，无 cookie、不调模型 |
 
 ---
 

@@ -11,3 +11,8 @@ tests/results/
 
 # 子技能 build 生成的本地索引（可再生，随技能分发不含）
 subskills/*/szse_index.json
+subskills/*/preference_index.json
+
+# 同步器下载到的原始产物与 state（可再生，含版本节点每次变的直链）
+data/sync/
+

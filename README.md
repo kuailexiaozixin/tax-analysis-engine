@@ -84,6 +84,9 @@
 | **法规库目录与正文** | `tax_fgk.py` | 税务总局法规目录，`--body` 取正文、`--cache` 缓存清单（TTL 1h、正文不缓存）、翻页按需自适应（`--pages` 显式指定则关自适应） |
 | **统一请求层** | `tax_http.py` | 全项目对外 HTTP 请求的**唯一出口**；`verify` 设计成**必填参数**（`tax_detail`/`tax_search` 用默认关闭的 `VERIFY_SSL`，`tax_fgk` 用 requests 默认的 `True`，给默认值等于悄悄改行为）。各自维护 Session / WAF 应对的 `tax_shui5`、`tax_so360`、`tax_wechat`、`tax_web_search` 在白名单内，其余脚本直接发请求会被 `test_http_layer.py` 拦下。同层另有 `short_reason()`：把取数失败的裸异常压成一句能进界面的话（抹链接、压平折行、丢 `(Caused by ...)` 嵌套、留异常类名），`tax_so360` / `tax_web_search` / `tax_fgk` 的"请求失败："都走它 |
 | **共享缓存** | `tax_cache.py` | 缓存逻辑的**唯一实现**（`tax_search` / `tax_fgk` / `tax_detail` 三处共用）；按条目里的 `_ns` 字段分命名空间，各自的 `--cache-clear` 互不越界；只缓存清单 / 元数据，**正文永不缓存** |
+| **离线目录同步器** | `tax_sync.py` | 两种同步外壳。**`Synchronizer`**（单资源直链 diff）：`locate()` 现抓直链 → 与 `state.json` 记录的 URL 比对 → 变了才下载 → 下载内容少于 `MIN_CONTENT_BYTES` 判异常页不覆盖旧产物 → 内容 SHA1 未变不白烧构建 → 构建回调返回的 `版本日期` 采纳进 state（现用于 `subskills/tax-preference`）。**`ListSynchronizer`**（分页列表集合 diff）：`fetch_page(page)` 按 `total` 爬全 → 对每行 `sig_fields`（如 url+时效性+文号+标题）算集合 SHA1 → 任一字段变（含时效性翻转）才重建；`--check` 只探首页比 total；空集合与爬不满 total（`max_pages` 截断）都判异常不覆盖。下载/请求只走 `tax_http` |
+| **政策文件库清单源** | `tax_gov_list.py` | chinatax.gov.cn `getFileListByCodeId`（plain HTTP POST，无 cookie、不调模型）分栏目分页清单：每行规范化出 发文字号/效力等级/**时效性**/成文日期/税费类型/官方 url。同步复用 `tax_sync.ListSynchronizer`；`lookup`/`stats` 离线查；`seed-cache` 把文号（按 `tax_terms.doc_number_of` 归一）→ 官方 url（过 `tax_cited.is_official`）批量种进文号缓存，让 `locate_cited_document` 离线命中零网络 |
+| **文号链接缓存** | `tax_cited.py` | `is_official(url)`：只认 `chinatax.gov.cn` 及任意子域（用 `urlparse().hostname` 比后缀，防"官方域塞进路径"的假链接），拒商业站；`get/put_cited_link`：文号→已核实官方链接的持久缓存（`~/.cache/.../cited_links.json`），非官方域一律不落。`tax_answer.locate_cited_document` 命中缓存时零网络、`_from_cache=True` |
 | **实务解读** | `tax_shui5.py` | 税屋：360 检索 + 浏览器过 WAF 后 HTTP 连读 |
 | **实务解读** | `tax_wechat.py` | 微信公众号：搜狗微信 + 移动 UA |
 | **多源聚合** | `tax_aggregator.py` | 五源并发、Jaccard 去重、权威度排序、源级失败上抛、跨源时间序 |
@@ -95,6 +98,11 @@
 | **测试** | `test_routing_terms.py` | 判型词表与前提轴的离线用例：选项干扰词剥离、税种归类、判型的内容分与形态分主从、量过没收的信号词不许回表、会计口径缺口的命中与不命中、缺口贯通到作答层、点名文件同一性（引用式标题不许冒充被点名的那份）、立法阶段的命中与不命中（全打桩，不联网） |
 | **探针** | `probe_routing.py` · `probe_classify.py` | 只打印不断言的两份离线探针，改表前后各跑一次再 diff。路由那份额外带 `--stats`，报整份评测集的归类覆盖率；判型那份带三个指标——`--stats` 零信号兜底率（18/1001）、`--oracle` 数值选项标尺（四个选项全是数值的题该判成测算，实测 100/298，判据只吃选项不吃题干，能证伪词表）、`--real` 真实提问面板（考题以外的用户原话写法） |
 | **测试** | `test_tax_fgk.py` | fgk 离线用例：翻页上限与自适应收尾、文字/视频/空容器正文、缓存不含正文、命中标记与防污染（全打桩，不联网） |
+| **测试** | `test_tax_sync.py` | 同步器离线用例：同链二次不重复下载、`--check` 只报不下、篡改 state.url 触发重检、下载内容过小判失败且不覆盖旧产物、直链变而内容 SHA1 相同则不重建（打桩 `tax_http.get`，不联网） |
+| **测试** | `test_tax_cited.py` | 文号链接缓存用例：`is_official` 认子域、拒"官方域塞路径"与商业站；`locate_cited_document` 冷启动检索→落缓存→热命中 `_from_cache` 且不打检索；非官方域结果不入缓存（缓存指临时目录，不联网） |
+| **测试** | `test_preference.py` | 减免税目录子技能用例：文号/标题抽取、AND 打分与有效加分、`build_index` 解析合成 xlsx、按代码/关键词/税种/状态离线查询（全用临时索引，不联网、不碰真实索引） |
+| **测试** | `test_judge_validity.py` | 时效性分类状态判据用例：`部分失效/部分废止/部分无效` 判 effective（回归锁，防被子串"失效"压成 repealed）、`全文有效/全文废止/已修改/尚未生效` 各归位、`--at` 时点分支与制定依据援引不被破坏（全离线） |
+| **测试** | `test_gov_list.py` | 分页列表同步器与清单源用例：按 `total` 停止爬全、`--check` 只探首页、集合未变不重建、**时效性翻转触发重建**、空集/截断守卫；`normalize_item` 按 `key` 跨分组取元数据；`seed_cited_cache` 官方域种入、非官方/空文号跳过、`only_missing` 不覆盖已有（注入假 fetch_page，不联网） |
 | **测试** | `test_npc_gate.py` | NPC 串行闸用例：跨进程互斥、同进程多线程排队、超时后不锁死、接线检查 |
 | **测试** | `test_detail_cache.py` | 详情缓存用例：键算法与历史缓存逐字节一致、命名空间不越界、命中留痕、老条目读时转正、缓存不含条文正文（红线）、原子写不留半截文件 |
 | **测试** | `test_server_routes.py` | 服务端 9 路由用例：状态码与错误码、分支路由（npc/chinatax/fgk/aggregated）、付费闸门关着时不许碰模型、上游报错如实透出不吞成空结果、会计口径与立法阶段两条提示都按用户原话判定而非按改写后的检索词、全网那一趟在真实边界（`so360_search`）打桩断言 1/2/3 条都能到载荷（全打桩，不联网） |
@@ -291,6 +299,8 @@ GET /api/text/ff808181927b083b0193fd65a0eb02cb
 | **bbs.auditdog.cn**（子技能 chenyiwei-bbs） | 陈版主实务答疑、监管处罚案例、准则衍生问答，附带企业会计准则原文。补的是专业口径那一层，不答税法 | 专业口径 ⭐⭐⭐⭐；税收依据 无 | 上游每日更新（子技能文档记载，未实测） | 公开 REST API，`curl` 直连，无 key；操作手册在 `subskills/chenyiwei-bbs/` |
 | **docs.maoyanqing.com**（子技能 maodocs） | 审计文库 MaoDocs：企业/政府/小企业会计准则、注协审计准则、企业内控规范、资产评估准则、证监会监管规则适用指引的**逐条原文全文**。补专业口径原文，不答税法 | 专业口径 ⭐⭐⭐⭐；税收依据 无 | 实时（sitemap lastmod 至 2026-09-28） | 纯标准库直连静态站，无 WAF、无浏览器、无 key；脚本与手册在 `subskills/maodocs/` |
 | **www.szse.cn**（子技能 szse-lawrules） | 深交所「法律规则」栏目：法律/行政法规/司法解释/证监会规章·指引·规范性文件/废止公告＋十二类"本所业务规则"自律规则的**目录与原文定位**。补证券交易场所口径，不答税法 | 专业口径 ⭐⭐⭐；税收依据 无 | 实时（当日枚举 724 条入索引） | 先 `build` 建本地索引再离线 `query`；标准库直连为主，业务规则通道复用 `scripts/tax_browser`，无 key、不调模型；脚本与手册在 `subskills/szse-lawrules/` |
+| **减免税政策代码目录**（子技能 tax-preference） | 总局《减免税政策代码目录》xlsx：现行有效/已失效两栏、8 位减免性质代码、收入种类·政策大类、文号、优惠条款。**税收优惠的权威封闭枚举**——按税种/大类列全某主体名下有哪些现行优惠，是五源关键词召回凑不出的 | 税收依据 ⭐⭐⭐⭐（带文号，回 ⑧ 定级） | 官方每月更新（国家税务总局公告 2015 年第 73 号）；本地 `sync` 抓直链比版本 | 先 `sync` 下载重建 `preference_index.json`，再离线 `query`/`list-types`；同步复用 `scripts/tax_sync.py`，plain HTTP、无 key、不调模型；脚本与手册在 `subskills/tax-preference/` |
+| **chinatax.gov.cn 政策文件库清单**（`scripts/tax_gov_list.py`） | 各栏目（税务规范性文件/财税文件/法律/行政法规/其他）的**封闭分页清单**，每条自带发文字号·效力等级·**时效性分类状态**·成文日期·税费类型·官方 url。补 search5 关键词召回给不了的"某栏目全部现行文件"横截面，也是 ⑧ 时效判定的官方时效性字段来源 | 税收依据 ⭐⭐⭐⭐（带官方 url，回 ⑧ 定级） | 集合 diff（`tax_sync.ListSynchronizer`：按 url+时效性+文号+标题算集合 SHA1，时效性翻转会检出重建） | `sync [--channel 名]` 抓全建 `data/sync/chinatax-list/`，`lookup`/`stats` 离线查，`seed-cache` 批量预热文号→官方链接缓存；plain HTTP POST、无 cookie、不调模型 |
 
 ### 缓存策略
 
@@ -462,6 +472,9 @@ tax-analysis-engine/
 │   ├── tax_aggregator.py           # 五源并发聚合（源级失败上抛）
 │   ├── tax_formatter.py            # 检索路的四段式 Markdown 渲染（stdin 收原始 JSON；主线输出在 tax_answer）
 │   ├── tax_llm.py                  # 外部模型调用的唯一出口：付费闸门 + 额度异常分型
+│   ├── tax_sync.py                 # 离线同步外壳：Synchronizer（单资源直链 diff）+ ListSynchronizer（分页列表集合 diff）
+│   ├── tax_cited.py                # 文号→官方链接持久缓存 + is_official 官方域白名单（纯本地，不联网）
+│   ├── tax_gov_list.py             # 政策文件库清单源（getFileListByCodeId 分页）：sync/lookup/stats/seed-cache
 │   └── tax_server.py               # Flask API + 前端托管
 ├── frontend/index.html             # 单文件界面：搜索栏 / 4 步向导 / 结果卡片 / 法规弹窗四标签页
 ├── subskills/
@@ -476,6 +489,10 @@ tax-analysis-engine/
 │       ├── SKILL.md                # 深交所法律规则目录检索（查询式：build 建索引后离线 query）
 │       ├── NOTE.md                 # 来源、两种渲染形态、实测校正（t 编号不表版次、业务规则需浏览器、多为 PDF 附件）
 │       └── szse.py                 # categories/build/query/fetch；标准库直连为主，业务规则通道复用 scripts/tax_browser，不调模型
+│   └── tax-preference/
+│       ├── SKILL.md                # 减免税政策代码目录（查询式：sync 建索引后离线 query，是税收依据本体、进 ⑧ 定级）
+│       ├── NOTE.md                 # 一次 sync 实测、双栏日期填充率、getFileListByCodeId 发现（未接入）、复用关系
+│       └── preference.py           # sync/query/list-types；同步复用 scripts/tax_sync.py，plain HTTP、不调模型
 ├── references/                     # tax_categories · search_strategies · tax_risk_framework
 ├── tests/
 │   ├── run_all.py                  # 统一门禁入口（默认离线组；--online 加联网组）

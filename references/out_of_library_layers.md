@@ -110,6 +110,37 @@ python subskills/szse-lawrules/szse.py fetch "http://www.szse.cn/lawrules/rule/t
 # 需要"本所业务规则"（股票/债券/基金…）那一类时补浏览器渲染：python …szse.py build --browser --channel stock
 ```
 
+## 优惠封闭枚举：这一层不是专业口径，是税收依据本体
+
+上面三个子技能答的都是**专业口径**（会计/审计/证券），不进 ⑧ 定级。`subskills/tax-preference/`
+与它们并排但性质不同：它给的是**税收优惠的权威封闭枚举**——《减免税政策代码目录》按
+收入种类、政策大类、8 位减免性质代码列全现行有效 / 已失效优惠，附文号与优惠条款。五个
+在线源按关键词召回单份文件，凑不出这个去重全集，所以"某税种/某主体名下有哪些优惠"
+这一问只有它能答。
+
+tax-preference 三条命令（脚本在 `subskills/tax-preference/preference.py`；同步复用
+`scripts/tax_sync.py`，全程 plain HTTP、不调模型）：
+
+```bash
+# 1) 抓目录直链→比版本→变了才下载重建（--check 只报有无新版；--force 强制重下）
+python subskills/tax-preference/preference.py sync
+# 2) 离线查询：多词 AND；可按税种/大类/状态过滤，或按减免性质代码精确反查
+python subskills/tax-preference/preference.py query 研发 加计 --type 企业所得税
+python subskills/tax-preference/preference.py query --code 01010503
+# 3) 列收入种类及条数，用于浏览某税种覆盖面
+python subskills/tax-preference/preference.py list-types
+```
+
+**取到之后放哪**：目录条目就是税收依据本体，命中给出的**文号取回主线后照常进 ⑧ 位阶×时效
+定级、可当主依据**——这与三个专业口径子技能相反。**但两条边界要守住**：① 目录是双栏结构，
+`有效` 栏根本不录日期（实测 912 条有效期起/止全空），条目在不在效由它所在栏决定，**不能拿
+"有效期止为空"当"永不过期"**、也不能指望从有效条目读出到期日；② 目录只到"优惠项目名＋代码
+＋文号＋条款"这一层，正文、施行/废止日期、解读一律回五源取。`[失效]` 条目仅用于补充/更正
+申报历史业务。
+
+**什么时候不用**：题目问的是税率、扣除比例、时限这类单点规定，五源精检更快更全；本技能
+擅长的是"列全"和"按代码反查"，不是取代主线检索。
+
 **取到之后放哪**：准则原文与实务答疑都**不是税收法定依据**，不进 ⑧ 的位阶表打分，
 也不与税法条文并列。它们只占两个位置——【适用边界】里当前提
 （"本结论假定会计上按 X 确认；会计口径变了结论要重算"），或"只能参考（非法定依据）"
