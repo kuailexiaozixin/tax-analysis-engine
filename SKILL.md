@@ -1,7 +1,7 @@
 ---
 name: tax-analysis-engine
 description: "税务问题分析引擎：先判定问题类型与缺失前提，再从上位法逐层向下检索到行政法规、地方口径与实务案例，多源聚合后对依据做效力位阶与时效定级，最后输出带限制条件的分析结论。适用于一切涉及税与费的问题——某个税怎么算、能不能享受优惠、该按什么税目归类、怎么办理、多久之内办、有什么风险、两个方案选哪个，以及法规原文的条款填空与选项判断、政策与案例检索。回答前一律实时联网核查，不使用训练数据中的政策记忆。"
-version: "3.12.0"
+version: "3.13.0"
 ---
 
 # 税务问题分析引擎 (Tax Analysis Engine)
@@ -334,8 +334,8 @@ repealed**；「财税文件」栏不录时效时靠**制定依据援引**补这
 | 会计视野论坛（子技能 chenyiwei-bbs） | 陈版主实务答疑、监管处罚案例、准则衍生问答，附带企业会计准则原文。**答会计口径，不是税收规定** | 专业口径 ⭐⭐⭐⭐；税收依据 无 | 上游每日更新（未实测） | 公开 REST API，`curl` 直连，无需 key；见 `subskills/chenyiwei-bbs/` |
 | 审计文库 MaoDocs（子技能 maodocs） | docs.maoyanqing.com 规范原文全文：企业/政府/小企业会计准则、注协审计准则、企业内控规范、资产评估准则、证监会监管规则适用指引。**答专业口径原文，不是税收规定** | 专业口径 ⭐⭐⭐⭐；税收依据 无 | 实时（sitemap lastmod 到 2026-09-28） | 纯标准库直连静态站，无 WAF、无浏览器、无 key；见 `subskills/maodocs/` |
 | 深交所法律规则（子技能 szse-lawrules） | www.szse.cn/www/lawrules 目录：法律/行政法规/司法解释/证监会规章·指引·规范性文件/废止公告（标准库直连可枚举）＋十二类"本所业务规则"自律规则（浏览器渲染）。**答证券交易场所口径与原文定位，不是税收规定** | 专业口径 ⭐⭐⭐；税收依据 无 | 实时（当日枚举 724 条入索引） | 先 `build` 建本地索引再离线 `query`；直连 HTTP，业务规则通道复用 `scripts/tax_browser`，无 key、不调模型；见 `subskills/szse-lawrules/` |
-| 减免税政策代码目录（子技能 tax-preference） | 总局《减免税政策代码目录》xlsx：现行有效/已失效两栏、8 位减免性质代码、收入种类·政策大类、文号、优惠条款。**这是税收优惠的权威封闭枚举**——按税种/大类穷举某主体名下有哪些优惠，是五源关键词召回给不出的 | 税收依据 ⭐⭐⭐⭐（带文号，回 ⑧ 定级） | 官方每月定期更新（国家税务总局公告 2015 年第 73 号）；本地 `sync` 抓直链比版本 | 先 `sync` 下载重建 `preference_index.json`，再离线 `query`/`list-types`；plain HTTP，无 key、不调模型；见 `subskills/tax-preference/` |
-| 政策文件库清单（`scripts/tax_gov_list.py`） | chinatax.gov.cn 各栏目（税务规范性文件/财税文件/法律/行政法规/其他）的**封闭分页清单**，每条自带发文字号·效力等级·**时效性分类状态**·成文日期·税费类型·官方 url。补 search5 关键词召回给不了的"某栏目全部现行文件"横截面，也是 ⑧ 时效判定的官方"时效性"字段来源 | 税收依据 ⭐⭐⭐⭐（带官方 url，回 ⑧ 定级） | 集合 diff（`tax_sync.ListSynchronizer` 按 url+时效性+文号+标题算集合 SHA1；时效性翻转会检出重建） | `python scripts/tax_gov_list.py sync [--channel 名]` 抓全建 `data/sync/chinatax-list/` 索引，`lookup`/`stats` 离线查；`seed-cache` 把文号→官方 url 批量种进 `tax_cited` 缓存，`missing` 反向列出有官方 url 却未进缓存的待补条目；plain HTTP POST，无 cookie、不调模型 |
+| 减免税政策代码目录（子技能 tax-preference） | 总局《减免税政策代码目录》xlsx：现行有效/已失效两栏、8 位减免性质代码、收入种类·政策大类、文号、优惠条款。**这是税收优惠的权威封闭枚举**——按税种/大类穷举某主体名下有哪些优惠，是五源关键词召回给不出的 | 税收依据 ⭐⭐⭐⭐（带文号，回 ⑧ 定级） | 官方每月定期更新（国家税务总局公告 2015 年第 73 号）；本地 `sync` 抓直链比版本 | 先 `sync` 下载重建 `preference_index.json`，再离线 `query`/`list-types`；plain HTTP，无 key、不调模型；索引顶部自带 `源文件SHA1`（脱离 state 也能自证建自哪份字节）与 `文号抽取失败 N/总条数`（建库覆盖率自检）；见 `subskills/tax-preference/` |
+| 政策文件库清单（`scripts/tax_gov_list.py`） | chinatax.gov.cn 各栏目（税务规范性文件/财税文件/法律/行政法规/其他）的**封闭分页清单**，每条自带发文字号·效力等级·**时效性分类状态**·成文日期·税费类型·官方 url。补 search5 关键词召回给不了的"某栏目全部现行文件"横截面，也是 ⑧ 时效判定的官方"时效性"字段来源 | 税收依据 ⭐⭐⭐⭐（带官方 url，回 ⑧ 定级） | 集合 diff（`tax_sync.ListSynchronizer` 按 url+时效性+文号+标题算集合 SHA1；时效性翻转会检出重建） | `python scripts/tax_gov_list.py sync [--channel 名]` 抓全建 `data/sync/chinatax-list/` 索引，`lookup`/`stats` 离线查；`seed-cache` 把文号→官方 url 批量种进 `tax_cited` 缓存，`missing` 反向列出有官方 url 却未进缓存的待补条目；建库时自检发文字号/时效性缺失（`stats` 可复查），元数据键改版在写入侧即暴露；plain HTTP POST，无 cookie、不调模型 |
 
 ---
 

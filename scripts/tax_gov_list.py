@@ -14,7 +14,11 @@ www.chinatax.gov.cn/getFileListByCodeId，按 channelId 分栏目、分页返回
 
 同步复用 scripts/tax_sync.py 的 ListSynchronizer（分页爬全 → 集合 SHA1 diff
 → 变了才重建索引）。集合 SHA1 覆盖 url+时效性+发文字号+title，所以某文件
-时效性翻转（同一 url、内容没换）也会被检出、触发重建。
+时效性翻转（同一 url、内容没换）也会被检出、触发重建。重建时 build_index 会
+自检元数据覆盖率，把「发文字号缺失 / 时效性缺失 N 条」落进索引并在 sync 回显——
+官方元数据键（writtentext/aging）改版导致整列变空，在写入侧就报出，不必等检索
+召回下滑才察觉。注意时效性缺失对"财税文件"栏目是常态（官方本就不填），只如实
+记录、不报警；文号栏缺失才作改版预警。
 
 用法：
     python tax_gov_list.py sync                 # 抓全指定栏目并重建索引
@@ -23,7 +27,7 @@ www.chinatax.gov.cn/getFileListByCodeId，按 channelId 分栏目、分页返回
     python tax_gov_list.py sync --channel 财税文件
     python tax_gov_list.py lookup 国家税务总局公告2026年第18号
     python tax_gov_list.py lookup 增值税 --aging 全文有效 -n 20
-    python tax_gov_list.py stats
+    python tax_gov_list.py stats                # 栏目/版本/条目/覆盖率/时效性分布
     python tax_gov_list.py seed-cache --only-missing   # 用清单批量预热文号→官方链接缓存
     python tax_gov_list.py missing                     # 列出有官方 url 却未进缓存的待补条目
 """
@@ -143,12 +147,23 @@ def build_index(rows: list, *, channel: str = DEFAULT_CHANNEL) -> dict:
     dates = [d for d in dates if re.match(r"\d{4}-\d{2}-\d{2}", d or "")]
     version = max(dates) if dates else ""
 
+    # 建库覆盖率自检：官方元数据键（writtentext/aging）若在上游改名，normalize_item
+    # 会静默把整列掏空——集合 SHA1 变了照样触发重建，却没人报"现在几乎全无文号"。
+    # 把缺失计数落在索引、sync 时回显，让元数据改版在写入侧就被察觉（与 preference
+    # 的"文号抽取失败"同源）。注意：时效性缺失只如实记录不加警报——"财税文件"栏目
+    # 官方本就不填时效性（见 CHANNELS 注释），缺失是常态不是改版。
+    n_total = len(recs)
+    miss_doc = sum(1 for r in recs if not (r.get("发文字号") or "").strip())
+    miss_aging = sum(1 for r in recs if not (r.get("时效性") or "").strip())
+
     index = {
         "栏目": channel,
         "channelId": CHANNELS.get(channel, ""),
         "版本日期": version,
         "构建时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "条目数": len(recs),
+        "条目数": n_total,
+        "发文字号缺失": miss_doc,
+        "时效性缺失": miss_aging,
         "记录": recs,
     }
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
@@ -200,12 +215,18 @@ def stats(as_json=False):
     from collections import Counter
     idx = _load_index()
     c = Counter(r.get("时效性") or "未标注" for r in idx["记录"])
+    cov = {"发文字号缺失": idx.get("发文字号缺失"),
+           "时效性缺失": idx.get("时效性缺失")}
     if as_json:
         print(json.dumps({"栏目": idx.get("栏目"), "版本": idx.get("版本日期"),
-                          "条目数": idx.get("条目数"), "时效性分布": dict(c)},
+                          "条目数": idx.get("条目数"), "覆盖率": cov,
+                          "时效性分布": dict(c)},
                          ensure_ascii=False, indent=1))
         return
-    print(f"栏目 {idx.get('栏目')} | 版本 {idx.get('版本日期')} | 条目 {idx.get('条目数')}")
+    _d = "—" if cov["发文字号缺失"] is None else cov["发文字号缺失"]
+    _a = "—" if cov["时效性缺失"] is None else cov["时效性缺失"]
+    print(f"栏目 {idx.get('栏目')} | 版本 {idx.get('版本日期')} | 条目 {idx.get('条目数')}"
+          f" | 文号缺 {_d} / 时效性缺 {_a}")
     for k, v in c.most_common():
         print(f"  {v:>5}  {k}")
 
@@ -228,13 +249,26 @@ def sync(check=False, force=False, as_json=False, channel=DEFAULT_CHANNEL):
         res = syn.sync(check_only=check, force=force)
     except Exception as e:
         res = {"source": syn.source, "成功": False, "动作": "异常", "错误": str(e)}
+    # 真正重建过时，把本次 build_index 落进索引的元数据覆盖率带回回显（同步时点暴露改版）
+    if res.get("动作") == "已更新" and INDEX_PATH.exists():
+        try:
+            meta = json.loads(INDEX_PATH.read_text(encoding="utf-8"))
+            res["发文字号缺失"] = meta.get("发文字号缺失")
+            res["时效性缺失"] = meta.get("时效性缺失")
+            res["总条数"] = meta.get("条目数")
+        except Exception:
+            pass
     if as_json:
         print(json.dumps(res, ensure_ascii=False, indent=1))
     else:
         print(("[成功] " if res.get("成功") else "[失败] ") + res.get("动作", ""))
-        for k in ("本地条目数", "远端总数", "条目数", "总数", "新版本日期", "集合SHA1", "错误"):
-            if res.get(k):
+        for k in ("本地条目数", "远端总数", "条目数", "总数", "新版本日期",
+                  "集合SHA1", "发文字号缺失", "时效性缺失", "错误"):
+            if res.get(k) not in (None, ""):
                 print(f"    {k}：{res[k]}")
+        if res.get("动作") == "已更新" and (res.get("发文字号缺失") or 0) > 0:
+            print(f"    ← 文号栏缺 {res['发文字号缺失']}/{res.get('总条数')} 条；"
+                  f"若这一数较上次跳增，多半是官方元数据键(writtentext)改版，须核对 normalize_item")
     return 0 if res.get("成功") else 1
 
 

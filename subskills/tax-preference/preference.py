@@ -25,6 +25,7 @@
     python preference.py list-types      # 列收入种类及条数
 """
 
+import hashlib
 import json
 import os
 import re
@@ -159,6 +160,11 @@ def _parse_sheet(ws, status):
 def build_index(xlsx_path: str) -> dict:
     """解析下载的 xlsx，写 preference_index.json，返回统计。"""
     import openpyxl
+    # 源文件指纹：整套同步按"内容版本 diff"运作，可产物本身若不记下它是从哪份
+    # 字节建的，脱离 state.json 就说不清自己对应哪个版本。这里就地算原始 xlsx 的
+    # SHA1 落进索引——纯本地读，不联网。
+    with open(xlsx_path, "rb") as fh:
+        src_sha1 = hashlib.sha1(fh.read()).hexdigest()
     wb = openpyxl.load_workbook(xlsx_path, data_only=True)
     data = {}
     for ws in wb.worksheets:
@@ -193,6 +199,7 @@ def build_index(xlsx_path: str) -> dict:
     miss_doc = sum(1 for g in data.values() for r in g if not (r.get("文号") or "").strip())
     index = {
         "版本日期": version,
+        "源文件SHA1": src_sha1,
         "构建时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "有效条数": len(data.get("有效", [])),
         "失效条数": len(data.get("失效", [])),
@@ -344,7 +351,8 @@ def list_types():
             if r.get("收入种类"):
                 c[r["收入种类"]] += 1
     print(f"版本 {idx.get('版本日期')} | 有效 {idx.get('有效条数')} / 失效 {idx.get('失效条数')}"
-          f" | 文号抽取失败 {idx.get('文号抽取失败', '?')}/{idx.get('总条数', '?')}")
+          f" | 文号抽取失败 {idx.get('文号抽取失败', '?')}/{idx.get('总条数', '?')}"
+          f" | 源文件SHA1 {str(idx.get('源文件SHA1', '?'))[:8]}")
     for name, n in c.most_common():
         print(f"  {n:>4}  {name}")
 
@@ -360,13 +368,14 @@ def _sync(check=False, force=False, as_json=False):
             meta = json.loads(INDEX_PATH.read_text(encoding="utf-8"))
             res["文号抽取失败"] = meta.get("文号抽取失败")
             res["总条数"] = meta.get("总条数")
+            res["源文件SHA1"] = meta.get("源文件SHA1")
         except Exception:
             pass
     if as_json:
         print(json.dumps(res, ensure_ascii=False, indent=1))
     else:
         print(("[成功] " if res.get("成功") else "[失败] ") + res.get("动作", ""))
-        for k in ("本地版本", "远端链接", "新版本", "字节数", "错误"):
+        for k in ("本地版本", "远端链接", "新版本", "源文件SHA1", "字节数", "错误"):
             if res.get(k):
                 print(f"    {k}：{res[k]}")
         if res.get("动作") == "已更新" and res.get("文号抽取失败") is not None:

@@ -193,6 +193,17 @@ class TestBuildAndQuery(unittest.TestCase):
         self.assertEqual(3, idx["总条数"])
         self.assertEqual(1, idx["文号抽取失败"])   # 只有第三行抽不到文号
 
+    def test_index_records_source_sha1(self):
+        """产物自证：索引记的 源文件SHA1 必须就是那份 xlsx 原始字节的 SHA1。"""
+        import hashlib
+        path = self._make_xlsx()
+        want = hashlib.sha1(open(path, "rb").read()).hexdigest()
+        idx = P.build_index(path)
+        self.assertEqual(want, idx["源文件SHA1"])
+        # 换一份内容不同的文件 → 指纹必须不同（证明它真按内容算，不是写死的常量）
+        idx2 = P.build_index(self._make_xlsx_missing_doc())
+        self.assertNotEqual(idx["源文件SHA1"], idx2["源文件SHA1"])
+
     def _write_index(self, rec):
         P.INDEX_PATH.write_text(json.dumps(
             {"版本日期": "2026-09-03", "记录": {rec["状态"]: [rec]}},

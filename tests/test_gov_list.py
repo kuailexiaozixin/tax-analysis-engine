@@ -256,6 +256,42 @@ class TestMissingCited(unittest.TestCase):
         self.assertEqual(1, len(rows))
 
 
+class TestBuildIndexCoverage(unittest.TestCase):
+    """build_index 建库覆盖率自检：缺文号/时效性的行要计进索引（缺陷2 的对称自检）。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._saved_root, self._saved_idx = GL.DATA_ROOT, GL.INDEX_PATH
+        root = Path(self._tmp.name)
+        GL.DATA_ROOT = root
+        GL.INDEX_PATH = root / "gov_list_index.json"
+
+    def tearDown(self):
+        GL.DATA_ROOT, GL.INDEX_PATH = self._saved_root, self._saved_idx
+        self._tmp.cleanup()
+
+    def test_counts_missing_docno_and_aging(self):
+        rows = [
+            _row("A", "http://t/A", aging="全文有效", doc="国家税务总局公告2026年第1号"),
+            _row("B", "http://t/B", aging="", doc="财税〔2023〕2号"),          # 缺时效性
+            _row("C", "http://t/C", aging="全文有效", doc=""),                 # 缺文号
+        ]
+        idx = GL.build_index(rows, channel="税务规范性文件")
+        self.assertEqual(3, idx["条目数"])
+        self.assertEqual(1, idx["发文字号缺失"])     # 只有 C 无文号
+        self.assertEqual(1, idx["时效性缺失"])       # 只有 B 无时效性
+        # 落盘一致
+        disk = json.loads(GL.INDEX_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(1, disk["发文字号缺失"])
+
+    def test_healthy_index_reports_zero_missing(self):
+        """全填的好索引不该误报（防计数恒正的假信号）。"""
+        rows = [_row("A", "http://t/A", aging="全文有效", doc="财税〔2012〕75号")]
+        idx = GL.build_index(rows, channel="税务规范性文件")
+        self.assertEqual(0, idx["发文字号缺失"])
+        self.assertEqual(0, idx["时效性缺失"])
+
+
 if __name__ == "__main__":
     for _s in (sys.stdout, sys.stderr):
         try:
