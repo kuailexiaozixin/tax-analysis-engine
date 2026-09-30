@@ -186,11 +186,18 @@ def build_index(xlsx_path: str) -> dict:
                 break
     else:
         version = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    # 文号抽取覆盖率自检：目录里每条政策本都应带文号，抽不到多半是官方那列写法
+    # 改版（换括号、加机关前缀、拆两行）。把它当早期回归信号落进索引，sync 时报出，
+    # 免得抽取静默退化只能靠将来检索召回下滑才察觉。
+    total_recs = sum(len(g) for g in data.values())
+    miss_doc = sum(1 for g in data.values() for r in g if not (r.get("文号") or "").strip())
     index = {
         "版本日期": version,
         "构建时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "有效条数": len(data.get("有效", [])),
         "失效条数": len(data.get("失效", [])),
+        "文号抽取失败": miss_doc,
+        "总条数": total_recs,
         "记录": data,
     }
     INDEX_PATH.write_text(json.dumps(index, ensure_ascii=False, indent=1),
@@ -336,7 +343,8 @@ def list_types():
         for r in rows:
             if r.get("收入种类"):
                 c[r["收入种类"]] += 1
-    print(f"版本 {idx.get('版本日期')} | 有效 {idx.get('有效条数')} / 失效 {idx.get('失效条数')}")
+    print(f"版本 {idx.get('版本日期')} | 有效 {idx.get('有效条数')} / 失效 {idx.get('失效条数')}"
+          f" | 文号抽取失败 {idx.get('文号抽取失败', '?')}/{idx.get('总条数', '?')}")
     for name, n in c.most_common():
         print(f"  {n:>4}  {name}")
 
@@ -346,6 +354,14 @@ def _sync(check=False, force=False, as_json=False):
     import tax_sync
     syn = tax_sync.Synchronizer("tax-preference", locate, build_index, ext=".xlsx")
     res = syn.sync(check_only=check, force=force)
+    # 真正重建过时，把本次 build_index 落进索引的文号抽取覆盖率带回回显（同步时点暴露改版）
+    if res.get("动作") == "已更新" and INDEX_PATH.exists():
+        try:
+            meta = json.loads(INDEX_PATH.read_text(encoding="utf-8"))
+            res["文号抽取失败"] = meta.get("文号抽取失败")
+            res["总条数"] = meta.get("总条数")
+        except Exception:
+            pass
     if as_json:
         print(json.dumps(res, ensure_ascii=False, indent=1))
     else:
@@ -353,6 +369,10 @@ def _sync(check=False, force=False, as_json=False):
         for k in ("本地版本", "远端链接", "新版本", "字节数", "错误"):
             if res.get(k):
                 print(f"    {k}：{res[k]}")
+        if res.get("动作") == "已更新" and res.get("文号抽取失败") is not None:
+            n, tot = res["文号抽取失败"], res.get("总条数")
+            flag = "  ← 若该数较上次明显跳增，多半是目录文号列改版，须核对解析" if n else ""
+            print(f"    文号抽取失败：{n}/{tot} 条{flag}")
     return 0 if res.get("成功") else 1
 
 

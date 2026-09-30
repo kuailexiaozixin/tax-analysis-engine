@@ -119,6 +119,9 @@ class TestBuildAndQuery(unittest.TestCase):
         self.assertEqual(1, idx["有效条数"])
         self.assertEqual(1, idx["失效条数"])
         self.assertEqual("2026-09-03", idx["版本日期"])   # 从文件名解析
+        # 两行都带规范文号 → 抽取失败计数为 0（好索引不误报）
+        self.assertEqual(0, idx["文号抽取失败"])
+        self.assertEqual(2, idx["总条数"])
 
         # 按代码精确反查
         out = P.query([], code="01010503", as_json=True)
@@ -164,6 +167,31 @@ class TestBuildAndQuery(unittest.TestCase):
         with contextlib.redirect_stdout(buf):
             P.query([], code="04010048", cited_path=cache)
         self.assertIn("官方链接：<未缓存", buf.getvalue())
+
+    def _make_xlsx_missing_doc(self):
+        """有效栏造三行：两行带规范文号、一行的政策名称里根本没有文号形态。"""
+        import openpyxl
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "现行有效减免税政策"
+        head = ["序号", "收入种类", "减免政策大类", "减免政策小类", "减免性质代码",
+                "政策名称", "有效期起", "有效期止", "优惠条款", "减免项目名称"]
+        ws.append(head)
+        ws.append([1, "增值税", "a", "b", "01010503",
+                   "《免征鲜活肉蛋增值税的通知》财税〔2012〕75号", "", "", "第一条", "肉蛋"])
+        ws.append([2, "增值税", "a", "b", "01010504",
+                   "《支持小微企业的通知》国家税务总局公告2023年第1号", "", "", "第二条", "小微"])
+        # 政策名称不含任何"〔年〕号/公告X年第Y号/令X号"形态 → 文号抽不到
+        ws.append([3, "增值税", "a", "b", "01010505",
+                   "享受即征即退的一般纳税人名单（附件另发）", "", "", "第三条", "即征即退"])
+        path = Path(self._tmp.name) / "减免税政策代码目录（2026年9月3日）.xlsx"
+        wb.save(path)
+        return str(path)
+
+    def test_build_index_counts_missing_docno(self):
+        idx = P.build_index(self._make_xlsx_missing_doc())
+        self.assertEqual(3, idx["总条数"])
+        self.assertEqual(1, idx["文号抽取失败"])   # 只有第三行抽不到文号
 
     def _write_index(self, rec):
         P.INDEX_PATH.write_text(json.dumps(
