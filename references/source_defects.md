@@ -10,6 +10,7 @@
 - [由代码保证的源缺陷](#由代码保证的源缺陷)
 - [两个值得单独说明的细节](#两个值得单独说明的细节)
 - [量过之后决定不改的三件事](#量过之后决定不改的三件事)
+- [主线动作归属](#主线动作归属)
 - [仍然是边界的几件事](#仍然是边界的几件事)
 
 ---
@@ -70,6 +71,31 @@
 - **「解读」不进判型词表**。评测集 1001 题只有 1 题含这两个字，它不量任何一类题的内容；
   两个真实提问（"请解读《X》公告""请解读修订草案"）判出的 `lookup` 本来就对，缺的不是
   判型而是草案覆盖边界。
+
+## 主线动作归属
+
+SKILL.md ② 末尾指向这一节。它回答两个问题：某一格动作**现在是脚本在做、还是 Agent
+在做**；做错了**在本机怎么发现**。用途是改代码前先定位——把本该 Agent 判断的那一格写
+进脚本，等于把词表外的表达永久判死（如 `detect_context_gaps` 只认得词表里的措辞）；
+反过来把已经由代码保证的那一格重新交给人记，等于没有约束（本文件前半部分整篇都是
+这类事故）。表中代码名与测试名均可 grep，只列已核实为真的。
+
+| 主线动作 | 归属 | 代码落点 | 做错了在本机怎么发现 |
+|---|---|---|---|
+| ① 判型 | 脚本 | `tax_analyze.classify` | `python tests/probe_classify.py --stats --real --oracle`（离线） |
+| ① 把握 0.30 时重判题面 | Agent | 仅 `confidence` 被打印，无代码路径按它改行为 | `python scripts/tax_analyze.py "<原话>"` 读把握值 |
+| ② 决定追问哪几根轴 | 脚本给候选，Agent 取舍 | `tax_analyze.detect_context_gaps` / `pick_probes` | `python scripts/tax_analyze.py "<原话>" --probes 3` |
+| ② 题面自相矛盾时指出冲突 | **Agent，脚本不判** | 无（`tax_analyze` 全文不含冲突判定） | 只能人工读题面，见 ⑦ 第 23 条 |
+| ② 规则陈述类不追问个案 | 脚本 | `tax_analyze.RULE_STATEMENT_TYPES` / `RULE_AXES`，产出 `rule_note` | 命令行【适用边界】那一栏有没有这句 |
+| ③④ 决定取数轮次与候选词 | 脚本给计划，Agent 放宽 | `tax_answer.build_plan`，回显在 `rounds_done` | `python scripts/tax_answer.py "<原话>" --plan` |
+| ④ 五源聚合与取数失败留名 | 脚本 | `tax_answer.gather`，产出 `rounds_done[].failed` | `tests/test_source_defects.py::TestRoundFailureIsNotSilent` |
+| ⑧ 位阶与时效定级 | 脚本 | `tax_evidence.LEGAL_RANK` / `rank_of` / `judge_validity` / `grade` | `tests/test_judge_validity.py` |
+| ⑧ 挑主依据、否决 low 与草案 | 脚本 | `tax_evidence.pick_primary`，理由写进 `_why` | `test_legislation_lane_items_cannot_become_primary` |
+| ⑧ 全不够格时收口转「依据不足时」 | 脚本提示，Agent 换形态 | `_print_answer` 打"未取到可作主依据的条文"，阈值 `PRIMARY_THRESHOLD` | 命令行读这一行是否出现 |
+| ⑥ 组织最终答案 | Agent | 骨架在 `references/output_templates.md` | 对照模板逐段，缺段即不合格 |
+| ⑥ 命令行排版 | 脚本 | `tax_answer._print_answer`；单源卡片走 `tax_formatter` | 网页那条另见 ⑫ |
+| 优惠叠加与择一核验 | Agent | 无——原文措辞判不了；要求写在 ⑦ 第 22 条 | 答案里【优惠交互与限制】段在不在 |
+| 优惠全集穷举 | 脚本 | `subskills/tax-preference/preference.py` 的 `sync` / `query` | `tests/test_preference.py` |
 
 ## 仍然是边界的几件事
 
