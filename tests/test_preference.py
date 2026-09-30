@@ -6,6 +6,8 @@ build_index 用一个临时合成 xlsx 打样本，不碰官网、不覆盖真�
 """
 
 import json
+import contextlib
+import io
 import sys
 import tempfile
 import unittest
@@ -16,6 +18,40 @@ PREF_DIR = ROOT / "subskills" / "tax-preference"
 sys.path.insert(0, str(PREF_DIR))
 
 import preference as P  # noqa: E402
+
+
+class _FakeResp:
+    def __init__(self, content: str):
+        self.content = content.encode("utf-8")
+
+
+class _FakeHttp:
+    """假 tax_http.get：按 url 返回预置 HTML，fail 里的 url 抛异常。记录调用顺序。"""
+
+    def __init__(self, pages, fail=()):
+        self.pages = pages
+        self.fail = set(fail)
+        self.calls = []
+
+    def get(self, url, **kw):
+        self.calls.append(url)
+        if url in self.fail:
+            raise RuntimeError("页面不可达")
+        return _FakeResp(self.pages.get(url, ""))
+
+
+def _use_fake_http(fake):
+    """把 fake 装进 sys.modules['tax_http']，返回还原用的原值（可能为 None）。"""
+    saved = sys.modules.get("tax_http")
+    sys.modules["tax_http"] = fake
+    return saved
+
+
+def _restore_http(saved):
+    if saved is not None:
+        sys.modules["tax_http"] = saved
+    else:
+        sys.modules.pop("tax_http", None)
 
 
 class TestExtract(unittest.TestCase):
@@ -103,6 +139,74 @@ class TestBuildAndQuery(unittest.TestCase):
         # 税种过滤
         out = P.query([], type_="增值税", status="有效", as_json=True)
         self.assertEqual(1, len(out))
+
+    def test_query_shows_cached_official_link(self):
+        import tax_cited as CITED
+        # 目录里的文号写全称"国家税务总局公告2011年第48号"，缓存键却是归一后的
+        # "2011年第48号"。_cited_url 必须先 doc_number_of 再查，否则用全称取不到。
+        self._write_index({"状态": "有效", "代码": "04010048", "文件标题": "某公告",
+                           "文号": "国家税务总局公告2011年第48号",
+                           "收入种类": "企业所得税", "大类": "", "小类": ""})
+        cache = Path(self._tmp.name) / "cited.json"
+        CITED.put_cited_link("2011年第48号",
+                             "https://www.chinatax.gov.cn/a48.html", cache)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            P.query([], code="04010048", cited_path=cache)
+        self.assertIn("官方链接：https://www.chinatax.gov.cn/a48.html", buf.getvalue())
+
+    def test_query_marks_uncached_link(self):
+        self._write_index({"状态": "有效", "代码": "04010048", "文件标题": "某公告",
+                           "文号": "国家税务总局公告2011年第48号",
+                           "收入种类": "企业所得税", "大类": "", "小类": ""})
+        cache = Path(self._tmp.name) / "empty.json"      # 空缓存
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            P.query([], code="04010048", cited_path=cache)
+        self.assertIn("官方链接：<未缓存", buf.getvalue())
+
+    def _write_index(self, rec):
+        P.INDEX_PATH.write_text(json.dumps(
+            {"版本日期": "2026-09-03", "记录": {rec["状态"]: [rec]}},
+            ensure_ascii=False), encoding="utf-8")
+
+
+class TestLocateFallback(unittest.TestCase):
+    """locate() 的多入口回退：栏目页失败退首页，全失败才抛错（#81）。"""
+
+    ANCHOR_HTML = ('<a href="/zhengce/减免税政策代码目录（2026年9月3日）.xlsx">'
+                   '减免税政策代码目录</a>')
+
+    def test_column_page_hit_no_second_call(self):
+        fake = _FakeHttp({P.COLUMN_PAGE: self.ANCHOR_HTML})
+        saved = _use_fake_http(fake)
+        try:
+            r = P.locate()
+        finally:
+            _restore_http(saved)
+        self.assertEqual([P.COLUMN_PAGE], fake.calls)
+        self.assertTrue(r["url"].endswith(".xlsx"))
+        self.assertIn("chinatax.gov.cn", r["url"])
+
+    def test_falls_back_to_homepage(self):
+        fake = _FakeHttp({P.HOME_PAGE: self.ANCHOR_HTML}, fail=[P.COLUMN_PAGE])
+        saved = _use_fake_http(fake)
+        try:
+            r = P.locate()
+        finally:
+            _restore_http(saved)
+        self.assertEqual([P.COLUMN_PAGE, P.HOME_PAGE], fake.calls)
+        self.assertTrue(r["url"].endswith(".xlsx"))
+
+    def test_raises_when_all_fail(self):
+        fake = _FakeHttp({}, fail=[P.COLUMN_PAGE, P.HOME_PAGE])
+        saved = _use_fake_http(fake)
+        try:
+            with self.assertRaises(RuntimeError):
+                P.locate()
+        finally:
+            _restore_http(saved)
+        self.assertEqual([P.COLUMN_PAGE, P.HOME_PAGE], fake.calls)
 
 
 if __name__ == "__main__":

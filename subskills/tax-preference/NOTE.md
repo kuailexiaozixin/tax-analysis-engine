@@ -68,10 +68,36 @@ RSS 全 403/404；增值税税率表/出口退税率库等未证实存在稳定 
 核对具体条款"；`全文有效/全文废止/已修改/尚未生效` 各自归位。用例 `tests/test_judge_validity.py`
 钉住，变异（删前置支/翻成 repealed）即转红。
 
+## 借鉴三技能落地的三处优化（2026-09-30）
+
+参照 `tax-preference-lookup`、`beauhan-tax-preferential-matcher` 两个 WorkBuddy 技能，
+取其可用之处、避其有害之处，落地三处（每处配离线用例 + 变异证伪）：
+
+1. **`locate()` 多入口回退**（借 update.py 的 `ENTRY_PAGES=[栏目页,首页]`）。原来只抓
+   栏目页一处，改版或临时不可达就整条同步断掉。改成按 `(COLUMN_PAGE, HOME_PAGE)` 顺序
+   定位，全失败才抛错、让同步器保留已有索引。用例 `TestLocateFallback`；把首页移出
+   `ENTRY_PAGES` 即转红。
+2. **`query()` 标注官方链接**（借 query.py 的 `fmt()` 链接回显）。目录命中后原来只给
+   文号，不给"原文在哪"。现在对每条带文号的记录，经 `tax_terms.doc_number_of` 归一后查
+   `tax_cited` 缓存，命中显示官方直链、未命中显示占位并提示 `seed-cache` 预热。用例
+   `test_query_shows_cached_official_link`——它**故意**用全称文号（`国家税务总局公告2011年
+   第48号`）而缓存键是归一后的 `2011年第48号`，一旦去掉归一（读写端分键）即取不到、转红。
+3. **`tax_gov_list.py missing` 待补工作清单**（借 cache_link.py 的 `--missing`）。列出清单
+   里有官方 url、文号却尚未进 `cited_links.json` 的条目，给一份可核对的补链待办；只有
+   官方域 url 才计入（非官方种进缓存也会被 `tax_cited` 拒收，列出来没意义）。用例
+   `TestMissingCited`；删掉 `is_official` 闸则非官方条目混入、转红。本机对 65 条行政法规
+   索引实测：`missing -n 5` 正常列出待补条目。
+
+**未采纳（避坑）**：`beauhan/preferential.py` 把税率写成硬编码常量（小微实际税负 5%、
+研发加计 100% 等）直接算"能省多少钱"。这与本引擎"不替企业做税收筹划、金额建议须可溯源"
+的规矩冲突，且税率一改常量就静默失真——不抄其定量省钱结论，至多借其"应享未享"的定性
+提示，且提示仍指向目录/清单源而非内置税率。
+
 ## 复用关系
 
 - `scripts/tax_sync.py`：两种同步外壳——`Synchronizer`（单资源直链 diff）与
   `ListSynchronizer`（分页列表集合 diff）；下载守卫 + 内容 SHA1 复用 + 构建回采纳版本号。
 - `scripts/tax_http.py`：唯一网络出口（受 `tests/test_http_layer.py` bare-requests 门禁）。
 - `scripts/tax_cited.py`：`is_official()` 官方域白名单 + 文号→链接缓存。
-- `scripts/tax_gov_list.py`：清单源；`seed_cited_cache()` 依赖 `tax_cited` + `tax_terms`。
+- `scripts/tax_gov_list.py`：清单源；`seed_cited_cache()` 预热、`missing_cited()` 出待补清单，
+  两者都依赖 `tax_cited` + `tax_terms`（共键：都走 `doc_number_of` 归一）。

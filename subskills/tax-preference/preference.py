@@ -40,6 +40,9 @@ if str(SCRIPTS_DIR) not in sys.path:
 INDEX_PATH = Path(HERE) / "preference_index.json"
 
 COLUMN_PAGE = "https://www.chinatax.gov.cn/chinatax/n810346/index.html"
+HOME_PAGE = "https://www.chinatax.gov.cn/"
+# 按顺序尝试的定位入口：栏目页是目录常驻落点，改版或临时不可达时回退首页。
+ENTRY_PAGES = (COLUMN_PAGE, HOME_PAGE)
 ANCHOR = "减免税政策代码目录"
 
 # ── 文号 / 标题抽取（与官方目录"政策名称"列的两段式写法对齐）──────────────
@@ -196,25 +199,49 @@ def build_index(xlsx_path: str) -> dict:
 
 
 # ── 定位目录直链（喂给 tax_sync 的 locate 回调）────────────────────────────
-def locate():
-    """抓「纳税服务」栏目页，定位《减免税政策代码目录》xlsx 直链。"""
-    import tax_http
-    ua = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"}
-    html = tax_http.get(COLUMN_PAGE, headers=ua, timeout=60, verify=True).content.decode(
-        "utf-8", "ignore")
+def _find_xlsx(html: str, base: str):
+    """在一页 HTML 里定位《减免税政策代码目录》xlsx 直链，取不到给 None。
+
+    先认「链接文字含目录名 + 落尾是 xlsx」，再退一步认「href 落在目录栏目节点
+    （c102373）或路径里带'减免税'」。base 用于把相对 href 拼成绝对直链。
+    """
     import urllib.parse
     for m in re.finditer(r"""<a[^>]+href=["']([^"']+)["'][^>]*>(.*?)</a>""",
                          html, re.S | re.I):
         href, inner = m.group(1), re.sub(r"<[^>]+>", "", m.group(2))
         if ANCHOR in inner.replace(" ", "").replace("\n", "") and \
                 href.lower().endswith((".xlsx", ".xls")):
-            return {"url": urllib.parse.urljoin(COLUMN_PAGE, href), "ext": ".xlsx"}
+            return urllib.parse.urljoin(base, href)
     for m in re.finditer(r"""href=["']([^"']+\.(?:xlsx|xls))["']""", html, re.I):
         href = m.group(1)
         if "c102373" in href or "减免税" in urllib.parse.unquote(href):
-            return {"url": urllib.parse.urljoin(COLUMN_PAGE, href), "ext": ".xlsx"}
-    raise RuntimeError("未能在纳税服务栏目页定位目录 xlsx 直链")
+            return urllib.parse.urljoin(base, href)
+    return None
+
+
+def locate():
+    """按「栏目页 → 首页」顺序定位《减免税政策代码目录》xlsx 直链。
+
+    栏目页是目录的常驻落点；抓取异常或那页改版时回退官网首页再找一次，
+    避免单点入口失效就整条同步断掉。全部入口都定位不到才抛错，让同步器
+    保留已有索引、不覆盖。
+    """
+    import tax_http
+    ua = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"}
+    errors = []
+    for page in ENTRY_PAGES:
+        try:
+            html = tax_http.get(page, headers=ua, timeout=60, verify=True).content.decode(
+                "utf-8", "ignore")
+        except Exception as e:
+            errors.append(f"{page}: {type(e).__name__} {e}")
+            continue
+        url = _find_xlsx(html, page)
+        if url:
+            return {"url": url, "ext": ".xlsx"}
+        errors.append(f"{page}: 页内未定位到目录 xlsx 直链")
+    raise RuntimeError("未能在栏目页/首页定位目录 xlsx 直链：" + " | ".join(errors))
 
 
 # ── 离线查询 ───────────────────────────────────────────────────────────────
@@ -246,7 +273,22 @@ def _score(rec, words):
     return total
 
 
-def query(words, code=None, type_=None, status=None, cat=None, limit=10, as_json=False):
+def _cited_url(doc_no, cited_path=None) -> str:
+    """按目录里的文号取已核实的官方原文链接；取不到给空串。
+
+    文号先经 tax_terms.doc_number_of 归一，与 tax_gov_list.seed_cited_cache
+    写入缓存时用的是同一把键——不归一就查不到（缓存里存的是"2026年第19号"，
+    目录里写的是"国家税务总局公告2026年第19号"）。纯本地读缓存，不联网。
+    """
+    if not doc_no:
+        return ""
+    import tax_terms as TT
+    import tax_cited as CITED
+    return CITED.get_cited_link(TT.doc_number_of(doc_no), cited_path)
+
+
+def query(words, code=None, type_=None, status=None, cat=None, limit=10,
+          as_json=False, cited_path=None):
     idx = _load_index()
     pool = []
     for st, rows in idx["记录"].items():
@@ -273,6 +315,9 @@ def query(words, code=None, type_=None, status=None, cat=None, limit=10, as_json
         print(f"[{r.get('状态')}] {r.get('代码')} | {r.get('文件标题')}")
         if r.get("文号"):
             print(f"    文号：{r['文号']}")
+            url = _cited_url(r["文号"], cited_path)
+            print(f"    官方链接：{url}" if url
+                  else "    官方链接：<未缓存，检索原文后可用 tax_gov_list.py seed-cache 预热>")
         print(f"    税种：{r.get('收入种类')} > {r.get('大类')} > {r.get('小类')}")
         if r.get("减免项目名称"):
             print(f"    减免项目：{r['减免项目名称']}")

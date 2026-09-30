@@ -219,6 +219,43 @@ class TestSeedCitedCache(unittest.TestCase):
         self.assertEqual(1, stat["写入"])          # 只补 19号那枚
 
 
+class TestMissingCited(unittest.TestCase):
+    """missing_cited 待补工作清单：有官方 url 却未进缓存的文号才列出（#3）。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.cache = Path(self._tmp.name) / "cited_links.json"
+        self.index = {"记录": [
+            {"发文字号": "国家税务总局公告2026年第19号", "title": "A",
+             "url": "http://www.chinatax.gov.cn/zcfgk/19.html"},
+            {"发文字号": "财税〔2023〕12号", "title": "B",
+             "url": "https://fgk.chinatax.gov.cn/12.html"},
+            {"发文字号": "财政部 税务总局公告2023年第5号", "title": "C",
+             "url": "https://www.chinatax.gov.cn/5.html"},
+            {"发文字号": "某文〔2020〕1号", "title": "D",
+             "url": "https://blog.example.com/fake"},         # 非官方域，不列
+            {"发文字号": "", "title": "E",
+             "url": "http://www.chinatax.gov.cn/nodoc"},      # 空文号，不列
+        ]}
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_lists_uncached_official_only(self):
+        import tax_cited as CITED
+        import tax_terms as TT
+        # 先把 19 号种进缓存，它就不该出现在待补清单里
+        CITED.put_cited_link(TT.doc_number_of("国家税务总局公告2026年第19号"),
+                             "http://www.chinatax.gov.cn/zcfgk/19.html", self.cache)
+        dns = {r["文号"] for r in GL.missing_cited(self.cache, index=self.index)}
+        self.assertEqual({"财税〔2023〕12号", "2023年第5号"}, dns)
+        self.assertNotIn("2026年第19号", dns)     # 已缓存 → 不列
+
+    def test_limit_caps_result(self):
+        rows = GL.missing_cited(self.cache, index=self.index, limit=1)
+        self.assertEqual(1, len(rows))
+
+
 if __name__ == "__main__":
     for _s in (sys.stdout, sys.stderr):
         try:

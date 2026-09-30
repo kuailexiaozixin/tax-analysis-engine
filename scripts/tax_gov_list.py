@@ -24,6 +24,8 @@ www.chinatax.gov.cn/getFileListByCodeId，按 channelId 分栏目、分页返回
     python tax_gov_list.py lookup 国家税务总局公告2026年第18号
     python tax_gov_list.py lookup 增值税 --aging 全文有效 -n 20
     python tax_gov_list.py stats
+    python tax_gov_list.py seed-cache --only-missing   # 用清单批量预热文号→官方链接缓存
+    python tax_gov_list.py missing                     # 列出有官方 url 却未进缓存的待补条目
 """
 
 import json
@@ -274,6 +276,31 @@ def seed_cited_cache(cache_path=None, index=None, *, only_missing=False) -> dict
     return stat
 
 
+# ── 待补官方链接的工作清单（与 seed_cited_cache 互补）───────────────────────
+def missing_cited(cache_path=None, index=None, limit=None) -> list:
+    """列出清单里有官方 url、但其文号尚未进 tax_cited 缓存的条目（待补工作清单）。
+
+    seed_cited_cache 是把 url 直接种进缓存；这里反过来查"哪些还没种"，给一份可核对
+    的清单。文号同样经 doc_number_of 归一后比对缓存键。只有官方域 url 才计入——非官方
+    url 即便列出来也种不进缓存（tax_cited 会拒收），没有核对价值。纯本地读，不联网。
+    """
+    import tax_cited as CITED
+    import tax_terms as TT
+    idx = index or _load_index()
+    out = []
+    for r in idx.get("记录", []):
+        dn = TT.doc_number_of((r.get("发文字号") or "").strip())
+        url = (r.get("url") or "").strip()
+        if not dn or not url or not CITED.is_official(url):
+            continue
+        if CITED.get_cited_link(dn, cache_path):
+            continue
+        out.append({"文号": dn, "标题": r.get("title", ""), "url": url})
+        if limit and len(out) >= limit:
+            break
+    return out
+
+
 # ── 注册进 tax_sync CLI（--source chinatax-list 走默认栏目）────────────────
 def _register():
     try:
@@ -309,6 +336,9 @@ def main(argv=None):
     sd = sub.add_parser("seed-cache", help="用清单索引批量预热文号→官方链接缓存（离线）")
     sd.add_argument("--only-missing", action="store_true", help="只补缓存里尚缺的文号")
     sd.add_argument("--json", action="store_true")
+    ms = sub.add_parser("missing", help="列出清单里有官方 url、文号却未进缓存的待补条目（离线）")
+    ms.add_argument("-n", "--limit", type=int, default=None)
+    ms.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
 
     if a.cmd == "sync":
@@ -326,6 +356,17 @@ def main(argv=None):
         else:
             print(f"扫描 {stat['扫描']} → 写入 {stat['写入']}"
                   f"（跳过非官方 {stat['跳过非官方']}，已有 {stat['已有']}）")
+        return 0
+    if a.cmd == "missing":
+        rows = missing_cited(limit=a.limit)
+        if a.json:
+            print(json.dumps({"待补": len(rows), "结果": rows},
+                             ensure_ascii=False, indent=1))
+        else:
+            print(f"待补官方链接 {len(rows)} 条（清单里有 url，缓存里缺文号）")
+            for r in rows:
+                print(f"  {r['文号']} | {r['标题']}")
+                print(f"    {r['url']}")
         return 0
     print(__doc__)
     return 0
