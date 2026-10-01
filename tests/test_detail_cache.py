@@ -2,9 +2,9 @@
 """detail 详情缓存的离线用例。
 
 覆盖四件事：
-  1. 迁移到共享实现后，键与升级前写下的老缓存仍然兼容（迁移零失效的前提）
+  1. 键算法稳定：键与既有缓存文件名一致，升级不失联（兼容性契约）
   2. 命中留痕：_from_cache / _cache_age_s，以及"恒开 + TTL 1 小时"的默认语义
-  3. 逃生门与作用域：--no-cache 不写盘；clear() 不再越界删别的命名空间
+  3. 逃生门与作用域：--no-cache 不写盘；clear() 只清本命名空间，不越界删别的命名空间
   4. 契约：缓存里只放元数据与目录骨架，**不出现条文正文**
 
 全程打桩网络出口（tax_detail._request），不联网、不碰用户真实缓存目录。
@@ -28,7 +28,7 @@ import tax_detail                                        # noqa: E402
 from tax_cache import CacheManager                       # noqa: E402
 
 LAW_ID = "ff808181927b083b0193fd65a0eb02cb"
-# _key("detail", LAW_ID) 的历史值＝升级前那份缓存的真实文件名。
+# _key("detail", LAW_ID) 的已知值＝现有缓存的真实文件名。
 # 键算法一旦改动，所有现存缓存都会静默失联，这条常量就是那道哨兵。
 KNOWN_KEY = "276dc607b1ab7197"
 
@@ -101,11 +101,11 @@ def _temp_manager(td):
 # ── 用例 ────────────────────────────────────────────────────────────────────
 
 def test_key_algorithm_unchanged():
-    """键算法必须与历史值一致——否则升级会让所有现存缓存失联。"""
+    """键算法必须与既有缓存文件名一致——否则现存缓存全部失联。"""
     cm = CacheManager(namespace="detail")
     got = cm._key("detail", LAW_ID)
     assert got == KNOWN_KEY, (
-        f"_key('detail', LAW_ID) 得到 {got!r}，历史值是 {KNOWN_KEY!r}。"
+        f"_key('detail', LAW_ID) 得到 {got!r}，既有值是 {KNOWN_KEY!r}。"
         f"改键算法等于把所有已写下的缓存变成孤儿，确认是有意为之再更新本常量。")
     # 共享实现与内联老实现的拼接方式必须一致：raw = 'detail|<id>'
     assert cm._key("detail", LAW_ID) == cm._key(*["detail", LAW_ID])
@@ -174,7 +174,7 @@ def test_cli_no_cache_writes_nothing():
 
 
 def test_clear_is_namespace_local():
-    """clear() 只清本命名空间——曾经的实现删的是目录里所有 *.json，属越界。"""
+    """clear() 只清本命名空间：不得越界删除其他命名空间的 *.json 文件。"""
     with tempfile.TemporaryDirectory() as td:
         d = Path(td)
         a = CacheManager(enabled=True, namespace="search")
@@ -274,7 +274,7 @@ def test_atomic_write_leaves_no_partial_json():
 
 
 TESTS = [
-    ("键算法与历史值一致", test_key_algorithm_unchanged),
+    ("键算法与既有值一致", test_key_algorithm_unchanged),
     ("恒开 + TTL 1 小时", test_default_enabled_and_ttl),
     ("首次现拉 / 二次命中留痕", test_first_fetch_then_cache_hit),
     ("过 TTL 重新抓", test_ttl_expiry_forces_refetch),

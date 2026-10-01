@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """⑩「源缺陷」六条的离线用例。不联网、不开浏览器。
 
-这六条原先写在 SKILL.md ⑩ 里，都是"程序解决不了、用的时候要留神"的人肉规则：
+这六条是人肉规则——程序解决不了、用的时候要留神：
 
   1. NPC 有限流，检索串行跑；评测时不要并行别的 NPC 检索
   2. 360 被封时地方口径与税屋这一层是空的，要在答案里明说、不要拿别的源顶替
@@ -238,7 +238,7 @@ class TestFrontendShowsSourceMetadata(unittest.TestCase):
         self.assertIn("'时效未标注'", self._badge())
 
     def test_rules_can_actually_fail(self):
-        """把同一套断言作用在改前的写法上，确认它拦得住。"""
+        """把同一套断言作用在违规写法上，确认它拦得住。"""
         for word in ("废止", "尚未生效", "修改", "有效"):
             self.assertNotIn(word, self.OLD_BADGE, word)
         self.assertNotIn("item.status||", self.OLD_BADGE)
@@ -301,9 +301,9 @@ class TestReliabilityVetoInGrading(unittest.TestCase):
 class TestFormatterShowsReliability(unittest.TestCase):
     """标记进了数据、却印不出来，等于没标记。
 
-    `tax_formatter.py --mode single` 原先不读响应级的 `_reliability`：把 NPC 全文
+    `tax_formatter.py --mode single` 必须读响应级的 `_reliability`：把 NPC 全文
     检索（恒带 medium）的结果灌进去，输出里一个字都不提"可能偏题"，读者只看到
-    "共 N 条法规"，会当成能引用的清单。多源归并那条路径印了，单源这条漏了。
+    "共 N 条法规"，会当成能引用的清单。多源归并那条路径印了，单源这条不许漏。
     """
 
     def _render(self, **extra):
@@ -437,10 +437,9 @@ class TestNpcGateCoversDownload(unittest.TestCase):
 class TestGradingReadsFgkMetadata(unittest.TestCase):
     """法规库清单带来的三个定级口子：解读件、已修改、标题里的书名号。
 
-    都是 2026-09-29 用《关于企业重组业务所得税处理有关征管问题的公告》
-    （2026年第13号）这道真题撞出来的：翻页基准修正后清单里同时出现了公告原文、
-    公告的解读、以及公告正文援引的配套文件，定级层一照面就把解读按被解读文件
-    的形态判成了规范性文件。
+    翻页基准修正后清单里同时出现了公告原文、公告的解读、以及公告正文援引的
+    配套文件（《关于企业重组业务所得税处理有关征管问题的公告》，2026年第13号），
+    定级层一照面就把解读按被解读文件的形态判成了规范性文件。
     """
 
     def test_interpretation_is_not_the_document_it_explains(self):
@@ -466,11 +465,11 @@ class TestGradingReadsFgkMetadata(unittest.TestCase):
 
 
 class TestNormativeIsABasisNotReference(unittest.TestCase):
-    """现行有效的总局公告要能进依据层；这道线原先卡在 60，把它挡在外面。
+    """现行有效的总局公告要能进依据层；这条线不能把它挡在外面。
 
     规范性文件是税务机关据以执法、纳税人据以办理的直接依据，写"只能参考，
-    不能当依据"会让答案绕开 L2 下挖真正取回的那层规则。改到 50 之后，
-    "依据"这个身份仍然由时效把关：时效一不明就自己掉回参考层。
+    不能当依据"会让答案绕开 L2 下挖真正取回的那层规则。"依据"这个身份
+    仍然由时效把关：时效一不明就自己掉回参考层。
     """
 
     ANN = "国家税务总局关于企业重组业务所得税处理有关征管问题的公告"
@@ -519,7 +518,7 @@ class TestNormativeIsABasisNotReference(unittest.TestCase):
     def test_pending_without_effective_date_cannot_be_a_basis(self):
         """判 --at 时"没查到施行日期"不等于"日期一定在过去"。
 
-        时点分支原先只要没取到 effective_date 就落回 effective，一份标着尚未
+        时点分支只要没取到 effective_date 就落回 effective，一份标着尚未
         生效的公告在被推荐用法（带 --at）下会变成 55 分主依据；只有日期确认
         早于观察时点才允许转正。
         """
@@ -542,9 +541,8 @@ class TestNormativeIsABasisNotReference(unittest.TestCase):
 class TestValidityCorroboratedByCitation(unittest.TestCase):
     """「财税文件」那一栏根本不录时效，援引证据补这一格。
 
-    2026-09-29 用《关于企业重组业务所得税处理有关征管问题的公告》（2026年第13号）
-    这道真题撞出来的：59 号、109 号是点名公告正文列明的制定依据，却是这道题的
-    上位规则；因为法规库这两条的时效录入项为空（财税〔2003〕16 号那个位置上是
+    59 号、109 号是点名公告正文列明的制定依据，却是这道题的上位规则；
+    因为法规库这两条的时效录入项为空（财税〔2003〕16 号那个位置上是
     字符串 "null"），它们全被压在依据线以下，答案只能说"只能参考"。详情页也只有
     成文日期，没有时效栏可回填。
     """
@@ -623,10 +621,9 @@ class TestValidityCorroboratedByCitation(unittest.TestCase):
 class TestRoundFailureIsNotSilent(unittest.TestCase):
     """源挂了不许被记成 found=0，否则主依据会静默降级而输出看不出来。
 
-    2026-09-29 用《税收征管法》修订草案那道题实测：NPC 那一轮静默失败时，
-    90 分的现行有效法律不见了，顶上【主依据】的是 70 分的《个体工商户建账
-    管理暂行办法》，而 `rounds_done` 只写着 found=0、`errors` 是空的——
-    读的人无法区分"库里没有"和"这一轮没取回来"。
+    NPC 那一轮静默失败时，90 分的现行有效法律不见了，顶上【主依据】的是
+    70 分的《个体工商户建账管理暂行办法》，而 `rounds_done` 只写着 found=0、
+    `errors` 是空的——读的人无法区分"库里没有"和"这一轮没取回来"。
     """
 
     Q = "增值税小规模纳税人月销售额10万，应纳增值税多少"
@@ -700,10 +697,9 @@ class TestRoundFailureIsNotSilent(unittest.TestCase):
     def test_draft_round_also_searches_shui5_and_wechat(self):
         """草案那一轮必须连带搜税屋与公众号：草案解读文章只活在这两个源里。
 
-        2026-09-29 实测缺陷：问《税收征管法》修订草案，立法取证轮只排了
-        sources=["legis"]（人大网站内），税屋与公众号一次都没查。手工验证
-        search_shui5("税收征管法 修订草案") 首条即国务院法制办征求意见稿通知、
-        含"修订重点逐条解读"多篇——等于把最有料的实务解读整层漏掉。
+        草案轮若只排 sources=["legis"]（人大网站内），税屋与公众号一次都不查，
+        会把最有料的实务解读整层漏掉：search_shui5("税收征管法 修订草案") 首条
+        即国务院法制办征求意见稿通知、含"修订重点逐条解读"多篇。
         """
         plan = ANS.build_plan("请解读《税收征管法》修订草案，已提请全国人大常委会审议")
         rnd = [r for r in plan["rounds"] if "legis" in r["sources"]]
@@ -780,9 +776,9 @@ class TestTupleReturnContract(unittest.TestCase):
     (结果, 拦截说明)，失败分支给了二元组，成功分支却 `return results` 交回裸列表，
     调用方按二元组解包。列表长度说了算：1 条与 3 条都抛 ValueError，被调用方的
     `except Exception` 吞成空结果；正好 2 条时两个名字各接住一个 dict，接口回 500
-    （实测报错原文 `'str' object has no attribute 'get'`）。
-    当时的路由用例把桩打在 `_search_web_broad` 上、桩形是二元组，与被测函数的真实
-    返回形态不一致，所以这条断路在测试里一直是绿的。
+    （报错原文 `'str' object has no attribute 'get'`）。
+    路由用例若把桩打在 `_search_web_broad` 上、桩形用二元组，就会与被测函数的真实
+    返回形态不一致，这条断路在测试里一直是绿的。
 
     这一条把它变成编译期就拦得住的形状：全项目扫一遍，一处不合规门禁就红。
     """

@@ -315,7 +315,7 @@ def test_shui5_search():
 
 
 def test_fgk_body():
-    """fgk 详情页能取正文——原先判断"JS 渲染取不到"是编码问题，已修。
+    """fgk 详情页能取正文——"JS 渲染取不到"不是正解，按 UTF-8 显式解码即可。
 
     该站不声明 charset，requests 按 HTTP 头的 ISO-8859-1 解码会把中文变乱码，
     看起来像正文不在 HTML 里。显式按 UTF-8 解码即可，正文在 div.zscont/arc_cont。
@@ -934,9 +934,9 @@ def row(key, arm, exact, pred, failed=False):
 def test_paired_excludes_call_failures():
     """净贡献交叉表只配两组都真拿到回答的题，并把配不上的题数报出来。
 
-    agg 已把调用失败剔出分母，但交叉表原先按"两组都有行"来配：一条失败的
+    agg 已把调用失败剔出分母，但交叉表不能按"两组都有行"来配：一条失败的
     blind 行算成"blind 答错"，于是每道 evidence 答对的题都被记成依据救回来的。
-    实测有一批 100 题的 blind 组 78 题调用失败，交叉表照样报 gain=70、harm=0，
+    100 题的 blind 组若 78 题调用失败，交叉表照样报 gain=70、harm=0，
     读起来像依据有决定性作用，真相是上游配额耗尽。所以失败行必须退出配对，
     配不上的题数报成 n_unpaired——不然覆盖缺口只会让配对数悄悄变小。
     """
@@ -944,7 +944,7 @@ def test_paired_excludes_call_failures():
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import eval_answer as X
     # 1 题两组都真答对；1 题 evidence 对、blind 真答错（合法的 gain）；
-    # 2 题 evidence 对、blind 调用失败（原先被误记为 gain）；1 题只有 blind 行
+    # 2 题 evidence 对、blind 调用失败（不得记为 gain）；1 题只有 blind 行
     rows = [
         row("q1", "evidence", True, "AB"), row("q1", "blind", True, "AB"),
         row("q2", "evidence", True, "AC"), row("q2", "blind", False, "A"),

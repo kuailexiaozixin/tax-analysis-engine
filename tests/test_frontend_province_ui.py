@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """前端"省份"控件的契约用例。不联网、不开浏览器。
 
-背景：省份下拉原先长在搜索栏的"高级筛选"里，但它对 `/api/search` 毫无作用——
-NPC 库存的是全国性法规，没有省级维度，服务端收到 `province` 只原样回填；前端却
-据此渲染出一个 `📍 上海` 标签。于是"选了省份"看起来像在过滤，结果其实一条没变，
-标签还会跟着骗人。
+背景：省份控件的位置有讲究——若长在搜索栏的"高级筛选"里，它对 `/api/search`
+毫无作用：NPC 库存的是全国性法规，没有省级维度，服务端收到 `province` 只原样
+回填；前端却据此渲染出一个 `📍 上海` 标签。于是"选了省份"看起来像在过滤，
+结果其实一条没变，标签还会跟着骗人。
 
-修法是把控件移到它真正生效的地方：法规弹窗的"官方解读"页，那里会按省份换到
+控件只在它真正生效的地方才有意义：法规弹窗的"官方解读"页，那里会按省份换到
 `{省}.chinatax.gov.cn` 去检索。下面这些用例把结论钉住，防止有人把控件搬回搜索栏、
 把假标签加回来，或者让前端的站点清单与后端悄悄漂移。
 
@@ -113,8 +113,8 @@ class TestProvinceControlLivesInInterpTab(unittest.TestCase):
 
     def test_province_list_is_defined_exactly_once(self):
         self.assertEqual(1, HTML.count("const PROVINCES="), "省份清单只该有一处")
-        # 旧实现把省份表存了两份（下拉一份、名字映射一份）；注释里提到它们没问题，
-        # 但代码里不许再出现，否则第二份表就回来了。
+        # 省份表不得存在第二份（下拉一份、名字映射一份）——代码里不许出现
+        # 复制的名字映射，否则第二份表就回来了。
         code = _code(HTML)
         self.assertNotIn("getProvinceName", code)
         self.assertNotIn("loadProvinces", code)

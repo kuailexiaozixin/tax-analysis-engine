@@ -1,9 +1,6 @@
 # 模板目录索引
 
-模板位于本技能目录下，两种运行态路径：
-
-- **路径基准**：本技能 `references/templates/`（相对技能目录）
-- **出厂态（EXE 运行）**：与 `SKILL.md` 同目录的 `references/templates/`，即 `os.path.dirname(本技能SKILL.md路径)/references/templates/`
+模板位于本技能 `references/templates/` 目录下（相对技能目录，即与 `SKILL.md` 同目录的 `references/templates/`）。
 
 > 模板按类型分四子目录：`01-regulations/`（制度）、`02-processes/`（流程）、`03-forms/`（表单与报表）、`04-practical-tools/`（实操工具）。
 

@@ -79,7 +79,7 @@ def test_title_similarity_orders_document_first():
     print("  [PASS] title_similarity：目标文件高于同域其他文件")
 
 
-# 2026-09-29 点名「税收征管法」时，总局法规库按 tax_terms.title_candidates 召回的
+# 点名「税收征管法」时，总局法规库按 tax_terms.title_candidates 召回的
 # 六条标题（按字符命中率降序）。六条里没有一条是《中华人民共和国税收征收管理法》：
 # 排第一那份只是在自己的标题里引用了这部法，字符命中率却是满分 1.0。
 FGK_SIX_FOR_ZGL = [
@@ -197,7 +197,7 @@ def test_alias_table_pins_accepted_and_rejected_words():
         got = (T.resolve_tax_type(text) or {}).get("type", "")
         assert got == want, f"{text[:24]} 归到 {got}，应为 {want}"
 
-    # 本体法不许挂错：船舶吨税原先挂在车船税法下，那是两部法律
+    # 本体法不许挂错：船舶吨税与车船税是两部法律，吨税不得挂在车船税法下
     assert (T.TAX_TYPE_KEYWORDS["船舶吨税"]["parent_law"]
             == "中华人民共和国船舶吨税法")
     assert "船舶吨税" not in T.TAX_TYPE_KEYWORDS["车船税"]["aliases"]
@@ -475,11 +475,11 @@ def test_content_decides_and_form_only_breaks_ties():
     """判型表钉两组：内容信号压过填空形态，零内容时形态才说话。
 
     这两组分起来才解释得通兜底率，合起来写就会漏掉一半：
-    - 填空题形态（留空、没有"下列"引子）原先无条件拿 +3，把带留空的算税题
+    - 填空题形态（留空、没有"下列"引子）不得无条件拿 +3：把带留空的算税题
       改写成"术语填空"，检索计划跟着从"计税依据与税率"换成"该术语的定义条款"；
       1001 题上这一步单独量出来是 137 题被形态抢走，而兜底数一题不变。
-    - 留空前是系动词"是/为"时，原先被当成列举动词剥夺填空分，题面又没有
-      "下列/以下"引子拿不到选项分，落进 confidence=0.30 的兜底档。
+    - 留空前是系动词"是/为"时，不得被当成列举动词剥夺填空分；题面又没有
+      "下列/以下"引子拿不到选项分，会落进 confidence=0.30 的兜底档。
     """
     cases = [
         # 带留空的算税题：题面给了完整数据，内容分必须赢过形态分
@@ -498,7 +498,7 @@ def test_content_decides_and_form_only_breaks_ties():
         ("转让定价方法包括（ ）。", "option_judge"),
         # "下列…应缴纳…的有（ ）"不能被算税抢走：选项形态 +2 顶得住
         ("下列各项中，应缴纳增值税的有（ ）。", "option_judge"),
-        # 不带"下列"引子的择一提问，原先整片落进兜底档
+        # 不带"下列"引子的择一提问，不得整片落进兜底档
         ("在考察税收执法监督的主旨时，下面哪一项论述是正确的（ ）。",
          "option_judge"),
         # 真实提问写法：疑问句式而不是考题形态

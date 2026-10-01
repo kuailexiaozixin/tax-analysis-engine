@@ -1,6 +1,6 @@
 # 研发费用加计扣除归集与四套口径协同
 
-> 本文件整合自「高企认定与研发费用加计扣除财税合规管理」的加计扣除归集规则与口径协同要点，与 `rd-mgmt-methodology.md`（费用归集方法论）配套使用。政策引用须同步核对 `book-rd-deduction-hightech/policy-updates-2024-2026.md` 时效性标注。
+> 加计扣除归集规则与口径协同要点，与 `rd-mgmt-methodology.md`（费用归集方法论）配套使用。政策引用须同步核对 `book-rd-deduction-hightech/policy-updates-2024-2026.md` 时效性标注。
 
 ## 一、加计扣除比例与适用
 

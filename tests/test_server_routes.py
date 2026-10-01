@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Flask 服务端路由用例。全部打桩上游，不联网。
 
-tax_server.py 是前端唯一的后端，9 个路由此前一条接口级测试都没有——
-只有联网 e2e 会间接碰到它，而 e2e 失败时说不清是"路由写错了"还是
+tax_server.py 是前端唯一的后端，9 个路由需要接口级测试钉住契约——
+只靠联网 e2e 间接碰到它时，e2e 失败说不清是"路由写错了"还是
 "对方限流了"。这一组把路由自己的契约钉住：
 
   - 状态码与错误码（400 / 404 / 500 / 503）
@@ -437,11 +437,11 @@ class TestWebRelatedRoute(_RouteCase):
         )
 
     def test_broad_web_survives_to_the_payload(self):
-        """取回几条就该回几条：3 条曾经整批丢掉，接口却照样报 200。
+        """取回几条就该回几条：整批丢掉不得发生，丢了也不能照样报 200。
 
-        上面几条用例把 `_search_web_broad` 打桩成 (结果, 说明) 二元组，而它当时
-        真实返回的是裸列表，调用方按二元组解包。桩形与被测函数自己的返回形态
-        不一致时，这一路在测试里永远绿——所以这一条从引擎入口打进去。
+        上面几条用例把 `_search_web_broad` 打桩成 (结果, 说明) 二元组；若它真实
+        返回的是裸列表，调用方按二元组解包就会错位。桩形与被测函数自己的返回
+        形态不一致时，这一路在测试里永远绿——所以这一条从引擎入口打进去。
         """
         p1, p2, p3 = self._web_only(3)
         with p1, p2, p3:
@@ -453,7 +453,7 @@ class TestWebRelatedRoute(_RouteCase):
     def test_two_web_results_are_not_a_server_error(self):
         """恰好 2 条是解包错位的显形处：两个名字各接住一个 dict，回 500。
 
-        曾经实测 `{"error": "'str' object has no attribute 'get'"}`。
+        错误形态：`{"error": "'str' object has no attribute 'get'"}`。
         """
         p1, p2, p3 = self._web_only(2)
         with p1, p2, p3:

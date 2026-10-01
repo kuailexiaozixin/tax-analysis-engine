@@ -112,7 +112,7 @@
 | **门禁** | `check_doc_cli.py` | 文档-代码契约，两类检查：**命令级**（同行里点了脚本名的命令行，逐参数比对代码的参数表）+ **片段级**（孤立的 `` `--a --b` `` 必须能落在某一个脚本上），挡住"文档写了、代码没有"与"参数挂错脚本" |
 | **测试** | `test_check_doc_cli.py` | 文档契约规则自检：构造样例钉住片段级检查既能报出坏片段、也不误报好片段。规则一旦改对就永远绿，没有自检就无法证明它还在工作 |
 | **门禁入口** | `run_all.py` | 统一测试入口：默认跑离线组，`--online` 加联网组；退出码可直接接 CI（根目录 `run_tests.bat` 双击即跑） |
-| **已废弃** | `archive/generate_manual.py` | 原先生成硬编码 Word 手册，因与 README/SKILL.md 重复且已漂移而停用；现在运行只打印废弃说明并退出码 1。2026-09-29 从 `scripts/` 移到 `archive/`，让 `scripts/` 只剩真在用的入口 |
+| **已废弃** | `docs/archive/generate_manual.py` | 已停用的硬编码 Word 手册生成脚本：内容与 README/SKILL.md 重复且已漂移；现置于 `docs/archive/`，运行只打印废弃说明并退出码 1，`scripts/` 只留在用的入口 |
 | **评测集** | `build_eval_set.py` | 归并公开财税题库为带出处与时效标记的统一评测集，按 SCOPE_EXCLUDE 剔除范围外题目 |
 | **评测（主指标）** | `eval_answer.py` | 答题正确率：模型在环逐题判分，evidence/blind 双组对照；计费预告 + yes 确认 + 额度耗尽停批 |
 | **评测（诊断）** | `eval_analysis.py` | 分析质量四指标 |
@@ -488,7 +488,7 @@ tax-analysis-engine/
 │   │   └── maodocs.py              # 纯标准库取文脚本（categories/search/fetch，无 WAF、无浏览器、不调模型）
 │   ├── rd-deduction-hitech/
 │   │   ├── SKILL.md                # 研发费用加计扣除与高企认定合规分析：高企评分自检/加计归集测算/四套口径协同/2026监管与稽查应对/内控模板与三套资料包
-│   │   ├── NOTE.md                 # 来源与整合说明（吸收 hitech-qualification-audit 与 tax-high-tech-deduction 领域内容，去掉系统依赖）
+│   │   ├── NOTE.md                 # 技能说明：目录结构、硬约束（无系统数据库、政策时效检查、模板路径基准）
 │   │   └── references/             # 评分规则·扣除指南·稽查应对·政策文件库(30)·加计书(10)·IPO书(22)·内控模板(34)
 │   ├── szse-lawrules/
 │       ├── SKILL.md                # 深交所法律规则目录检索（查询式：build 建索引后离线 query）
@@ -520,7 +520,7 @@ tax-analysis-engine/
 │   ├── eval_analysis.py            # 诊断：分析质量四指标
 │   ├── eval_retrieval.py           # 诊断：检索质量两级指标
 │   └── analysis_labels.json        # 分析题目标注集
-├── archive/                        # 立项研究资料（7 文档 + 1 数据，清单见 archive/README.md）+ 已废弃脚本 generate_manual.py
+├── docs/archive/                   # 立项研究资料（7 文档 + 1 数据，清单见 docs/archive/README.md）+ 已废弃脚本 generate_manual.py
 ├── requirements.txt
 ├── start_local.bat                 # 启动本地服务（端口 5080）
 └── run_tests.bat                   # 一键门禁（双击即跑，等价 python tests/run_all.py）

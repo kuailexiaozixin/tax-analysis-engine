@@ -45,9 +45,9 @@ ALLOWED_BARE = {
 # 视为"直接发请求"的 requests 属性名
 NETWORK_ATTRS = {"get", "post", "put", "delete", "patch", "head", "request", "Session"}
 
-# 必须经由统一层的模块（原先是各写一遍裸请求的那几个）
+# 必须经由统一层的模块
 #
-# tax_server.py 已不在名单里：它唯一的直接请求（下载 NPC 正文）改成了调用
+# tax_server.py 不在名单里：它唯一的直接请求（下载 NPC 正文）改成了调用
 # tax_detail.download_bytes，本模块不再自己发 HTTP，硬要它 import tax_http
 # 只会留下一个没人用的导入。覆盖不会因此变松——上面的白名单规则照样管它，
 # 下面的 TestNpcDownloadSinglePath 还额外钉住"下载只有一条路径且上了闸"。
@@ -106,7 +106,7 @@ class TestBareRequestsGuard(unittest.TestCase):
         self.assertEqual([], missing, "白名单里的文件已不存在：{}".format(missing))
 
     def test_consumers_actually_use_the_layer(self):
-        """原先各写一遍裸请求的模块，现在必须真的走统一层。"""
+        """名单里的模块必须真的走统一层，不得自己拼裸请求。"""
         for name in MUST_USE_HTTP_LAYER:
             text = (SCRIPTS_DIR / name).read_text(encoding="utf-8")
             self.assertIn("tax_http", text, "{} 没有引用统一请求层".format(name))
@@ -135,9 +135,9 @@ class TestBareRequestsGuard(unittest.TestCase):
 class TestNpcDownloadSinglePath(unittest.TestCase):
     """NPC 正文下载只能有一条路径，而且必须在串行闸内。
 
-    tax_server 与 tests/eval_answer 原先各自拼一遍下载 URL、再裸发请求，
-    两条路都不在闸里——"评测时不要并行打 NPC"这条规则只能靠人记。现在
-    取地址与取文件都收进 tax_detail.download_bytes 一个函数。
+    tax_server 与 tests/eval_answer 各自拼下载 URL、再裸发请求的两条路都不在
+    闸里——"评测时不要并行打 NPC"这条规则只能靠人记。取地址与取文件
+    都收进 tax_detail.download_bytes 一个函数。
     """
 
     def test_download_url_is_built_only_in_tax_detail(self):

@@ -95,8 +95,7 @@ def test_hint_specificity_order():
 def test_surface_forms_cover_the_whole_taxonomy():
     """表面词表必须覆盖 TAX_TYPE_KEYWORDS 的每个键。
 
-    这张表曾漏掉"增值税"，税务师题库里上百道增值税题全被判成"提不出专题"，
-    而 covered 反而更好看——漏键不会报错，只会把缺口藏起来。
+    漏键不会报错，只会把缺口藏起来——covered 反而更好看。
     """
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
     import tax_search as T
