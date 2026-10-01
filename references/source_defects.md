@@ -46,6 +46,8 @@
 | 全网那一趟取到的条数一变，整路结果静默消失 | `tax_server._search_web_broad` 一律返回 `(results, why)` 二元组；`test_broad_web_survives_to_the_payload` 在真实边界打桩，1/2/3 条各断一次；`test_source_defects.py::TestTupleReturnContract` 静态扫 `-> tuple[A, B]` 的函数不许 `return` 单值 | 调用方按 `items, why = ...` 解包，返回裸列表时成败取决于长度 |
 | 取数失败那句裸异常把界面与命令行的错误行撑满 | `tax_http.short_reason`：抹掉链接与参数串、折行压平、丢掉 urllib3 的 `(Caused by ...)` 嵌套、按空格边界截断，末尾留异常类名 | `str(e)` 给的是三百多字整条查询串，真正的原因反而读不出来（用例 `test_http_layer.py::TestShortReason`）|
 | 用户问的是草案，取回的同名现行版本被当成草案内容 | `tax_analyze.LEGISLATIVE_STAGES` 与 `legislative_stage` 在 ① 登记立法阶段，`legislative_note` 写成整句；命令行与界面"收录范围"共用这一句 | 判据只看题面用词；盯它的是 `test_legislative_stage_flags_draft_wording` 与 `test_legislative_note_survives_the_keyword_swap` |
+| 接口对「维度拼窄」与「该库根本没有」回的是同一个 0，用户看不出区别 | `tax_web_search.build_filters` 只放行五组有实测数字支撑的收窄维度，`search_chinatax` 在 `filters` 非空且 `total==0` 时写 `_filter_note`（把发出去的维度一并附在句尾），`tax_fgk._scan_list` 把它从第一页接住并顶替"翻完前 N 页"那句 | 2026-10-01 起这五组已接进命令行；盯它的是 `test_search5_zero_with_filters_says_it_might_be_too_narrow` 与 `test_filters_produce_too_narrow_instead_of_libraries_empty` |
+| 同一文件在库里有现行版与被废止版两份，正文里却读不到对方的链接 | `tax_fgk.fetch_associations` 走 `queryManuscriptAssociation`（POST 到 www 域、入参是 `article_id_from_url` 从 URL 末段取的 id），关联条目里相对链接一律补 `FGK_HOST` 前缀；`--assoc` 逐条挂载 | 静态详情页 HTML 里那四组是空的，`fetch_fgk_body` 又把标签全剥干净，所以 `<a href>` 一条都抠不出来；接口主机与链接主机相反这件事是本机实测出来的（POST www 200 / fgk 404，链接 fgk 200 / www 404），盯它的是 `test_fetch_associations_parses_measured_payload` 与 `test_article_id_from_url_forms` |
 
 ## 两个值得单独说明的细节
 
@@ -111,3 +113,13 @@ SKILL.md ② 末尾指向这一节。它回答两个问题：某一格动作**�
 - **会计口径缺口靠词表认，认不到就没有第二道防线**。`tax_analyze.ACCOUNTING_SIGNALS`
   只收多字短语，词表外的说法不会报出来；子技能也不在 ④ 的聚合与 ⑧ 的定级里，
   `docNo` 与条文版次不一致这件事程序判不了，只能按硬规矩引"准则名＋条款号"。
+- **总局检索的效力等级与时效两维不能同时发**。检索词「增值税」下，
+  `xxgkEffectLevel=财税文件` 单发 636 条、`xxgkAging=全文有效` 单发 252 条，两个一起发
+  是 0 条，把时效换成"已修改"同样是 0；而同一根时效轴配 `xxgkSonTaxPolicy=增值税`
+  正常给 159 条，说明不是 AND 语义坏了。0 的成因在分面里直接读得出来：加上
+  `xxgkEffectLevel=财税文件` 之后 `agingList` 只剩空串 468 条与字符串 `"null"` 192 条
+  两桶——「财税文件」这一栏根本不录时效，与本文件前半部分
+  `tax_answer.corroborate_validity_from_target` 那条是同一件事的两侧：那条管取回之后
+  怎么把状态补上，这条管发出去之前别把两维拼一起。程序拦不住谁去拼这条必然为零的
+  查询，而 0 条与"库里确实没有"在结果里长得一模一样。参数与分面的实测数字见
+  `commands.md`「search5 的可发参数与分面字段」。

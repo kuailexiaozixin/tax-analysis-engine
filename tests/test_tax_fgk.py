@@ -107,15 +107,18 @@ def _make_fake_search(pages_fgk_count: dict, total_hits: int = 100):
     返回 (fake_fn, calls)，calls 记录被请求过的页码，用来断言翻页行为。
     """
     calls: list = []
+    filters_seen: list = []
 
-    def fake(keyword, page=1, size=PAGE_SIZE):
+    def fake(keyword, page=1, size=PAGE_SIZE, filters=None):
         calls.append(page)
+        filters_seen.append(filters)
         n_fgk = pages_fgk_count.get(page, 0)
         items = []
         for i in range(PAGE_SIZE):
             items.append(_fgk_item(page, i) if i < n_fgk else _news_item(page, i))
         return {"total": total_hits, "results": items}
 
+    fake.filters_seen = filters_seen
     return fake, calls
 
 
@@ -461,6 +464,178 @@ def test_cli_cache_tag():
     return True
 
 
+# ── 收窄维度（filters） ──────────────────────────────────────────────────────
+
+def test_scan_list_threads_filters_to_every_page():
+    """_scan_list 收到的 filters 必须原样带到每一页的 search_chinatax 调用，并回显。
+
+    对应的坑：维度若只在第一页发、后面几页漏掉，取回的就是"首页过滤、后页未过滤"
+    的混合清单——这种错法条数照常、结构照常，只有逐页核对 filters 才能发现。
+    """
+    fake, calls = _make_fake_search({1: 2, 2: 2})
+    filters = {"docType": "财税", "docYear": "2018"}
+    with _patched(search_chinatax=fake):
+        r = tax_fgk._scan_list("测试词", size=4, max_pages=2, adaptive=False,
+                               filters=filters)
+    assert all(fs == filters for fs in fake.filters_seen), fake.filters_seen
+    assert r.get("filters") == filters, r
+    print(f"  [PASS] {len(fake.filters_seen)} 页请求都带上同一组 filters 并回显")
+
+
+def test_search_fgk_caches_each_filter_set_apart():
+    """不同 filters 不能共用同一份清单缓存，否则换个维度却读回旧结果。
+
+    None 与 {} 视作同一种"无过滤"，共用缓存；换了维度必须重取。
+    """
+    fake, _ = _make_fake_search({1: 10})
+    with _temp_cache():
+        with _patched(search_chinatax=fake):
+            r1 = search_fgk("测试词", size=2, max_pages=3, filters={"docYear": "2018"})
+            assert r1["_from_cache"] is False, "第一次带维度不该命中"
+            r2 = search_fgk("测试词", size=2, max_pages=3, filters={"docYear": "2018"})
+            assert r2["_from_cache"] is True, "同维度第二次应命中缓存"
+            r3 = search_fgk("测试词", size=2, max_pages=3, filters={"docYear": "2019"})
+            assert r3["_from_cache"] is False, "换年份是另一份缓存，不该复用 2018 的"
+            r4 = search_fgk("测试词", size=2, max_pages=3)   # 无维度
+            assert r4["_from_cache"] is False, "无维度与任何带维度都不同键"
+    print("  [PASS] 缓存按 filters 分键：同维度命中、换维度/无维度各自重取")
+
+
+def test_filters_produce_too_narrow_instead_of_libraries_empty():
+    """带维度翻不出法规库条目时，报「维度可能拼窄」而不是「库里没有这份文件」。"""
+    saved_scan = tax_fgk.search_chinatax
+    empty_with_note = {"total": 0, "results": [], "filters": {"docYear": "2018"},
+                       "_filter_note": "命中 0 条，分不清拼窄还是没有"}
+    try:
+        tax_fgk.search_chinatax = lambda keyword, page=1, size=10, filters=None: \
+            empty_with_note
+        r = tax_fgk._scan_list("测试词", size=5, max_pages=2, filters={"docYear": "2018"})
+    finally:
+        tax_fgk.search_chinatax = saved_scan
+    assert "分不清" in r.get("_filter_note", ""), r
+    assert "未筛出法规库条目" not in r.get("_error", ""), r["_error"]
+    print("  [PASS] 带维度 0 条透出「可能拼窄」，不写成翻完N页未筛出")
+
+
+# ── 关联文件查询（queryManuscriptAssociation） ──────────────────────────────
+
+# 2026-10-01 本机对 c5247431 实测的返回形态（results[0] 是文章本体，[1] 才是关联组）
+_ASSOC_PAYLOAD = {
+    "results": {"data": {"results": [
+        {"channel": [{"channelName": "政策法规"}]},
+        {"id": "5247431",
+         "policyDocument": [
+             {"title": "中华人民共和国<span>增值税</span>法",
+              "url": "/zcfgk/c100009/c5237365/content.html",
+              "aging": "全文有效", "effectlevel": "法律",
+              "writtentext": "中华人民共和国主席令第41号", "id": "5237365"}],
+         "policyInterpretation": [],
+         "policyGuidance": [],
+         "policyQA": [
+             {"title": "算力企业提供机架服务如何适用增值税政策？",
+              "url": "/zcfgk/c100024/c5252393/content.html",
+              "effectlevel": "财税文件",
+              "writtentext": "财政部 税务总局公告2026年第9号", "id": "5252393"}]},
+    ]}}
+}
+
+
+class _AssocResp:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+
+    def json(self):
+        return self._payload
+
+
+def test_article_id_from_url_forms():
+    """articleId 从 URL 末段抠：栏目 id 与文章 id 都是 c 段，取 content.html 前最后一个。"""
+    assert tax_fgk.article_id_from_url(
+        "http://fgk.chinatax.gov.cn/zcfgk/c102416/c5247431/content.html") == "5247431"
+    # 法律类页面 meta 可能没有 articleId，URL 这条路仍要通
+    assert tax_fgk.article_id_from_url(
+        "https://fgk.chinatax.gov.cn/zcfgk/c100009/c5237365/content.html") == "5237365"
+    assert tax_fgk.article_id_from_url("https://x.test/no/content/path") == ""
+    print("  [PASS] article_id_from_url 取末段 c 段，取不到时空串")
+
+
+def test_fetch_associations_parses_measured_payload():
+    """关联接口按实测形态解析：POST 走 www 域，相对链接拼 fgk 域，时效/文号归一。"""
+    seen = {}
+
+    def fake_request(method, url, *, headers, timeout, verify, data=None, **kw):
+        seen["method"] = method
+        seen["url"] = url
+        seen["data"] = data
+        return _AssocResp(_ASSOC_PAYLOAD)
+
+    with _patched(**{"tax_http.request": fake_request}):
+        a = tax_fgk.fetch_associations("5247431")
+
+    assert seen["method"] == "POST" and seen["url"].startswith(tax_fgk.CHINATAX_HOST), seen
+    assert seen["data"] == {"id": "5247431"}, seen
+    assert "_error" not in a, a
+    f = a["files"][0]
+    assert f["title"] == "中华人民共和国增值税法", f          # <span> 已剥
+    assert f["url"].startswith(tax_fgk.FGK_HOST), f          # 相对链接拼 fgk 域
+    assert f["document_number"] == "中华人民共和国主席令第41号", f
+    assert f["status"] == "全文有效", f
+    assert f["effect_level"] == "法律", f
+    q = a["qas"][0]
+    assert "status" not in q, q        # 该组没有 aging，不该凭空造状态
+    assert a["interpretations"] == [] and a["guidances"] == [], a
+    print("  [PASS] 关联解析：POST→www、链接拼fgk、标题剥标签、时效文号位阶归一")
+
+
+def test_fetch_associations_error_paths():
+    """三条失败路径都要落到 _error 且四组为空，绝不能静默返回空关联当成功。"""
+    # ① 没有 articleId：压根不发请求
+    seen = {"called": False}
+
+    def spy(method, url, **kw):
+        seen["called"] = True
+        return _AssocResp(_ASSOC_PAYLOAD)
+
+    with _patched(**{"tax_http.request": spy}):
+        a0 = tax_fgk.fetch_associations("")
+    assert a0.get("_error") and not seen["called"], (a0, seen)
+
+    def http404(method, url, **kw):
+        return _AssocResp({}, status_code=404)
+
+    with _patched(**{"tax_http.request": http404}):
+        a1 = tax_fgk.fetch_associations("5247431")
+    assert a1["_error"] == "HTTP 404", a1
+
+    def no_group(method, url, **kw):
+        return _AssocResp({"results": {"data": {"results": [{"channel": []}]}}})
+
+    with _patched(**{"tax_http.request": no_group}):
+        a2 = tax_fgk.fetch_associations("5247431")
+    assert "关联分组" in a2["_error"], a2
+    assert a2["files"] == [] and a2["qas"] == [], a2
+    print("  [PASS] 关联三条失败路径都报 _error 且四组为空")
+
+
+def test_attach_associations_runs_per_entry_without_body():
+    """attach_associations 给每条现拉一份关联，不依赖正文；就地写 entry['associations']。"""
+    calls = []
+
+    def fake_request(method, url, **kw):
+        calls.append(kw.get("data"))
+        return _AssocResp(_ASSOC_PAYLOAD)
+
+    entries = [{"url": "http://fgk.chinatax.gov.cn/zcfgk/c102416/c5247431/content.html"},
+               {"url": "http://fgk.chinatax.gov.cn/zcfgk/c102416/c5200001/content.html"}]
+    with _patched(**{"tax_http.request": fake_request}):
+        out = tax_fgk.attach_associations(entries)
+    assert out is entries, "应就地返回同一列表"
+    assert all("associations" in e for e in entries), entries
+    assert len(calls) == 2, f"每条一次请求，实际 {len(calls)}"
+    print("  [PASS] attach_associations 逐条现拉，无需正文")
+
+
 # ── 入口 ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -474,6 +649,13 @@ def main():
         ("缓存不含正文", test_cache_excludes_body),
         ("缓存命中标记与不污染", test_cache_hit_marker),
         ("CLI 缓存标记", test_cli_cache_tag),
+        ("filters 逐页下推", test_scan_list_threads_filters_to_every_page),
+        ("filters 分键缓存", test_search_fgk_caches_each_filter_set_apart),
+        ("带维度 0 条报拼窄", test_filters_produce_too_narrow_instead_of_libraries_empty),
+        ("articleId 从 URL 取", test_article_id_from_url_forms),
+        ("关联解析实测形态", test_fetch_associations_parses_measured_payload),
+        ("关联失败路径报错", test_fetch_associations_error_paths),
+        ("逐条现拉关联", test_attach_associations_runs_per_entry_without_body),
     ]
 
     all_passed = 0

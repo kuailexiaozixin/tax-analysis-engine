@@ -334,6 +334,79 @@ def test_aging_and_doc_number_come_from_the_source():
     print("  [PASS] 文号/时效/效力级别随清单落下来，定级据此判出现行有效")
 
 
+def test_search5_filters_reach_the_query_string_and_are_echoed():
+    """五组收窄维度必须真的进到发出去的 query 里。
+
+    对应的坑：这批参数原先只在文档里记着，一个都没接进命令行。接了之后这条用例
+    是唯一的把关——如果哪天 params.update 那行被删掉，发出的 query 里没有这些键，
+    本用例就会红，而不是静默地按未过滤去检索。
+    """
+    saved = W.requests.get
+    sent = []
+
+    def fake(url, params=None, **kw):
+        sent.append(dict(params))
+        return _Resp(_payload(1, [_ITEM]))
+
+    filters = W.build_filters(in_title=True, precise=True, tax_type="增值税",
+                              doc_type="财政部 税务总局公告", doc_year="2018",
+                              doc_no="119", cwrq_from="2024-01-01",
+                              cwrq_to="2024-12-31")
+    try:
+        W.requests.get = fake
+        W.search_chinatax("增值税", filters=filters)
+    finally:
+        W.requests.get = saved
+
+    q = sent[0]
+    # 每组各断一个键，键名要逐字对上接口（写错一个字母接口就静默忽略）
+    assert q["wordPlace"] == "1", q
+    assert q["participleRule"] == "5", q
+    assert q["xxgkSonTaxPolicy"] == "增值税", q
+    assert q["docType"] == "财政部税务总局公告", q        # 空格已被去掉
+    assert q["docYear"] == "2018", q
+    assert q["docNo"] == "119", q
+    assert q["cwrqStart"] == "2024-01-01 00:00:00", q     # 补成完整时间戳
+    assert q["cwrqEnd"] == "2024-12-31 23:59:59", q
+    print("  [PASS] 五组收窄维度逐键进入发出的 query，docType 去空格、cwrq 补时间戳")
+
+
+def test_search5_zero_with_filters_says_it_might_be_too_narrow():
+    """带维度却 0 条：不能读成「库里没有」，要报出可能是维度拼窄了并回显 filters。"""
+    saved = W.requests.get
+
+    def fake(url, params=None, **kw):
+        return _Resp(_payload(0, []))
+
+    try:
+        W.requests.get = fake
+        r = W.search_chinatax("增值税", filters={"docType": "财税", "docYear": "2018"})
+        bare = W.search_chinatax("增值税")   # 没带维度的 0 条不该出这句
+    finally:
+        W.requests.get = saved
+
+    assert r["total"] == 0 and "_error" not in r, r
+    assert "分不清" in r.get("_filter_note", ""), r
+    assert r["filters"] == {"docType": "财税", "docYear": "2018"}, r
+    assert "_filter_note" not in bare, "没带维度就不该报维度拼窄那句"
+    print("  [PASS] 带维度 0 条报「可能拼窄」并回显 filters；无维度的 0 条不误报")
+
+
+def test_build_filters_rejects_malformed_values():
+    """build_filters 对非法年/号/日期报错，非法值发出去接口只会静默返回基线命中。"""
+    for bad in ({"doc_year": "18"}, {"doc_no": "abc"}, {"cwrq_from": "2024-1-1"},
+                {"cwrq_to": "2024/01/01"}, {"cwrq_from": "2024-13-01"}):
+        try:
+            W.build_filters(**bad)
+            raise AssertionError(f"应报错却没报：{bad}")
+        except ValueError:
+            pass
+    # 合法的日历日期要放行（strptime 只拦格式与真实日期越界，不误杀 2024-01-01）
+    assert W.build_filters(cwrq_from="2024-01-01")["cwrqStart"] == "2024-01-01 00:00:00"
+    assert W.build_filters() == {}, "全不填就该是空 dict（等于不发维度）"
+    print("  [PASS] build_filters 拦住非法年份/编号/日期，空输入返回空 dict")
+
+
 def test_out_of_range_page_and_missing_list_are_told_apart():
     """命中数大于 0 却是空页：翻页越界与首屏没给清单，两种成因的文案不同。"""
     saved = W.requests.get
@@ -355,7 +428,7 @@ def test_out_of_range_page_and_missing_list_are_told_apart():
     # 清单层把这个空页原样透出，不许写成"翻完 N 页未筛出法规库条目"
     saved_scan = tax_fgk.search_chinatax
     try:
-        tax_fgk.search_chinatax = lambda keyword, page=1, size=10: first
+        tax_fgk.search_chinatax = lambda keyword, page=1, size=10, filters=None: first
         r = tax_fgk._scan_list("企业重组业务所得税处理", size=5, max_pages=3)
     finally:
         tax_fgk.search_chinatax = saved_scan
@@ -582,6 +655,9 @@ def main():
         test_sta_search_terms_present_and_renamed,
         test_search5_page_index_is_zero_based,
         test_aging_and_doc_number_come_from_the_source,
+        test_search5_filters_reach_the_query_string_and_are_echoed,
+        test_search5_zero_with_filters_says_it_might_be_too_narrow,
+        test_build_filters_rejects_malformed_values,
         test_out_of_range_page_and_missing_list_are_told_apart,
         test_accounting_gap_flags_questions_keyed_on_accounting,
         test_accounting_gap_does_not_flag_pure_tax_wording,

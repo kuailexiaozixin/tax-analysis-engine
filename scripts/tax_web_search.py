@@ -15,6 +15,7 @@ Usage:
 """
 
 import argparse
+import datetime
 import json
 import math
 import re
@@ -53,8 +54,82 @@ _DOC_NUM_RE = re.compile(
 )
 _TAG_RE = re.compile(r"<[^>]+>")
 
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_YEAR_RE = re.compile(r"^\d{4}$")
+_NO_RE = re.compile(r"^\d{1,5}$")
 
-def search_chinatax(keyword: str, page: int = 1, size: int = 10) -> dict:
+# 关联接口与相对正文链接各自的域名。POST queryManuscriptAssociation 只在 www
+# 域返回 200（实测同一 id 打 fgk 域回 404），而它返回的 /zcfgk/… 相对链接要拼
+# fgk 域才取得到正文（拼 www 回 404）。两个域名不能混用。
+CHINATAX_HOST = "https://www.chinatax.gov.cn"
+FGK_HOST = "https://fgk.chinatax.gov.cn"
+
+
+def build_filters(in_title: bool = False, precise: bool = False,
+                  tax_type: str = "", doc_type: str = "", doc_year: str = "",
+                  doc_no: str = "", cwrq_from: str = "", cwrq_to: str = "") -> dict:
+    """把可选的收窄维度拼成 search5 的过滤参数 dict。
+
+    只发填了的维度，返回的 dict 直接喂给 search_chinatax(filters=…)。各项取值
+    来自本机 2026-10-01 的单发实测（见 references/commands.md 的参数表），不要凭
+    记忆改。维度本身可发，但当前没有任何一条主线代码路径调用它——它是给人手动
+    收窄用的命令行开关。
+
+    Args:
+        in_title: 仅标题匹配（wordPlace=1，默认 0 是全文）
+        precise: 精准分词（participleRule=5，默认 0 是模糊）
+        tax_type: 税种分面，如「增值税」（xxgkSonTaxPolicy）
+        doc_type: 文种，如「财政部税务总局公告」（docType）
+        doc_year: 成文年份四位（docYear）
+        doc_no: 文号数字（docNo）
+        cwrq_from / cwrq_to: 成文日期区间，YYYY-MM-DD（cwrqStart/cwrqEnd）
+
+    doc_type 会去掉内部空白：接口对带空格的写法是宽松误命中（实测「财政部 税务总局
+    公告」配 docYear 归 0，去空格「财政部税务总局公告」才收窄到本尊），页面上印的
+    是带空格的，用户很可能直接抄过来，所以这里替他去空格。
+
+    Raises:
+        ValueError: 日期/年份/编号格式不合法
+    """
+    out: dict = {}
+    if in_title:
+        out["wordPlace"] = "1"
+    if precise:
+        out["participleRule"] = "5"
+    if tax_type:
+        out["xxgkSonTaxPolicy"] = tax_type.strip()
+    if doc_type:
+        out["docType"] = re.sub(r"\s+", "", doc_type)
+    if doc_year:
+        y = doc_year.strip()
+        if not _YEAR_RE.match(y):
+            raise ValueError(f"doc_year 要四位年份，收到 {doc_year!r}")
+        out["docYear"] = y
+    if doc_no:
+        n = doc_no.strip()
+        if not _NO_RE.match(n):
+            raise ValueError(f"doc_no 要 1-5 位数字，收到 {doc_no!r}")
+        out["docNo"] = n
+    for key, val in (("cwrqStart", cwrq_from), ("cwrqEnd", cwrq_to)):
+        if not val:
+            continue
+        d = val.strip()
+        # 先要形状是补零的 YYYY-MM-DD（strptime 会放过 2024-1-1 这种非补零写法，
+        # 而接口那侧要的是补零形态），再要它是个真实日期（挡住 2024-13-01 等越界）。
+        if not _DATE_RE.match(d):
+            raise ValueError(f"{key} 要 YYYY-MM-DD（补零）格式，收到 {val!r}")
+        try:
+            datetime.datetime.strptime(d, "%Y-%m-%d")
+        except ValueError:
+            raise ValueError(f"{key} 不是真实日期，收到 {val!r}")
+        # 接口这一维要完整时间戳，只给日期会命中量放大一个量级（实测 2024 全年
+        # 给日期是 2428 条，给带时间戳才是 207 条）。
+        out[key] = d + (" 00:00:00" if key == "cwrqStart" else " 23:59:59")
+    return out
+
+
+def search_chinatax(keyword: str, page: int = 1, size: int = 10,
+                    filters: Optional[dict] = None) -> dict:
     """
     检索国家税务总局站点。
 
@@ -62,6 +137,7 @@ def search_chinatax(keyword: str, page: int = 1, size: int = 10) -> dict:
         keyword: 检索词
         page: 页码，从 1 开始（对应接口的 pageNum 从 0 开始，见下）
         size: 返回条数上限
+        filters: build_filters 产出的收窄维度，直接并入请求参数；为空不发
 
     页码基准：search5 的 pageNum 从 0 起算。实测同一检索词「企业重组」
     发 pageNum=0 与 pageNum=1 各回 10 条、url 交集为空，且 pageNum=0 那组
@@ -72,9 +148,12 @@ def search_chinatax(keyword: str, page: int = 1, size: int = 10) -> dict:
     两边基准不同，不要照抄。
 
     Returns:
-        {"keyword","total","results","searched_at","source","_error"?,"_from_cache"}
+        {"keyword","total","results","searched_at","source","_error"?,"_from_cache",
+         "filters"?,"_filter_note"?}
         total 是检索命中的总条数（可能远大于 results 长度）；
         total 为 0 时若有 _error，说明是请求失败而非无结果。
+        传了 filters 时把 filters 原样回显；filters 收窄到 0 条且非请求失败时，
+        补一句 _filter_note 说明是维度拼窄了还是库里真没有。
     """
     params = {
         "siteCode": SITE_CODE,
@@ -88,20 +167,21 @@ def search_chinatax(keyword: str, page: int = 1, size: int = 10) -> dict:
         "column": "",
         "label": "",
     }
+    params.update(filters or {})
 
     try:
         r = requests.get(SEARCH_URL, params=params, headers=HEADERS,
                          timeout=TIMEOUT, verify=False)
     except requests.RequestException as e:
-        return _empty_result(keyword, tax_http.short_reason(e))
+        return _empty_result(keyword, tax_http.short_reason(e), filters)
 
     if r.status_code != 200:
-        return _empty_result(keyword, f"HTTP {r.status_code}")
+        return _empty_result(keyword, f"HTTP {r.status_code}", filters)
 
     try:
         payload = r.json()
     except ValueError as e:
-        return _empty_result(keyword, f"响应不是 JSON: {e}")
+        return _empty_result(keyword, f"响应不是 JSON: {e}", filters)
 
     block = payload.get("searchResultAll") or {}
     items = block.get("searchTotal") or []
@@ -153,6 +233,8 @@ def search_chinatax(keyword: str, page: int = 1, size: int = 10) -> dict:
         "source": "chinatax.gov.cn",
         "_from_cache": False,
     }
+    if filters:
+        out["filters"] = filters
     # 命中数大于 0 但这一页没有条目。两种成因要分开写，处置完全不同：
     # 页号越过末页（每页固定 10 条，命中 3 条时只有第 1 页）是正常收尾；
     # 第 1 页就空则是接口这一轮没给清单，不能读成"库里没有"。
@@ -168,6 +250,14 @@ def search_chinatax(keyword: str, page: int = 1, size: int = 10) -> dict:
                 f"接口报告命中 {total} 条，第 {page} 页却没给条目清单"
                 f"（该页在末页之内，不是翻页越界）；换一个检索词再取一轮"
                 f"才有结论，不能据此说库里没有")
+    # 传了收窄维度却 0 条，且不是请求失败。接口对拼窄与库里真没有给的是同一个
+    # total=0，程序分不出，只能把这句话递出去，让上层决定放宽哪一维——别把
+    # "这一维拼过头"当成"库里没有这份文件"。实测效力等级 × 时效两维同时发必然 0。
+    elif filters and total == 0 and not out.get("_error"):
+        out["_filter_note"] = (
+            f"在检索词「{keyword}」上叠加了 {len(filters)} 个收窄维度后命中 0 条；"
+            f"接口对「维度拼窄」与「该库没有」回的是同一个 0，分不清。放宽一维重取"
+            f"才有结论（发出去的是 {filters}）")
     return out
 
 
@@ -192,8 +282,8 @@ def _first_match(pattern: re.Pattern, text: str) -> str:
     return m.group(1) if m else ""
 
 
-def _empty_result(keyword: str, error: str = "") -> dict:
-    return {
+def _empty_result(keyword: str, error: str = "", filters: dict = None) -> dict:
+    out = {
         "keyword": keyword,
         "total": 0,
         "results": [],
@@ -202,9 +292,42 @@ def _empty_result(keyword: str, error: str = "") -> dict:
         "_error": error,
         "_from_cache": False,
     }
+    if filters:
+        out["filters"] = filters
+    return out
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
+def add_filter_args(parser):
+    """给命令行挂上五个收窄维度（tax_web_search 与 tax_fgk 共用一套）。
+
+    取值全部转成 build_filters 的关键字参数；维度本身是可选的，不填就不发。
+    """
+    g = parser.add_argument_group("收窄维度（都可选，见 references/commands.md 的参数表）")
+    g.add_argument("--in-title", action="store_true",
+                   help="仅标题匹配（wordPlace=1，默认全文）")
+    g.add_argument("--precise", action="store_true",
+                   help="精准分词（participleRule=5，默认模糊）")
+    g.add_argument("--tax-type", default="",
+                   help="税种分面，如「增值税」（xxgkSonTaxPolicy）")
+    g.add_argument("--doc-type", default="",
+                   help="文种，如「财政部税务总局公告」（docType，内部空格会被去掉）")
+    g.add_argument("--doc-year", default="", help="成文年份四位（docYear）")
+    g.add_argument("--doc-no", default="", help="文号数字（docNo）")
+    g.add_argument("--cwrq-from", default="", help="成文日期起 YYYY-MM-DD（cwrqStart）")
+    g.add_argument("--cwrq-to", default="", help="成文日期止 YYYY-MM-DD（cwrqEnd）")
+    return parser
+
+
+def filters_from_args(args) -> dict:
+    """把 add_filter_args 挂上的参数收成 build_filters 的调用。"""
+    return build_filters(
+        in_title=args.in_title, precise=args.precise,
+        tax_type=args.tax_type, doc_type=args.doc_type,
+        doc_year=args.doc_year, doc_no=args.doc_no,
+        cwrq_from=args.cwrq_from, cwrq_to=args.cwrq_to)
+
+
 def main():
     p = argparse.ArgumentParser(
         description="检索国家税务总局站点（总局 + 法规库）"
@@ -212,17 +335,26 @@ def main():
     p.add_argument("keyword", help="检索词")
     p.add_argument("--size", type=int, default=10)
     p.add_argument("--json", action="store_true", help="输出 JSON")
+    add_filter_args(p)
 
     args = p.parse_args()
-    result = search_chinatax(args.keyword, size=args.size)
+    try:
+        filters = filters_from_args(args)
+    except ValueError as e:
+        p.error(str(e))
+    result = search_chinatax(args.keyword, size=args.size, filters=filters)
 
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
 
     print(f"🔍 chinatax.gov.cn 搜索 \"{args.keyword}\" | {result['searched_at']}")
+    if result.get("filters"):
+        print(f"   收窄维度: {result['filters']}")
     if result.get("_error"):
         print(f"⚠️  {result['_error']}")
+    if result.get("_filter_note"):
+        print(f"ℹ️  {result['_filter_note']}")
     print(f"命中 {result['total']} 条，取回 {len(result['results'])} 条\n")
 
     for item in result.get("results", []):

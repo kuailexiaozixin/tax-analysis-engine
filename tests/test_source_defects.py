@@ -64,7 +64,7 @@ class TestFgkDeepPageMarker(unittest.TestCase):
 
     def _scan(self, pages):
         """pages: {页码: 该页法规库条目数}"""
-        def fake_search(keyword, page=1, size=10):
+        def fake_search(keyword, page=1, size=10, filters=None):
             n = pages.get(page, 0)
             return {"total": 99, "results": _fgk_hit(n, "p%d" % page)}
 

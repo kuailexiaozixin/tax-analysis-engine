@@ -47,6 +47,7 @@ import re
 import sys
 import time
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 import requests
 
@@ -55,7 +56,20 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 import tax_http
 from tax_cache import CacheManager
-from tax_web_search import FGK_MARKER, search_chinatax
+from tax_web_search import (FGK_MARKER, CHINATAX_HOST, FGK_HOST,
+                            add_filter_args, aging_of, filters_from_args,
+                            search_chinatax)
+
+
+def filters_token(filters: dict) -> str:
+    """把收窄维度收成一段稳定的缓存键后缀（None 与空 dict 都返回空串）。
+
+    用分号分隔、按字典序，避开 CacheManager._key 里 join 用的竖线，也保证维度
+    的写入顺序不影响键值。
+    """
+    if not filters:
+        return ""
+    return "flt:" + ";".join(f"{k}={filters[k]}" for k in sorted(filters))
 
 # 总局检索接口把 pageSize 卡在 10 条，传更大的值无效，只能按页翻。
 PAGE_SIZE = 10
@@ -173,13 +187,130 @@ def fetch_fgk_body(url: str) -> dict:
     return out
 
 
+# 详情页 URL 末段就是文章 id（/zcfgk/c{栏目}/c{文章id}/content.html），法律类
+# 页面可能没有 articleId meta，所以从 URL 抠比只读 meta 稳。
+_ARTICLE_ID_RE = re.compile(r"/c(\d+)/content\.html", re.I)
+
+# 关联接口的四个分组：接口键名 -> 输出字段名
+_ASSOC_GROUPS = {
+    "policyDocument": "files",               # 关联文件（含同一政策的现行/废止版）
+    "policyInterpretation": "interpretations",  # 关联解读
+    "policyGuidance": "guidances",           # 政策指引
+    "policyQA": "qas",                       # 政策问答
+}
+
+
+def article_id_from_url(url: str) -> str:
+    """从详情页 URL 取文章 id（queryManuscriptAssociation 的入参）。
+
+    实测 meta 的 articleId 与 URL 末段一致（c5247431 → 5247431），法律类页面
+    meta 可能缺，URL 末段总在，所以以 URL 为准、取 content.html 前最后一个 c 段。
+    """
+    ids = _ARTICLE_ID_RE.findall(unquote(urlparse(url or "").path))
+    return ids[-1] if ids else ""
+
+
+def _assoc_title(raw: str) -> str:
+    """关联条目标题：去高亮标签、解实体、压空白。"""
+    return re.sub(r"\s+", " ", htmllib.unescape(_TAG_RE.sub("", raw or ""))).strip()
+
+
+def _assoc_row(it: dict) -> dict:
+    """把关联接口的一条原始条目归一成 {title,url,document_number,status,effect_level}。"""
+    u = (it.get("url") or "").strip()
+    if u.startswith("/"):
+        # 接口给的是相对路径，必须拼 fgk 域才取到正文（拼 www 回 404，实测）。
+        u = FGK_HOST + u
+    row = {
+        "title": _assoc_title(it.get("title")),
+        "url": u,
+        "document_number": (it.get("writtentext") or "").strip(),
+        "effect_level": (it.get("effectlevel") or "").strip(),
+    }
+    aging = aging_of(it.get("aging"))
+    if aging:
+        row["status"] = aging
+    return row
+
+
+def fetch_associations(article_id: str) -> dict:
+    """查一份文件的关联文件/解读/指引/问答。
+
+    走 POST queryManuscriptAssociation（表单参数 id=articleId）。静态详情页
+    HTML 里这几组是空的（实测 glwjlist/gljdlist 为空、正文 <a href> 只有零星
+    线索），必须调接口——这正是主线④"同一文件的现行版/被废止版"的线索来源：
+    返回的 policyDocument 每条带 status（时效），据此能看出关联的是全文有效
+    还是已废止的旧版。
+
+    域名两处不能混：POST 只在 www 域返回 200（同一 id 打 fgk 域回 404），而它
+    返回的 /zcfgk/… 相对链接要拼 fgk 域才取到正文（拼 www 回 404，实测）。
+
+    Args:
+        article_id: 详情页文章 id，用 article_id_from_url 从 URL 取
+
+    Returns:
+        {"article_id","files":[…],"interpretations":[…],"guidances":[…],
+         "qas":[…],"_error"?}；_error 非空时四组均为空列表。
+    """
+    out = {"article_id": article_id, "files": [], "interpretations": [],
+           "guidances": [], "qas": []}
+    if not article_id:
+        out["_error"] = "URL 里取不到 articleId，无法查关联"
+        return out
+    try:
+        r = tax_http.request("POST", f"{CHINATAX_HOST}/queryManuscriptAssociation",
+                             headers=HEADERS, timeout=25, verify=False,
+                             data={"id": article_id})
+    except requests.RequestException as e:
+        out["_error"] = f"请求失败：{tax_http.short_reason(e)}"
+        return out
+    if r.status_code != 200:
+        out["_error"] = f"HTTP {r.status_code}"
+        return out
+    try:
+        payload = r.json()
+    except ValueError as e:
+        out["_error"] = f"响应不是 JSON: {e}"
+        return out
+
+    results = ((payload.get("results") or {}).get("data") or {}).get("results") or []
+    # results[0] 是文章本体，关联分组在含 policyDocument 键的那一段（实测是 [1]）
+    block = next((g for g in results
+                  if isinstance(g, dict) and "policyDocument" in g), None)
+    if block is None:
+        out["_error"] = "响应里没有关联分组（接口结构变了或该文件无关联）"
+        return out
+    for key, field in _ASSOC_GROUPS.items():
+        out[field] = [_assoc_row(it) for it in (block.get(key) or [])
+                      if isinstance(it, dict)]
+    return out
+
+
+def attach_associations(entries: list) -> list:
+    """给每条清单条目现拉一份关联（每条多一次 POST，不缓存）。
+
+    关联里的政策文件也带时效，缓存久了可能把"当时废止、现已改回来"的旧关系
+    当成现状，所以与正文一样每次都现拉。就地写 entry["associations"] 并返回
+    同一个列表。
+    """
+    for entry in entries:
+        aid = article_id_from_url(entry.get("url", ""))
+        entry["associations"] = fetch_associations(aid)
+    return entries
+
+
 def _scan_list(keyword: str, size: int, max_pages: int,
-               adaptive: bool = True) -> dict:
+               adaptive: bool = True, filters: dict = None) -> dict:
     """只翻检索清单，不取正文（这一层才可缓存）。
 
     adaptive=True 时按需收尾：连续 IDLE_PAGE_LIMIT 页没捞到新的法规库条目
     就停。总局站里法规库条目占比低且集中在靠前页，后面的页多是新闻，继续
     翻只是白烧请求。要严格翻满就用 adaptive=False（CLI 显式给 --pages 时）。
+
+    filters 是 tax_web_search.build_filters 产出的收窄维度，逐页原样带进
+    search_chinatax。把 column=政策法规 / xxgkSonTaxPolicy=<税种> 下推到检索
+    侧，才是把翻页窗口对准法规文件的做法（否则自适应那 200 条窗口够不到散在
+    深处的法规）。
     """
     results = []
     seen = set()
@@ -188,14 +319,17 @@ def _scan_list(keyword: str, size: int, max_pages: int,
     stopped_early = False   # 是否因自适应而提前收尾
     first_error = ""
     empty_reason = ""
+    filter_note = ""
     total_hits = 0
     for page in range(1, max(1, max_pages) + 1):
-        found = search_chinatax(keyword, page=page, size=PAGE_SIZE)
+        found = search_chinatax(keyword, page=page, size=PAGE_SIZE,
+                                filters=filters)
         if not first_error and found.get("_error"):
             first_error = found["_error"]
         if page == 1:
             total_hits = found.get("total", 0)
             empty_reason = found.get("_empty_reason", "")
+            filter_note = found.get("_filter_note", "")
         page_items = found.get("results", [])
         pages += 1
         if not page_items:
@@ -255,6 +389,8 @@ def _scan_list(keyword: str, size: int, max_pages: int,
         "source": "税务总局法规库 (fgk.chinatax.gov.cn)",
         "_from_cache": False,
     }
+    if filters:
+        result["filters"] = filters
     # 检索本身失败要透出错误，不要和"库里没有"混为一谈
     if first_error:
         result["_error"] = first_error
@@ -264,21 +400,28 @@ def _scan_list(keyword: str, size: int, max_pages: int,
         result["_error"] = empty_reason
         result["_empty_reason"] = empty_reason
     elif not results:
-        tail = (f"（连续 {idle_pages} 页无新法规库条目，已自适应收尾）"
-                if stopped_early else "")
-        result["_error"] = (f"翻完前 {pages} 页总局检索结果（共 {total_hits} 条命中）"
-                            f"未筛出法规库条目{tail}")
+        # 带了收窄维度却一条法规库条目都没有：优先把"维度拼窄"那句递出去，
+        # 它比"翻完 N 页未筛出"更接近真相——0 可能是维度拼的，不是库里没有。
+        if filter_note:
+            result["_error"] = filter_note
+            result["_filter_note"] = filter_note
+        else:
+            tail = (f"（连续 {idle_pages} 页无新法规库条目，已自适应收尾）"
+                    if stopped_early else "")
+            result["_error"] = (f"翻完前 {pages} 页总局检索结果（共 {total_hits} 条命中）"
+                                f"未筛出法规库条目{tail}")
     return result
 
 
 def search_fgk(keyword: str, size: int = 10, with_body: bool = False,
-               max_pages: int = MAX_PAGES, adaptive: bool = True) -> dict:
+               max_pages: int = MAX_PAGES, adaptive: bool = True,
+               filters: dict = None) -> dict:
     """
     在税务总局法规库检索法规文件清单。
 
     缓存策略：**只缓存清单，正文永不缓存**。清单按
-    (keyword, size, max_pages, adaptive) 缓存 CACHE_TTL 秒；命中缓存时直接
-    返回清单，正文（with_body）仍逐条现拉。
+    (keyword, size, max_pages, adaptive, filters) 缓存 CACHE_TTL 秒；命中缓存时
+    直接返回清单，正文（with_body）仍逐条现拉。
 
     Args:
         keyword: 检索词
@@ -287,16 +430,23 @@ def search_fgk(keyword: str, size: int = 10, with_body: bool = False,
         max_pages: 最多翻几页总局检索结果（每页固定 10 条）
         adaptive: 连续 IDLE_PAGE_LIMIT 页无新法规库条目即收尾（默认开）；
                   要严格翻满 max_pages 就传 False
+        filters: build_filters 产出的收窄维度；并入缓存键，不同维度不会共用缓存
 
     Returns:
         {"keyword","total","total_hits","pages_scanned","stopped_early","results",
-         "searched_at","source","_from_cache","_cache_age_s"?,"_error"?}
+         "searched_at","source","_from_cache","_cache_age_s"?,"_error"?,"filters"?}
         每项含 title/document_number/date/publisher/url；with_body 时另有
         body（正文）。正文是视频/图片的条目另带 media_only=True——表示"本来
         就没有文字"，与取失败的 body_error 区分开，上层据此判断无需重试。
     """
-    cache_key = _cache._key("fgk", LIST_KEY_REV, keyword, str(size),
-                            str(max_pages), str(adaptive))
+    # 不带维度时不追加键段，旧基准（LIST_KEY_REV）写下的无过滤清单继续命中，
+    # 不必整体重抓；带维度时把排序后的键值拼进去，None 与 {} 视作同一种"无过滤"。
+    key_parts = ["fgk", LIST_KEY_REV, keyword, str(size), str(max_pages),
+                 str(adaptive)]
+    token = filters_token(filters)
+    if token:
+        key_parts.append(token)
+    cache_key = _cache._key(*key_parts)
     result = _cache.get(cache_key, max_age=CACHE_TTL)
     if result is not None:
         # 深拷贝，避免下面写 body 时污染缓存文件
@@ -306,7 +456,7 @@ def search_fgk(keyword: str, size: int = 10, with_body: bool = False,
         if cached_age is not None:
             result["_cache_age_s"] = round(cached_age, 1)
     else:
-        result = _scan_list(keyword, size, max_pages, adaptive)
+        result = _scan_list(keyword, size, max_pages, adaptive, filters)
         _cache.set(cache_key, result)  # 缓存的是"无正文"的清单
 
     # 正文永远现拉，绝不缓存（避免引用过期条文）
@@ -344,6 +494,10 @@ def main():
     p.add_argument("--no-cache", action="store_true", help="禁用缓存（默认）")
     p.add_argument("--cache-stats", action="store_true", help="查看缓存统计")
     p.add_argument("--cache-clear", action="store_true", help="清空缓存")
+    p.add_argument("--assoc", action="store_true",
+                   help="逐条查关联文件/关联解读（每条多一次请求，走 "
+                        "queryManuscriptAssociation；不依赖 --body）")
+    add_filter_args(p)
     args = p.parse_args()
 
     global _cache
@@ -364,8 +518,15 @@ def main():
     max_pages = args.pages if args.pages is not None else MAX_PAGES
     adaptive = args.pages is None      # 显式给了页数就别自作主张提前收尾
 
+    try:
+        filters = filters_from_args(args)
+    except ValueError as e:
+        p.error(str(e))
+
     result = search_fgk(args.keyword, size=args.size, with_body=args.body,
-                        max_pages=max_pages, adaptive=adaptive)
+                        max_pages=max_pages, adaptive=adaptive, filters=filters)
+    if args.assoc:
+        attach_associations(result["results"])
 
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -399,6 +560,26 @@ def main():
             print("     🎬 该条正文是视频/图片，没有文字可引（不是取失败，重试也无用）")
         elif item.get("body_error"):
             print(f"     ⚠️ {item['body_error']}")
+        assoc = item.get("associations")
+        if assoc:
+            if assoc.get("_error"):
+                print(f"     关联: ⚠️ {assoc['_error']}")
+            else:
+                labels = {"files": "关联文件", "interpretations": "关联解读",
+                          "guidances": "政策指引", "qas": "政策问答"}
+                for field, label in labels.items():
+                    for row in assoc.get(field, []):
+                        bits = []
+                        if row.get("document_number"):
+                            bits.append(row["document_number"])
+                        if row.get("status"):
+                            bits.append(row["status"])
+                        if row.get("effect_level"):
+                            bits.append(row["effect_level"])
+                        tail = f"（{' / '.join(bits)}）" if bits else ""
+                        print(f"     {label}: {row['title']}{tail}")
+                        if row.get("url"):
+                            print(f"       {row['url']}")
         print()
 
 

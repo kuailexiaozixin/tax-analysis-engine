@@ -122,6 +122,129 @@ NPC 法规库那个接口（`tax_search.py`）经实测是**从 1 起算**，两
 （CLI 里显示成"该条正文是视频/图片"）——**这不是取失败，重试也没用**，
 别去引它的条文；只有真正取失败才会进 `body_error`。
 
+### search5 的可发参数与分面字段
+
+下面这批数字是 2026-10-01 在本机逐个单发参数实测的，检索词固定「增值税」。整表跑完
+后又逐行重发一次比对：21 行取值复现，唯一例外是 `likeDoc=0` 那行，先后两次分别是
+16199 与 16919，这一档不能当常量引用（16919 恰好等于下表 `columnList` 各桶之和，两次
+之差多半出在索引状态，本机没有更细的证据）。
+
+**已接进命令行的只有五组**（2026-10-01 起）：`wordPlace`、`participleRule`、
+`xxgkSonTaxPolicy`、`docType`+`docYear`+`docNo`、`cwrqStart`+`cwrqEnd`，都由
+`tax_web_search.build_filters` 拼参数、`search_chinatax(filters=…)` 并入请求，命令行
+开关见下文「search5 收窄维度的命令行」。表里其余参数（`xxgkEffectLevel`、`xxgkAging`、
+`column`、`label` 等）仍未接，`tax_web_search.search_chinatax` 固定发的还是 `siteCode`、
+`searchWord`、`type`、`pageSize`、`pageNum`、`orderBy`、`column`、`label` 八项（后两项发
+空串），`xxgk_aging` 与 `xxgk_effectLevel` 只当**返回字段**读。往命令行加新维度时按行
+核对这张表，不要凭记忆改。
+
+| 发送的参数（单发） | `total` | 实测备注 |
+|---|---|---|
+| 基线：只有检索词 | 13152 | |
+| `wordPlace=1` | 2998 | 仅标题；0 是全文，也是默认 |
+| `participleRule=5` | 12963 | 精准；0 是模糊 |
+| `searchSiteName=GSFFK` | 12963 | 与上一行同值属巧合，两个键不是一回事 |
+| `indexCode=1` | 13152 | 单发不改变命中 |
+| `xxgkEffectLevel=财税文件` | 636 | 八档取值与分布见下表 `effectLevelList` |
+| `xxgkAging=全文有效` | 252 | 五档取值与分布见下表 `agingList` |
+| `xxgkTaxPolicy=税收政策` | 1205 | 五档加一个 `null` 桶，见下表 `taxPolicyList` |
+| `xxgkSonTaxPolicy=增值税` | 1016 | 收窄到基线的约十三分之一 |
+| `xxgkFormulatedYear=2024` | 27 | |
+| `cwrqStart` 与 `cwrqEnd`（2024 全年） | 207 | 与上一行差一个量级，两个字段不是同一个来源 |
+| `xxgkIndustryType=金融业` | 0 | 外部资料记了 11 档行业，本机只测了这一档 |
+| `docType=国家税务总局公告` | 330 | 取值不带空格：页面上印的是"财政部 税务总局公告"，接口对带空格的写法是宽松误命中（实测「财政部 税务总局公告」配 `docYear=2023` 归 0，去空格才有 25 条）。`--doc-type` 会自动去掉内部空白，命令行上照抄页面带空格的写法即可 |
+| `docType=财税` + `docYear=2018` | 20 | |
+| `docType=财税` + `docYear=2018` + `docNo=119` | 1 | 定点命中财税〔2018〕119号 |
+| `docYear=2018`（单发） | 54 | |
+| `docNo=119`（单发） | 4 | 脱离文种与年份的编号是宽松匹配，不能当唯一键 |
+| `column=政策法规` | 1626 | 栏目共 15 个取值，见下表 `columnList` |
+| `label=财税文件` | 636 | 与 `xxgkEffectLevel` 同值 |
+| `label=文字政策解读` | 272 | |
+| `likeDoc=0` | 16199 / 16919 | 关掉相似文档折叠；基线是折叠过的。两次实测取到不同值，见上文 |
+| `searchWordMd5=<任意 32 位串>` | 13152 | 传错也不影响，是前端带出来的键，不要依赖它 |
+| 不发 `type` | 13152 | 我们现在固定发的 `type=1` 实测无效果 |
+| 不发 `column` 与 `label` | 13152 | 空串与不发等价 |
+
+`orderBy` 四种取值都不改 `total`（都是 13152），只换首屏内容。发 2 时首条 `pubDate` 是
+2025-12-31、末条是 2026-01-30——按时间倒序不可能出现末条晚于首条，所以外部资料记的
+"2＝日期倒序"实测不成立。发 3 时首条是 1984-10-18，发 1 时首末条都在 2026-09-30，这两档
+的语义本机没有可判的口径，不下结论。可用的部分只有一句：**要按时间收口就本地排序，
+并且用 `cwrqStart`/`cwrqEnd` 或 `xxgkFormulatedYear` 把窗口框住**，排序键指望不上——
+这与本文 L1 节那条 NPC 排序的结论同向。
+
+响应里另有八个 `*List` 分面。它们是选维度的依据，不是命中数：`columnList` 各桶之和
+16919、`effectLevelList` 光空串一桶就 15245，都比 `total` 的 13152 大，两套数不在同一
+基数上。下面「增值税」下的读数是整桶全量，不是抽样。
+
+| 分面字段 | 结构 | 「增值税」下的全量读数 |
+|---|---|---|
+| `agingList` | `{key, doc_count}` | 7 桶：`''` 720、全文废止 331、全文有效 255、`'null'` 192、已修改 166、全文失效 9、尚未生效 1。空串与字符串 `null` 合计 912 条 |
+| `effectLevelList` | `{key, doc_count}` | 9 桶：`''` 15245、税务规范性文件 703、财税文件 660、工作通知 190、其他文件 62、税务部门规章 31、行政法规 10、国务院文件 9、法律 9。八档之和只有 1674。注意分面桶值与上表单发 `total` 不是同一基数（同一档「财税文件」在表里是 636、这里 660），两边不要互相推算 |
+| `taxPolicyList` | 每桶 `{key, key2, doc_count, sonDatas}` | 6 桶：税收政策 1240、税费征管 405、非税收入政策 68、其他 42、`'null'` 2、社会保险费政策 1。`key` 是一级主题，`sonDatas` 是该主题下的税种交叉（税收政策那桶给 31 项：增值税 1045、进出口税收 220、消费税 166、营业税 148、城镇土地使用税 72、城市维护建设税 64……），`key2` 是接口挑出的一个二级值，不保证与检索词对应（社会保险费政策那桶的 `key2` 也写着"增值税"） |
+| `columnList` | `{key, doc_count}` | 15 桶：新闻发布 12924、政策法规 1665、互动交流 614、政策解读 503、信息公开 500、政策问答 294、疫情防控税收优惠政策及问答 165、税务视频 116、税收政策 80、减税降费政策操作指南查询 30、政策指引 10、最新政策文件 9、总局概况 5、网站其他 3、减税降费政策及问答 1 |
+| `formulatedYearList` | `{key, doc_count}` | 38 桶，返回顺序的前三项：2016 126、2013 89、2015 77 |
+| `labelList` | `{key, doc_count}` | 159 桶，返回顺序的前三项：各地动态 2363、媒体视点 2280、减税降费在行动 1299 |
+| `industrytypenameList` | **JSON 字符串**，要再解一次 | 长度 318 |
+| `taxDiscountList` | `{key, doc_count}` | 1 桶，`key` 为空、9 条 |
+
+`columnList` 那 12924 条新闻发布，就是深页读不出法规的成因：一万三千多条里政策法规栏目
+只有 1665 条，而 `tax_fgk._scan_list` 的自适应早停最多翻 20 页、也就是 200 条的窗口，
+覆盖不到。把 `column=政策法规` 或 `xxgkSonTaxPolicy=<税种>` 下推到检索侧，才是把窗口对准
+法规文件的做法；已经知道文件名与文号时，`docType`＋`docYear`＋`docNo` 一条请求就收到
+1 条。有一组搭配必然为零，不要同时发：效力等级与时效两维，判据与数字见
+`source_defects.md`「仍然是边界的几件事」。
+
+正文与关联两件事也各有一条实测：
+
+- 外部资料记着一个取正文的接口 `GET /jee2/download/query.jsp?doFlag=getZcwjk&id=…`，
+  三个字段分别是 `docContent`（正文）、`docAnnots`（附件）、`docPubFileUrl`（Word 链接）。
+  本机实测已下线：www 与 fgk 两个域名、搜索结果里的 `id` 字段与 URL 里的文章 id 两种
+  取值，一律 HTTP 404 并回整页 404 HTML（131620 与 48024 字节）。所以正文这一层不接它，
+  原因是该接口已不可用，不是本仓库漏登记；走的仍是上文那条详情页的路
+  （`tax_fgk.fetch_fgk_body`）。
+- 关联文件与关联解读要走 `POST /queryManuscriptAssociation`，表单参数 `id=` 详情页的
+  `articleId`。实测 HTTP 200，返回里分 `policyDocument`、`policyInterpretation`、
+  `policyGuidance`、`policyQA` 几组；静态详情页 HTML 里这几组是空的，正文中的
+  `<a href>` 只能给出零星线索。**2026-10-01 已接入**：`tax_fgk.fetch_associations` 走
+  这个接口，`article_id_from_url` 从 URL 末段取 id（法律类页面 meta 可能没 articleId），
+  命令行用 `tax_fgk.py … --assoc` 逐条现拉（关联里的政策文件也带时效，与正文一样不缓存）。
+  两个域名不能混：POST 只在 www 域返回 200（同一 id 打 fgk 域回 404，实测），返回的
+  `/zcfgk/…` 相对链接反过来要拼 fgk 域才取到正文（拼 www 回 404）。这一路对应 ④ 里
+  "同一文件的现行版与被废止版"那条线索——`policyDocument` 每条带 `status`（时效），
+  据此能看出关联到的是全文有效还是已废止的旧版。
+
+### search5 收窄维度的命令行
+
+五个开关在 `tax_web_search.py` 与 `tax_fgk.py` 上共用一套（`build_filters` 拼参数），
+都可选，不填就等于不发消息维度：
+
+```bash
+# 站点检索：仅标题 + 精准分词 + 税种分面
+python scripts/tax_web_search.py "增值税" --in-title --precise --tax-type 增值税
+
+# 已知文件名与文号时定点收口（文种带空格也能过，内部空白会被去掉）
+python scripts/tax_web_search.py "研发费用" --doc-type "财政部 税务总局公告" \
+    --doc-year 2023 --doc-no 7
+
+# 成文日期区间：只给日期会被补成整点时间戳（2024 全年收成 207 条，不给时间戳是 2428 条）
+python scripts/tax_web_search.py "增值税" --cwrq-from 2024-01-01 --cwrq-to 2024-12-31
+
+# 法规库清单同样可下推维度（把翻页窗口对准法规文件，见上文 columnList 那段）
+python scripts/tax_fgk.py "增值税" --tax-type 增值税 --pages 5
+
+# 逐条查关联文件/解读/问答（每条多一次 POST，不依赖 --body、不进缓存）
+python scripts/tax_fgk.py "研发费用" --size 1 --assoc
+```
+
+三条要记住的：
+
+- 维度拼到 0 条时报的是 `_filter_note`（"分不清拼窄还是没有"）而不是"库里没有这份
+  文件"——放宽一维重取才有结论。判据与实测数字见 `source_defects.md`「仍然是边界的
+  几件事」那条"效力等级 × 时效两维同时发必然 0"。
+- 带维度的清单按维度分缓存键，换一维不会读回上一维的结果；不带维度与带维度也不同键。
+- 日期/年份/编号格式不合法（`2024-1-1`、`2024-13-01`、`doc-year 18` 这类）在发请求前
+  就 `ValueError` 拦下——非法值发出去接口只会静默回基线命中或 0，不报错，那样错得最难查。
+
 ## L3：360 站内搜索（地方口径）
 
 ```bash

@@ -1,7 +1,7 @@
 ---
 name: tax-analysis-engine
 description: "税务问题分析引擎：先判定问题类型与缺失前提，再从上位法逐层向下检索到行政法规、地方口径与实务案例，多源聚合后对依据做效力位阶与时效定级，最后输出带限制条件的分析结论。适用于一切涉及税与费的问题——某个税怎么算、能不能享受优惠、该按什么税目归类、怎么办理、多久之内办、有什么风险、两个方案选哪个，以及法规原文的条款填空与选项判断、政策与案例检索。回答前一律实时联网核查，不使用训练数据中的政策记忆。"
-version: "3.14.0"
+version: "3.15.0"
 ---
 
 # 税务问题分析引擎 (Tax Analysis Engine)
@@ -43,7 +43,9 @@ python tests/run_all.py                                        # 离线门禁，
 ```
 
 逐源命令与参数（`--exact` / `--status` / `--body` / `--cache` / `--pages` / `--site` /
-`--scope`）见 `references/commands.md`。改完代码先跑离线门禁，联网 e2e 用 `--online` 追加。
+`--scope`，以及 chinatax/fgk 的五个收窄维度 `--in-title` / `--precise` / `--tax-type` /
+`--doc-type`+`--doc-year`+`--doc-no` / `--cwrq-from`+`--cwrq-to` 和 fgk 的 `--assoc`）
+见 `references/commands.md`。改完代码先跑离线门禁，联网 e2e 用 `--online` 追加。
 
 ---
 
