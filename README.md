@@ -300,6 +300,7 @@ GET /api/text/ff808181927b083b0193fd65a0eb02cb
 | **docs.maoyanqing.com**（子技能 maodocs） | 审计文库 MaoDocs：企业/政府/小企业会计准则、注协审计准则、企业内控规范、资产评估准则、证监会监管规则适用指引的**逐条原文全文**。补专业口径原文，不答税法 | 专业口径 ⭐⭐⭐⭐；税收依据 无 | 实时（sitemap lastmod 至 2026-09-28） | 纯标准库直连静态站，无 WAF、无浏览器、无 key；脚本与手册在 `subskills/maodocs/` |
 | **www.szse.cn**（子技能 szse-lawrules） | 深交所「法律规则」栏目：法律/行政法规/司法解释/证监会规章·指引·规范性文件/废止公告＋十二类"本所业务规则"自律规则的**目录与原文定位**。补证券交易场所口径，不答税法 | 专业口径 ⭐⭐⭐；税收依据 无 | 实时（当日枚举 724 条入索引） | 先 `build` 建本地索引再离线 `query`；标准库直连为主，业务规则通道复用 `scripts/tax_browser`，无 key、不调模型；脚本与手册在 `subskills/szse-lawrules/` |
 | **减免税政策代码目录**（子技能 tax-preference） | 总局《减免税政策代码目录》xlsx：现行有效/已失效两栏、8 位减免性质代码、收入种类·政策大类、文号、优惠条款。**税收优惠的权威封闭枚举**——按税种/大类列全某主体名下有哪些现行优惠，是五源关键词召回凑不出的 | 税收依据 ⭐⭐⭐⭐（带文号，回 ⑧ 定级） | 官方每月更新（国家税务总局公告 2015 年第 73 号）；本地 `sync` 抓直链比版本 | 先 `sync` 下载重建 `preference_index.json`，再离线 `query`/`list-types`；同步复用 `scripts/tax_sync.py`，plain HTTP、无 key、不调模型；脚本与手册在 `subskills/tax-preference/` |
+| **研发费用加计扣除与高企认定合规**（子技能 rd-deduction-hitech） | 研发费用税务合规的**领域分析知识库**（非抓取源）：高企认定评分自检（八条一票否决 + 四项指标 71 分达标）、加计扣除归集与测算（六类费用/其他费用 10% 限额/委托研发 80%/境外 2/3/负面清单）、四套口径差异协同、2026 穿透式监管与稽查应对、内控制度/流程/表单模板与加计/高企/IPO 三套资料包。补五源给不了的**规则计算与模板产出**那一层 | 领域规则 ⭐⭐⭐⭐（以官方政策文件为基础，另含公开稽查案例）；税收依据 无（引用政策原文时仍回 ⑧ 定级） | 静态随技能提供，政策更新时人工维护 | 离线直接使用，**不连接任何业务系统、不读写数据库、不调模型**；数字一律来自用户提供或企业台账，缺失列待补不虚构；手册与规则在 `subskills/rd-deduction-hitech/` |
 | **chinatax.gov.cn 政策文件库清单**（`scripts/tax_gov_list.py`） | 各栏目（税务规范性文件/财税文件/法律/行政法规/其他）的**封闭分页清单**，每条自带发文字号·效力等级·**时效性分类状态**·成文日期·税费类型·官方 url。补 search5 关键词召回给不了的"某栏目全部现行文件"横截面，也是 ⑧ 时效判定的官方时效性字段来源 | 税收依据 ⭐⭐⭐⭐（带官方 url，回 ⑧ 定级） | 集合 diff（`tax_sync.ListSynchronizer`：按 url+时效性+文号+标题算集合 SHA1，时效性翻转会检出重建） | `sync [--channel 名]` 抓全建 `data/sync/chinatax-list/`，`lookup`/`stats` 离线查，`seed-cache` 批量预热文号→官方链接缓存，`missing` 出待补链接工作清单；plain HTTP POST、无 cookie、不调模型 |
 
 ### 缓存策略
@@ -485,7 +486,11 @@ tax-analysis-engine/
 │   │   ├── SKILL.md                # 审计文库 MaoDocs 原文检索：会计/审计/内控/评估/证券五域逐条原文
 │   │   ├── NOTE.md                 # 来源、sitemap 分布、实测校正（文号不表版次、索引页混挂全局导航、Git Bash 路径改写）
 │   │   └── maodocs.py              # 纯标准库取文脚本（categories/search/fetch，无 WAF、无浏览器、不调模型）
-│   └── szse-lawrules/
+│   ├── rd-deduction-hitech/
+│   │   ├── SKILL.md                # 研发费用加计扣除与高企认定合规分析：高企评分自检/加计归集测算/四套口径协同/2026监管与稽查应对/内控模板与三套资料包
+│   │   ├── NOTE.md                 # 来源与整合说明（吸收 hitech-qualification-audit 与 tax-high-tech-deduction 领域内容，去掉系统依赖）
+│   │   └── references/             # 评分规则·扣除指南·稽查应对·政策文件库(30)·加计书(10)·IPO书(22)·内控模板(34)
+│   ├── szse-lawrules/
 │       ├── SKILL.md                # 深交所法律规则目录检索（查询式：build 建索引后离线 query）
 │       ├── NOTE.md                 # 来源、两种渲染形态、实测校正（t 编号不表版次、业务规则需浏览器、多为 PDF 附件）
 │       └── szse.py                 # categories/build/query/fetch；标准库直连为主，业务规则通道复用 scripts/tax_browser，不调模型
