@@ -394,6 +394,7 @@ def _scan_list(keyword: str, size: int, max_pages: int,
     # 检索本身失败要透出错误，不要和"库里没有"混为一谈
     if first_error:
         result["_error"] = first_error
+        result["_fetch_failed"] = True
     elif empty_reason:
         # 接口给了命中数、这一页没给清单：不能写成"翻完 N 页未筛出法规库条目"，
         # 那是把接口的返回形态当成库的内容。

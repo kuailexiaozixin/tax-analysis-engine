@@ -517,6 +517,28 @@ def test_filters_produce_too_narrow_instead_of_libraries_empty():
     print("  [PASS] 带维度 0 条透出「可能拼窄」，不写成翻完N页未筛出")
 
 
+def test_scan_list_flags_fetch_failure_apart_from_empty():
+    """清单层遇到 search_chinatax 报 _error：要带 _fetch_failed，不能读成翻完未筛出。
+
+    对应的坑：四种空清单成因里只有"请求真失败"该被前端标成取数故障。_scan_list
+    把 found 的 _error 提到结果的 _error 同时必须补 _fetch_failed，否则前端只能
+    看到一句 _error，分不清是服务没连上还是库里确实没有。
+    """
+    saved_scan = tax_fgk.search_chinatax
+    failed = {"total": 0, "results": [], "_error": "HTTP 500"}
+    try:
+        tax_fgk.search_chinatax = lambda keyword, page=1, size=10, filters=None: failed
+        r = tax_fgk._scan_list("测试词", size=5, max_pages=2)
+    finally:
+        tax_fgk.search_chinatax = saved_scan
+    assert r.get("_fetch_failed") is True, r
+    assert r["_error"] == "HTTP 500", r
+    # 失败不是"库里没有"：不带那两种措辞
+    assert "_filter_note" not in r and "_empty_reason" not in r, r
+    assert "未筛出法规库条目" not in r["_error"], r["_error"]
+    print("  [PASS] 清单层请求失败带 _fetch_failed，与未筛出/拼窄分开报")
+
+
 # ── 关联文件查询（queryManuscriptAssociation） ──────────────────────────────
 
 # 2026-10-01 本机对 c5247431 实测的返回形态（results[0] 是文章本体，[1] 才是关联组）
@@ -652,6 +674,7 @@ def main():
         ("filters 逐页下推", test_scan_list_threads_filters_to_every_page),
         ("filters 分键缓存", test_search_fgk_caches_each_filter_set_apart),
         ("带维度 0 条报拼窄", test_filters_produce_too_narrow_instead_of_libraries_empty),
+        ("请求失败带 _fetch_failed", test_scan_list_flags_fetch_failure_apart_from_empty),
         ("articleId 从 URL 取", test_article_id_from_url_forms),
         ("关联解析实测形态", test_fetch_associations_parses_measured_payload),
         ("关联失败路径报错", test_fetch_associations_error_paths),

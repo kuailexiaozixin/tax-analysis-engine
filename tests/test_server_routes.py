@@ -164,6 +164,64 @@ class TestSearchRoute(_RouteCase):
             self._post({"keyword": "发票", "source": "fgk", "body": True}, tax_type=None)
         self.assertTrue(m.call_args.kwargs["with_body"])
 
+    def test_chinatax_maps_ui_filters_into_the_request(self):
+        """界面选了 精确＋范围＋日期，chinatax 这路必须把它们带进 filters。
+
+        以前这三个控件只喂给 NPC，数据源切到总局就被静默丢掉。日期补成带时间戳
+        的 cwrq 是 build_filters 内部的事，这里只验维度到了调用方。
+        变异验证：把 api_search 里的 filters= 去掉，这一条立刻报红。
+        """
+        with mock.patch.object(tax_server, "search_chinatax", return_value={}) as m:
+            self._post({"keyword": "增值税", "source": "chinatax", "exact": True,
+                        "scope": "title", "date_from": "2024-01-01",
+                        "date_to": "2024-12-31"}, tax_type=None)
+        f = m.call_args.kwargs["filters"]
+        self.assertEqual("1", f["wordPlace"])
+        self.assertEqual("5", f["participleRule"])
+        self.assertTrue(f["cwrqStart"].startswith("2024-01-01"))
+        self.assertTrue(f["cwrqEnd"].startswith("2024-12-31"))
+
+    def test_fgk_fulltext_does_not_narrow_to_title(self):
+        """范围选「全文」时不该发 wordPlace，否则等于替用户把结果收窄到标题。"""
+        with mock.patch.object(tax_server, "search_fgk", return_value={}) as m:
+            self._post({"keyword": "增值税", "source": "fgk", "scope": "fulltext"},
+                       tax_type=None)
+        self.assertNotIn("wordPlace", m.call_args.kwargs["filters"])
+
+    def test_bad_date_on_chinatax_is_400_not_silent_baseline(self):
+        """手改请求体塞非法日期时，接口只会静默回基线命中，这一层必须挡成 400。"""
+        with mock.patch.object(tax_server, "search_chinatax") as m:
+            r = self._post({"keyword": "增值税", "source": "chinatax",
+                            "date_from": "2024-13-01"}, tax_type=None)
+        self.assertEqual(400, r.status_code)
+        m.assert_not_called()
+
+    def test_filter_note_reaches_the_frontend_payload(self):
+        """收窄到 0 条那句成因必须原样出现在 result 里，界面才有话可显示。"""
+        fake = {"total": 0, "results": [], "_filter_note": "叠加收窄维度后命中 0 条"}
+        with mock.patch.object(tax_server, "search_chinatax", return_value=fake):
+            r = self._post({"keyword": "增值税", "source": "chinatax"}, tax_type=None)
+        self.assertIn("_filter_note", r.get_json()["result"])
+
+    def test_sta_topic_routed_to_fgk_carries_ui_filters(self):
+        """sta 专题在 NPC 源下被自动换到法规库时，界面的日期/范围也得跟过去。
+
+        这条和 source=fgk 同源：一旦漏传，用户设的日期在换源那一刻又被静默丢掉。
+        """
+        with mock.patch.object(tax_server, "search_fgk", return_value={}) as m:
+            self._post({"keyword": "转让定价", "date_from": "2024-01-01",
+                        "date_to": "2024-12-31"}, tax_type=STA_TAX_TYPE)
+        f = m.call_args.kwargs["filters"]
+        self.assertTrue(f["cwrqStart"].startswith("2024-01-01"))
+
+    def test_fetch_failed_flag_survives_into_payload(self):
+        """上游取数失败带的 _fetch_failed 必须原样到 payload，界面才分得清失败与空。"""
+        fake = {"total": 0, "results": [], "_error": "HTTP 500", "_fetch_failed": True}
+        with mock.patch.object(tax_server, "search_chinatax", return_value=fake):
+            r = self._post({"keyword": "增值税", "source": "chinatax"}, tax_type=None)
+        body = r.get_json()["result"]
+        self.assertTrue(body.get("_fetch_failed"))
+
     def test_aggregated_drops_npc_for_sta_topic(self):
         """聚合里也要换源：sta 专题留着 NPC 只会带回无关法规。"""
         with mock.patch.object(tax_server, "DEFAULT_SOURCES",

@@ -163,16 +163,27 @@ class TestFrontendShowsDegradedNote(unittest.TestCase):
         self.assertIn("degraded_note", body)
         self.assertIn("esc(result.degraded_note)", body)
 
-    def test_empty_state_keeps_the_two_causes_apart(self):
-        """空清单的成因是接口给的 `_empty_reason`，页面要原样显示。
+    def test_empty_state_keeps_the_causes_apart(self):
+        """空清单有四种成因，页面要分流、原样显示，不得全塌成"未找到"。
 
-        对应的缺陷：翻过末页与"末页之内却没给清单"是两件事，都渲染成
-        "未找到相关政策"就等于页面替用户说了"库里没有这份文件"。
+        对应的缺陷：翻过末页、维度拼窄、接口没给清单是"没取到/取法不对"，
+        取数失败（_fetch_failed）更是服务侧故障。都渲染成"未找到相关政策"就
+        等于页面替用户说了"库里没有这份文件"——用户会换个词重搜，而真相是
+        要么稍后再试、要么把维度放宽。分流顺序按"越靠近真相越先看"，取数失败
+        排最前，不能和其余三种共用未找到那一句。
         """
         body = HTML[HTML.index("function renderResults(data){"):
                     HTML.index("KEYWORD HIGHLIGHT")]
-        self.assertIn("_empty_reason", body)
-        self.assertIn("esc(result._empty_reason)", body)
+        # 取数失败走独立分支：有专门的标题，且这一句排在"未找到"之前
+        self.assertIn("result._fetch_failed", body)
+        self.assertIn("取数失败", body)
+        self.assertLess(body.index("result._fetch_failed"), body.index("未找到相关政策"),
+                        "取数失败被并进了未找到分支")
+        # 其余三种成因仍逐字透出：filter_note / empty_reason / error 都进 why 链
+        self.assertIn("result._filter_note", body)
+        self.assertIn("result._empty_reason", body)
+        # 透出的句子来自外部检索结果，必须走 esc() 才拼进 HTML
+        self.assertIn("esc(why)", body)
 
     def test_render_results_shows_routing_note(self):
         """换源提示和"没归类"提示都由后端给整句，页面只照抄。

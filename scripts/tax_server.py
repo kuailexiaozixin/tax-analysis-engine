@@ -19,7 +19,7 @@ from tax_search import search_tax, detect_intent, resolve_tax_type
 from tax_analyze import accounting_gap, accounting_note
 from tax_analyze import legislative_stage, legislative_note
 from tax_detail import fetch_detail, download_bytes, SXX_MAP, _parse_docx_from_bytes
-from tax_web_search import search_chinatax
+from tax_web_search import search_chinatax, build_filters
 from tax_fgk import search_fgk
 from tax_so360 import so360_search
 from tax_shui5 import search_shui5
@@ -61,6 +61,25 @@ INTENT_LABELS = {
 # 两条分支（聚合 / 单查 NPC）共用同一句，措辞改一处就够，不会各说各话。
 UNROUTED_NOTE = ("未能归类到税种或专题：以上是按原话字面检索标题的结果，"
                  "与本题是否相关需逐条核对")
+
+
+def _ui_filters(scope: str, exact, date_from, date_to) -> dict:
+    """把界面上的「范围/匹配/日期」三个控件翻成 search5 的收窄维度。
+
+    走 search5 的源（chinatax／fgk，含 NPC 分支里被自动换源到法规库的 sta 专题）
+    都调这一个，免得三控件在某一条路径上又被静默丢掉。取值与实测命中见
+    references/commands.md 的参数表。「时效」不在这里：build_filters 没有
+    xxgkAging 这一维，界面在该源下把它置灰。
+
+    Raises:
+        ValueError: 日期不合法——调用方要挡成 400，不能让接口对非法值静默回基线命中。
+    """
+    return build_filters(
+        in_title=(scope == "title"),
+        precise=bool(exact),
+        cwrq_from=date_from or "",
+        cwrq_to=date_to or "",
+    )
 
 _text_cache = {}
 _interp_cache = {}
@@ -385,10 +404,21 @@ def api_search():
                 result["_routed"] = f"按{tax_type_info['type']}的本体法检索：{parent_law}"
             else:
                 result["_routed"] = UNROUTED_NOTE
-    elif source == "chinatax":
-        result = search_chinatax(keyword, size=size)
-    elif source == "fgk":
-        result = search_fgk(keyword, size=size, with_body=bool(data.get("body")))
+    elif source in ("chinatax", "fgk"):
+        # 界面上的「范围/匹配/日期」三个控件此前只喂给 NPC 那一路，数据源切到
+        # 税务总局或法规库就被静默丢掉——控件看着是全局的、实际只对 NPC 生效。
+        # 这里把它们翻成 search5 的收窄维度透传下去（见 _ui_filters）。
+        try:
+            ui_filters = _ui_filters(scope, data.get("exact"), date_from, date_to)
+        except ValueError as e:
+            # 日期输入框正常给的是 YYYY-MM-DD；手改过的请求体给非法日期时，
+            # 接口对非法值只会静默回基线命中，所以在这一层就报 400。
+            return jsonify({"error": f"日期参数不合法：{e}"}), 400
+        if source == "chinatax":
+            result = search_chinatax(keyword, size=size, filters=ui_filters)
+        else:
+            result = search_fgk(keyword, size=size, with_body=bool(data.get("body")),
+                                filters=ui_filters)
     else:
         # 归类出税种就按本体法名查，不要拿用户原话去标题检索。原话里
         # "费用"这类通用字会把《诉讼费用交纳办法》《国家赔偿费用管理条例》
@@ -402,7 +432,14 @@ def api_search():
         # 改查总局法规库，用条目自带的 search_term 而不是原话。
         if authority == "sta":
             term = (tax_type_info or {}).get("search_term") or keyword
-            result = search_fgk(term, size=size, with_body=bool(data.get("body")))
+            # 这条也走 search5，同样吃界面三控件——否则用户在 NPC 源下设了日期、
+            # 命中却被自动换到法规库时，日期又会被静默丢掉（与上一条同源的空转缺陷）。
+            try:
+                ui_filters = _ui_filters(scope, data.get("exact"), date_from, date_to)
+            except ValueError as e:
+                return jsonify({"error": f"日期参数不合法：{e}"}), 400
+            result = search_fgk(term, size=size, with_body=bool(data.get("body")),
+                                filters=ui_filters)
             result["_routed"] = f"{tax_type_info['type']}属总局专题，已改查法规库：{term}"
         else:
             result = search_tax(

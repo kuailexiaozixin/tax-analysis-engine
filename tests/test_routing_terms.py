@@ -437,6 +437,31 @@ def test_out_of_range_page_and_missing_list_are_told_apart():
     print("  [PASS] 翻页越界与首屏空列表分开报，都不读成库里没有")
 
 
+def test_request_failure_is_flagged_not_read_as_no_hit():
+    """请求真失败时要带 _fetch_failed，不能和"翻了没结果/库里没有"共用一个空壳。
+
+    对应的坑：取数失败（连接超时、HTTP 5xx、响应非 JSON）也走 _empty_result，
+    界面若只看 total==0 就把三种成因印成同一句"未找到"，用户会以为换个词重搜
+    就有，实际上服务根本连上了——这是静默降级。前端靠 _fetch_failed 才分得开。
+    """
+    saved = W.requests.get
+
+    def boom(url, params=None, **kw):
+        raise W.requests.RequestException("连接超时")
+
+    try:
+        W.requests.get = boom
+        r = W.search_chinatax("增值税")
+    finally:
+        W.requests.get = saved
+
+    assert r["_fetch_failed"] is True, r
+    assert r["total"] == 0 and r.get("_error"), r
+    # 请求失败不是"库里没有"：不能带 _filter_note / _empty_reason 那两种措辞
+    assert "_filter_note" not in r and "_empty_reason" not in r, r
+    print("  [PASS] search_chinatax 请求失败带 _fetch_failed，不与空命中/维度拼窄混用")
+
+
 def test_accounting_gap_flags_questions_keyed_on_accounting():
     """税法条款借用会计结果时，① 要登记会计口径缺口——五个税收源都不收准则条文。"""
     cases = {
@@ -659,6 +684,7 @@ def main():
         test_search5_zero_with_filters_says_it_might_be_too_narrow,
         test_build_filters_rejects_malformed_values,
         test_out_of_range_page_and_missing_list_are_told_apart,
+        test_request_failure_is_flagged_not_read_as_no_hit,
         test_accounting_gap_flags_questions_keyed_on_accounting,
         test_accounting_gap_does_not_flag_pure_tax_wording,
         test_accounting_gap_reaches_the_answer_layer,

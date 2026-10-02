@@ -485,9 +485,9 @@ body{
 <div class="filters-bar" id="filtersBar">
   <div class="filter-group"><label>范围</label><select id="filterScope"><option value="title" selected>标题</option><option value="fulltext">全文（不相关，慎用）</option></select></div>
   <div class="filter-group"><label>匹配</label><select id="filterType"><option value="fuzzy">模糊</option><option value="exact">精确</option></select></div>
-  <div class="filter-group"><label>时效</label><select id="filterStatus"><option value="3" selected>现行有效</option><option value="">全部</option></select></div>
+  <div class="filter-group"><label>时效</label><select id="filterStatus" title=""><option value="3" selected>现行有效</option><option value="">全部</option></select></div>
   <div class="filter-group"><label>排序</label><select id="filterSort"><option value="relevance">相关度</option><option value="date">日期↓</option></select></div>
-  <div class="filter-group"><label>数据源</label><select id="filterSource"><option value="npc">NPC法规库</option><option value="aggregated">多源聚合</option><option value="chinatax">税务总局</option><option value="fgk">税务法规库</option></select></div>
+  <div class="filter-group"><label>数据源</label><select id="filterSource" onchange="syncFilterControls()"><option value="npc">NPC法规库</option><option value="aggregated">多源聚合</option><option value="chinatax">税务总局</option><option value="fgk">税务法规库</option></select></div>
   <div class="filter-group"><label>日期</label><input type="date" id="filterDateFrom">—<input type="date" id="filterDateTo"></div>
 </div>
 
@@ -523,7 +523,7 @@ let lastResults=[],lastKeyword='',guideState={},activeTab='law';
 const NEXT_STEP={user_type:'tax_type',tax_type:'intent',intent:'conditions'};
 
 document.addEventListener('DOMContentLoaded',()=>{
-  loadQuickTax();renderGuideStep('user_type');
+  loadQuickTax();renderGuideStep('user_type');syncFilterControls();
   document.getElementById('searchInput').addEventListener('keydown',e=>{if(e.key==='Enter')doSearch();});
 });
 
@@ -535,6 +535,19 @@ function _isGarbage(title){for(const k of _GARBAGE_TITLES){if((title||'').includ
 function toggleFilters(){
   const bar=document.getElementById('filtersBar');
   bar.classList.toggle('open');
+}
+
+/* 「时效」控件只在 NPC 与多源聚合那两路参与检索：数据源选到税务总局或法规库时，
+   后端没有对应的 xxgkAging 维度可下推（build_filters 未收这一维），保留控件会
+   让人以为选了有用。这里在该两源下置灰并写明原因，其余控件（范围/匹配/日期）
+   已由 tax_server.api_search 翻成 search5 filters 透传，不禁。 */
+function syncFilterControls(){
+  const src=document.getElementById('filterSource').value;
+  const st=document.getElementById('filterStatus');
+  const off=(src==='chinatax'||src==='fgk');
+  st.disabled=off;
+  st.style.opacity=off?'0.4':'1';
+  st.title=off?'税务总局／法规库检索暂不支持按时效过滤（该维度未接入）':'';
 }
 
 /* ═══════════ QUICK TAX ═══════════ */
@@ -653,10 +666,20 @@ function renderResults(data){
   // 点名的是草案/征求意见稿时，这一栏列出的同名文件是现行有效版本、不是草案内容。
   // 整句由后端给（tax_analyze.legislative_note），这里照抄，不在前端判断库的收录范围。
   if(data.legislative_note){h+=`<div class="meta-bar" style="border-bottom:none"><span class="source-label" style="border-color:var(--accent);color:var(--accent);white-space:normal">收录范围 ${esc(data.legislative_note)}</span></div>`;}
-  // 空清单的两种成因由接口写在 _empty_reason 里（见 tax_web_search.search_chinatax）：
-  // 翻过末页是翻页参数的用法问题，末页之内却没给清单要换检索词再取一轮。
-  // 这一句要原样显示，不能让空结果读起来像"库里没有这份文件"。
-  if(items.length===0){h+=`<div class="empty-state"><div style="font-size:28px;margin-bottom:8px">🔍</div><p><b>未找到相关政策</b></p><p style="font-size:13px;color:var(--g400)">关键词:"${esc(data.keyword)}"</p>${result?._empty_reason?`<p style="font-size:12px;margin-top:8px;color:var(--accent)">${esc(result._empty_reason)}</p>`:''}<p style="font-size:12px;margin-top:8px;color:var(--g400)">试试更短的关键词（如"增值税"而非"增值税优惠政策最新规定"） / 切换到"多源聚合"模式覆盖税屋与公众号</p></div>`;}
+  // 空清单的成因有四种，分流顺序按"越靠近真相越先看"：
+  //   _fetch_failed —— 上游真的没取到数据（_error 是整形过的失败原因），不能读成"库里没有"
+  //   _filter_note  —— 叠加收窄维度后 0 条，分不清"拼窄"还是"没有"
+  //   _empty_reason —— 接口给了命中数、这一页没给清单
+  //   _error(其余)  —— 法规库翻完前 N 页未筛出条目（是扫描结论，不是失败）
+  // 四者都不带的空结果才读作"关键词太宽/库里确实没有这份文件"。
+  if(items.length===0){
+    if(result && result._fetch_failed){
+      h+=`<div class="empty-state"><div style="font-size:28px;margin-bottom:8px">⚠️</div><p><b>取数失败</b></p><p style="font-size:13px;color:var(--g400)">关键词:"${esc(data.keyword)}"</p><p style="font-size:12px;margin-top:8px;color:var(--accent)">${esc(result._error||'上游没有返回数据')}</p><p style="font-size:12px;margin-top:8px;color:var(--g400)">这是没取到数据，不代表库里没有；可稍后重试</p></div>`;
+    } else {
+      const why=(result&&(result._filter_note||result._empty_reason||result._error))||'';
+      h+=`<div class="empty-state"><div style="font-size:28px;margin-bottom:8px">🔍</div><p><b>未找到相关政策</b></p><p style="font-size:13px;color:var(--g400)">关键词:"${esc(data.keyword)}"</p>${why?`<p style="font-size:12px;margin-top:8px;color:var(--accent)">${esc(why)}</p>`:''}<p style="font-size:12px;margin-top:8px;color:var(--g400)">试试更短的关键词（如"增值税"而非"增值税优惠政策最新规定"） / 切换到"多源聚合"模式覆盖税屋与公众号</p></div>`;
+    }
+  }
 
   /* NPC 条目给数字状态码，总局法规库条目给的是录入项文本（"全文有效"）。
    两种都要认，否则文本时效会掉进"时效未标注"——那等于把明明标了有效的文件
@@ -693,7 +716,7 @@ items.forEach((item,i)=>{
       :`<div class="id-row">${safeUrl?`🔗 原文：<a href="${esc(safeUrl)}" target="_blank" rel="noopener">${esc((safeUrl.match(/https?:\/\/(?:www\.)?([^/]+)/)||[,'非本库链接'])[1])}</a> · 非 NPC 库条目，点开无弹窗`:'非 NPC 库条目，点开无弹窗'}</div>`;
     h+=`${openTag}
       <div class="title"><span style="font-size:11px;color:var(--g400);margin-right:6px">#${i+1}</span> ${item._source?`<span class="source-label src-${item._source}">${srcIcons[item._source]||''} ${srcLabels[item._source]||''}</span>`:''}${st}</div>
-      <div class="meta"><span>${statusBadge(item)}</span>${item.document_number?`<span>文号:${esc(item.document_number)}</span>`:''}${item.effect_level?`<span>效力级别:${esc(item.effect_level)}</span>`:''}${(item.publish_date||item.date)?`<span>📅 公布:${esc(item.publish_date||item.date)}</span>`:''}${item.effective_date?`<span>施行:${esc(item.effective_date)}</span>`:''}${item.issuing_authority?`<span>🏛️ ${esc(item.issuing_authority)}</span>`:''}</div>
+      <div class="meta"><span>${statusBadge(item)}</span>${item._reliability==='medium'?`<span class="status-badge s-unknown" title="${esc(item._reliability_note||'')}">⚪ 仅参考</span>`:''}${item.document_number?`<span>文号:${esc(item.document_number)}</span>`:''}${item.effect_level?`<span>效力级别:${esc(item.effect_level)}</span>`:''}${(item.publish_date||item.date)?`<span>📅 公布:${esc(item.publish_date||item.date)}</span>`:''}${item.effective_date?`<span>施行:${esc(item.effective_date)}</span>`:''}${item.issuing_authority?`<span>🏛️ ${esc(item.issuing_authority)}</span>`:''}</div>
       ${idRow}</div>`;
   });
   if(total>items.length)h+=`<p style="text-align:center;font-size:12px;color:var(--g400);margin-top:12px">显示前${items.length}条，共${total}条 · 缩小搜索范围以获取更精确结果</p>`;

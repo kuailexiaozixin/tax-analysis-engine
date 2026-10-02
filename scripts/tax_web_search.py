@@ -291,6 +291,9 @@ def _empty_result(keyword: str, error: str = "", filters: dict = None) -> dict:
         "source": "chinatax.gov.cn",
         "_error": error,
         "_from_cache": False,
+        # 只有请求真的失败才走这里，用它把"没取到数据"与"翻了没筛出/库里没有"
+        # 分开——两者都叫 0 条，但界面该说的不是一句话。见 tax_server 空态分流。
+        "_fetch_failed": True,
     }
     if filters:
         out["filters"] = filters
