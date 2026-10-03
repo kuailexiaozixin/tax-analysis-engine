@@ -201,12 +201,62 @@ VALIDITY = {
     "unknown": "时效未标明",
 }
 
+# ── 自载执行期限的止日 ─────────────────────────────────────────────────────
+# 到期日在清单层取不到（减免税目录的"有效"栏实测 912 条有效期起/止全空，
+# 法规库的时效栏对财税文件也不录），但在正文层取得到：公告普遍以
+# "自2023年1月1日至2027年12月31日"或"延续执行至2027年12月31日"写明止期。
+# 实测 20 条带正文的法规库条目里 11 条含这两类句式。
+_EXPIRY_SIMPLE = re.compile(
+    r"(?:执行至|延长至|延续至|延至|有效期至|有效期截至|期限至)"
+    r"\s*(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日")
+_EXPIRY_RANGE = re.compile(
+    r"自\s*(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*起?\s*至\s*"
+    r"(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日")
+
+
+def _iso(year: str, month: str, day: str) -> str:
+    """三位数字拼成可比较的 YYYY-MM-DD；不像真日期就返回空串。
+
+    返回补零的定宽串是因为止期与观察时点按字符串比大小，位数不齐会比错
+    （"2027-1-1" 排在 "2027-12-31" 之后）。月份越界这类脏值不作判据。
+    """
+    y, m, d = int(year), int(month), int(day)
+    if not (1 <= m <= 12 and 1 <= d <= 31):
+        return ""
+    return f"{y:04d}-{m:02d}-{d:02d}"
+
+
+def expiry_of(item: dict) -> str:
+    """取一条依据自载的执行期限止日，取不到返回空串。
+
+    先读录入项 `expiry_date`（各源目前都给不出，留作显式入口），再从正文抠。
+    **正文里出现两个以上不同止期时返回空串**：一份文件可以同时谈多段期限
+    （延长执行期限的公告把多项政策各自延到不同日期），替用户挑一个就是猜。
+    """
+    exp = (item.get("expiry_date") or "").strip()
+    if exp:
+        return exp
+    body = " ".join(str(x) for x in (item.get("content"), item.get("body")) if x)
+    if not body:
+        return ""
+    ends = set()
+    for match in _EXPIRY_SIMPLE.finditer(body):
+        value = _iso(*match.groups())
+        if value:
+            ends.add(value)
+    for match in _EXPIRY_RANGE.finditer(body):
+        value = _iso(*match.groups()[3:])
+        if value:
+            ends.add(value)
+    return ends.pop() if len(ends) == 1 else ""
+
 
 def judge_validity(item: dict, at: str = "") -> dict:
     """按观察时点判定一条依据的时效。
 
     Args:
-        item: 含 status / status_code / effective_date / publish_date 之一的字典。
+        item: 含 status / status_code / effective_date / publish_date /
+            expiry_date（或带执行期限句式的 content、body）之一的字典。
         at: 观察时点 YYYY-MM-DD，空串表示不判生效区间，只看状态字段。
 
     Returns:
@@ -252,20 +302,58 @@ def judge_validity(item: dict, at: str = "") -> dict:
     if partial:
         tail += "；仅部分条款已失效，引用前须核对具体条款"
 
+    # 自载止期早于观察时点这一格是新加的：状态栏说这份还在效（或干脆没录时效），
+    # 正文里的执行期限却已经过去。剩下两种可能是"后续公告延续了同一政策"与
+    # "这段止期本属正文引用的另一轮期限"，从这一条材料里都判不了，所以只把它写成
+    # 引用前要办的一件事，不动 validity。判成 repealed 会把可能仍在使用的主依据
+    # 整条压掉——用降权代替核对是从前撤掉的做法；不写又会让用户拿已结束的期限
+    # 当当期口径。
+    expiry = expiry_of(item)
+    in_window = bool(at and expiry and base in ("effective", "unknown"))
+    past_expiry = in_window and expiry < at
+    expiry_core = (
+        f"正文自载的执行期限止于 {expiry}，早于观察时点 {at}；"
+        f"先查这段期限之后有没有延续文件，没有延续不得按当期口径引用"
+        if past_expiry else "")
+    # 前半句"状态标「全文有效」／本条无时效录入"交代的是这条结论来自哪个录入项，
+    # 只有止期这句单独成 note 时才带；与佐证那句拼接时同样的信息已经交代过一遍。
+    expiry_head = ("本条无时效录入" if base == "unknown" else f"状态标「{status}」")
+    # 止期还在观察时点之后时只把日期记进 note，不占提醒的位子：眼下没有要核对的
+    # 事，而 validity_note 会随条目一起进结构化输出，读者要查这项优惠几时到期时
+    # 拿得到。真快到期了也不必在这里替用户编一个"提前 N 天"的门限——门限一写就成了
+    # 判据，而判"当期能不能用"靠的是上面那一支的止期与观察时点比较。
+    note_extra = ""
+    if in_window and expiry >= at:
+        note_extra = f"；正文自载执行期限至 {expiry}，观察时点 {at} 在期内"
+
     # 状态判不出来时，"被现行有效的文件列为制定依据"是这个来源里唯一可得的
     # 在效证据（财税文件那一栏根本不录时效，见 tax_answer 的
     # corroborate_validity_from_target）。已标明废止或未生效的不走这条路，
     # 明文状态优先于援引证据。
+    #
+    # 援引与止期各说一件事，所以这一支要在止期直接返回之前判完：援引证据说的是
+    # "这份文件整体还在效"，止期说的是"正文里那一段优惠期限已经过去"，后者不能把
+    # 前者顶掉。早先的写法让止期分支先返回，于是带正文的财税文件一被抠出止期就从
+    # "佐证在效"掉回"时效未标明"——第 7 条补的那格白补，还多付一条"引用前单独核对
+    # 它是否还在效"。
     cited_by = (item.get("corroborated_by") or "").strip()
     if base == "unknown" and cited_by:
         when = f"，观察时点 {at}" if at else ""
+        extra = (f"；{expiry_core}" if past_expiry else note_extra)
         return {"validity": "effective", "label": VALIDITY["effective"],
                 "as_of": at, "qualified": True,
                 "note": f"本条无时效录入，按现行有效的《{cited_by}》正文将其列为"
-                        f"制定依据判定在效{when}；引用前按该文自身的时效复核"}
+                        f"制定依据判定在效{when}；引用前按该文自身的时效复核"
+                        + extra}
+
+    # 施行日期晚于观察时点时，让"生效日晚于时点"那一格先判：一份还没开始施行的
+    # 文件谈不上"这段期限已经过去"，两个日期真同时成立时未生效是更靠前的结论。
+    eff = (item.get("effective_date") or "").strip()
+    if past_expiry and not (at and eff and eff > at):
+        return {"validity": base, "label": VALIDITY[base], "as_of": at,
+                "qualified": True, "note": f"{expiry_head}，{expiry_core}{tail}"}
 
     if at and base in ("effective", "pending"):
-        eff = (item.get("effective_date") or "").strip()
         if eff and eff > at:
             return {"validity": "pending", "label": VALIDITY["pending"],
                     "as_of": at, "qualified": True,
@@ -283,14 +371,15 @@ def judge_validity(item: dict, at: str = "") -> dict:
                     "note": f"生效日 {eff} 不晚于观察时点 {at}"}
         return {"validity": "effective", "label": VALIDITY["effective"],
                 "as_of": at, "qualified": bool(tail),
-                "note": f"按状态字段判定，效力期间含 {at}{tail}"}
+                "note": f"按状态字段判定，效力期间含 {at}{tail}{note_extra}"}
 
     if base == "effective" and tail:
         return {"validity": base, "label": VALIDITY[base], "as_of": at,
                 "qualified": True, "note": "按状态字段判定" + tail}
     return {"validity": base, "label": VALIDITY[base], "as_of": at,
             "qualified": False,
-            "note": "无状态字段可判" if base == "unknown" else "按状态字段判定"}
+            "note": ("无状态字段可判" if base == "unknown" else "按状态字段判定")
+                    + note_extra}
 
 
 # ── 与本题的对应关系 ───────────────────────────────────────────────────────
