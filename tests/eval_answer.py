@@ -57,7 +57,6 @@ for _s in (sys.stdout, sys.stderr):
         pass
 
 import tax_answer as AN               # noqa: E402
-import tax_evidence as E              # noqa: E402
 import tax_detail as DT               # noqa: E402
 import tax_fgk as FG                  # noqa: E402
 import tax_llm as L                   # noqa: E402
@@ -189,7 +188,9 @@ def evidence_bundle(item: dict, at: str, with_body: bool = True) -> dict:
     plan = AN.gather(stem_with_options(item), at=at, read_body=False)
     comp = AN.compose(plan)
     ev = plan.get("evidence", [])
-    strong = [e for e in ev if e.get("score", 0) >= E.PRIMARY_THRESHOLD]
+    # 法定文件条数（角色为"本题的直接规定"或"上位依据与授权"），不是过阈条数：
+    # ⑧ 取消了可引用性分数，实务解读那一层也照常进依据块，这里只数法定那两层。
+    statutory = [e for e in ev if e.get("role") in ("direct", "superior")]
 
     lines, bodies = [], {}
     for e in ev[:8]:
@@ -217,7 +218,7 @@ def evidence_bundle(item: dict, at: str, with_body: bool = True) -> dict:
         "primary_rank": comp["primary"]["rank_label"],
         "primary_validity": comp["primary"]["validity_label"],
         "evidence_n": len(ev),
-        "strong_n": len(strong),
+        "statutory_n": len(statutory),
         "gap": comp.get("evidence_gap", ""),
         "conditions": comp.get("conditions", []),
         "body_titles": [k for k in bodies],
@@ -451,7 +452,7 @@ def collect_evidence(items: list, at: str, with_body: bool, cache: dict,
             b = {"text": "", "diag": {"plan_type": "error", "parent_law": "",
                                       "primary_title": "", "primary_rank": "",
                                       "primary_validity": "", "evidence_n": 0,
-                                      "strong_n": 0, "gap": f"取据失败：{str(e)[:90]}",
+                                      "statutory_n": 0, "gap": f"取据失败：{str(e)[:90]}",
                                       "conditions": [], "body_titles": [],
                                       "bundle_chars": 0}}
         out[item["key"]] = {"key": item["key"], "at": at, "with_body": with_body,
@@ -489,7 +490,7 @@ def run_one(item: dict, arm: str, bundle: dict, timeout: int,
     bundle_text = bundle_text_for(arm, bundle)
     diag = (bundle or {}).get("diag", {}) if arm == "evidence" else {
         "plan_type": "", "parent_law": "", "primary_title": "", "primary_rank": "",
-        "primary_validity": "", "evidence_n": 0, "strong_n": 0,
+        "primary_validity": "", "evidence_n": 0, "statutory_n": 0,
         "gap": "blind 组不给依据", "conditions": [], "body_titles": [],
         "bundle_chars": 0}
 
@@ -738,7 +739,7 @@ def print_report(rows: list, args) -> None:
                       f"｜{dg.get('primary_rank')}·{dg.get('primary_validity')}"
                       f"·{dg.get('primary_title') or '（无）'}"
                       f"｜依据 {dg.get('evidence_n')} 条"
-                      f"，过阈 {dg.get('strong_n')} 条"
+                      f"，其中法定依据 {dg.get('statutory_n', '未记')} 条"
                       f"，带正文 {len(dg.get('body_titles') or [])} 部"
                       f"｜依据块 {dg.get('bundle_chars')} 字")
                 if dg.get("gap"):

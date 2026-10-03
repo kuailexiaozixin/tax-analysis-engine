@@ -1020,11 +1020,13 @@ def test_evidence_validity_and_primary():
 
     repealed = [g for g in graded if g["validity"] == "repealed"]
     assert repealed, "已废止那条应被识别出来"
-    assert "不能作为结论依据" in repealed[0]["citation_hint"],         "已废止依据的引用提示要写明不能支撑结论"
-    # 解读类必须落进参考材料
-    interp = [g for g in graded if g["rank"] == "interpretation"]
-    assert interp and interp[0]["score"] < E.PRIMARY_THRESHOLD,         "解读文章不得达到可作主依据的分数"
-    print("  [PASS] 时效与位阶合成正确，主依据未被废止或解读类占据")
+    assert E.VALIDITY_CAVEAT["repealed"] in repealed[0]["caveats"],     "已废止要在提醒里写明只能说明沿革"
+    assert repealed[0]["role"] == "history",                            "已废止件的角色只有政策沿革"
+    # 解读与技术性口径各归"执行口径与实务认定"，不再被一根分数线挤出依据
+    interp = [g for g in graded if g["rank"] in E.PRACTICE_RANKS]
+    assert interp and all(g["role"] == "practice" for g in interp),     "解读/指引一律落执行口径层"
+    assert not any("score" in g for g in graded),                       "定级不再有合成分数"
+    print("  [PASS] 时效与角色分层正确，主依据未被废止或解读类占据")
     return 1
 
 

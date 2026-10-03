@@ -484,7 +484,6 @@ def _title_match_rank(title: str, keyword: str, parent_law: str = "") -> tuple:
 
 
 RELIABILITY_NOTES = {
-    "low": "结果与查询无关，不得作为依据引用；请换检索方式或换数据源。",
     "medium": "结果已排序但可能偏题（全文分词匹配）；可用于定位法规，"
               "确定条文归属请回到标题检索。",
 }

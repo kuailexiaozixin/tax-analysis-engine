@@ -65,7 +65,7 @@ OFFLINE_GROUP = [
      [PY, str(TESTS_DIR / "test_frontend_province_ui.py")]),
     ("前端时效控件值域契约（按源换值域/选项两项齐全/赋值只走共享入口）",
      [PY, str(TESTS_DIR / "test_frontend_aging_control.py")]),
-    ("源缺陷修复回归（深页标记/缺口说明/可靠性否决/搜狗闸/下载收口）",
+    ("源缺陷修复回归（深页标记转提醒/缺口说明/定级轴拆分/搜狗闸/下载收口）",
      [PY, str(TESTS_DIR / "test_source_defects.py")]),
     ("检索词整形与路由用例（选项剥离/点名文件定位/短词降级/sta 检索词）",
      [PY, str(TESTS_DIR / "test_routing_terms.py")]),

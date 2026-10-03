@@ -510,7 +510,7 @@ tax-analysis-engine/
 │   ├── test_http_layer.py          # 统一请求层守门：AST 扫全项目、禁止绕过 tax_http 的裸请求、错误说明整形
 │   ├── test_frontend_province_ui.py # 前端省份控件契约：控件在哪 / 筛选组数 / 站点清单与后端一致
 │   ├── test_frontend_aging_control.py # 前端时效控件值域契约：五档与后端一致 / option 两项齐全 / 赋值只走共享入口
-│   ├── test_source_defects.py      # 源缺陷回归：深页标记 / 缺口说明 / 可靠性否决 / 搜狗闸与下载收口 / tuple 返回值契约
+│   ├── test_source_defects.py      # 源缺陷回归：深页标记 / 缺口说明 / 定级三轴与提醒 / 搜狗闸与下载收口 / tuple 返回值契约
 │   ├── test_eval_set.py            # 评测集规则的离线用例：时效判档、去重键、分类表同步
 │   ├── test_routing_terms.py       # 判型与词表用例：选项干扰剥离 / 会计口径缺口 / 点名文件同一性 / 立法阶段 / 意图词表三处对齐
 │   ├── probe_routing.py            # 路由探针（离线，不断言）：题面 → 归到哪个税种、装配出什么检索词，改表前后各跑一次 diff 改判条数

@@ -220,8 +220,9 @@ def _rows_and_error(r: dict) -> tuple[list, str]:
 
     原先这几个轮次函数写成 `rows if not r.get("_error") else []`：源挂了和被
     判空都变成长度 0 的列表，错误文本就地丢掉。后果是主依据会静默降级——实测
-    点名《税收征管法》那一趟，NPC 没回来时 90 分的现行有效法律不见了，顶上
-    【主依据】的是 70 分的《个体工商户建账管理暂行办法》，输出里一个字都看不
+    点名《税收征管法》那一趟，NPC 没回来时法律那一档的现行有效依据不见了，
+    顶上【主依据】的是部门规章《个体工商户建账管理暂行办法》，输出里一个字都
+    看不
     出这是取数失败而不是库里没有。
     """
     err = r.get("_error") or ""
@@ -237,8 +238,9 @@ def _legis_round(term: str, size: int) -> tuple[list, str]:
 
     问的是草案时，只取回现行有效文本等于答错题——那一份是修订基线，不是草案
     内容（判据见 `tax_analyze.legislative_stage`）。这里取回的每一条都打上
-    `_reliability: medium`：它是定位文本的线索，本身不能当依据引用，定级层
-    （`tax_evidence.grade`）据此把可引用性分清零、`citation_hint` 换成否决句。
+    `_reliability: medium`（这一条只是定位文本的线索，可能偏题）与
+    `legislative_process`（它不是已公布的条文）：前者进 `caveats` 变成一句
+    提醒，后者让 `tax_evidence.pick_primary` 不把它挑成主依据。
     """
     rows, err = _rows_and_error(S360.so360_search(term, site=LEGISLATION_SITE,
                                                  size=size))
@@ -307,6 +309,21 @@ def search_terms(question: str) -> dict:
         "authority": info.get("authority", "npc"),
         "cited": cited,
     }
+
+
+def _topic_terms(terms: dict) -> list:
+    """从检索词表里挑出"题面在问哪件事"，交给 ⑧ 判对应关系。
+
+    只取专题名与口语短词（`topic`、`shui5`）：本体法名不在其中。理由见
+    `gather` 里那次调用——把《企业所得税法》这类法名当主题词，法会因为标题里
+    含自己的名字被判成"本题的直接规定"，抢走真正规定这题的那份公告的位置。
+    """
+    out = []
+    for key in ("topic", "shui5"):
+        v = (terms.get(key) or "").strip()
+        if len(v) >= 2 and v not in out:
+            out.append(v)
+    return out
 
 
 def locate_cited_document(title: str, size: int = 6) -> tuple:
@@ -470,12 +487,12 @@ def gather(question: str, at: str = "", read_body: bool = True,
     cited_located = False
     if cited:
         # 用户点名了文件，先按标题把这一份文件本身捞出来排在证据最前，
-        # 后面各轮取回的上位法与配套规定当并列依据，不抢它的位置。
+        # 后面各轮取回的上位法与配套规定当其余法定依据，不抢它的位置。
         rows, tried = locate_cited_document(cited[0]["title"])
         terms["cited_candidates"] = tried
         # 只有标题确实就是被点名那一份才认目标。实测点名「税收征管法」时
         # 字面命中率 1.0 的那条是国税发〔2001〕110号——它在标题里引用了这部法，
-        # 一旦当上主依据，90 分的现行有效法律就被挤到并列位。
+        # 一旦当上主依据，现行有效的法律就被挤到后面那一栏。
         cited_located = bool(rows) and bool(rows[0].get("_cited_identity"))
         for i, row in enumerate(rows):
             url = row.get("url") or ""
@@ -529,8 +546,14 @@ def gather(question: str, at: str = "", read_body: bool = True,
 
     # 点名文件正文把上位规则列为制定依据，据此给这些文件补时效证据，再定级。
     corroborated = corroborate_validity_from_target(evidence, at)
-    graded = E.grade_all(evidence, at=at)
+    # 主题词只给"题面在问哪件事"，不给本体法名：《企业所得税法》《增值税暂行
+    # 条例》这类法名一旦进了词表，法自己就因为标题里含法名被判成"本题的直接
+    # 规定"，把真正规定这道题的那份公告压到下面当上位依据——这正是 ⑧ 要避免的
+    # 那种"位阶高就抢头条"的错。
+    topic_terms = _topic_terms(terms)
+    graded = E.grade_all(evidence, at=at, topic=topic_terms)
     plan["evidence"] = graded
+    plan["topic_terms"] = topic_terms
     plan["rounds_done"] = rounds_done
     plan["errors"] = errors
     plan["corroborated"] = corroborated
@@ -553,15 +576,17 @@ _CITED_IDENTITY_LABEL = {"same": "标题字面同一",
 def compose(plan: dict) -> dict:
     """在 gather 底稿上做依据分层与结论骨架，不联网、不编造结论。
 
-    它不替代模型写答案，而是把"哪些能当依据、哪些只能参考、哪些条件没问"
-    先算清楚，模型照着组织文字即可。
+    它不替代模型写答案，而是按角色把底稿分成「主依据 / 其余法定依据 /
+    执行口径与实务认定 / 待核对线索」四栏，再把时效问题、未问的前提和取数
+    缺口列出来，模型照着组织文字即可。分层是分工不是高下：实务解读那一栏
+    照常进答案，只是它给的是口径怎么执行，不给"依据"这两个字。
     """
     ev = plan.get("evidence", [])
     cited = [e for e in ev if e.get("_cited_target")]
     target = cited[0] if cited else None
     cited_note = ""
     if target and not target.get("_is_interpretation"):
-        # 位阶最高的那条不是答案的主依据：用户问的是这一份文件，
+        # 层级最高的那条不是答案的主依据：用户问的是这一份文件，
         # 拿《企业所得税法》顶上去等于没读那份公告。
         primary = dict(target)
         doc_num = primary.get("document_number") or "文号未标"
@@ -570,15 +595,16 @@ def compose(plan: dict) -> dict:
         primary["_why"] = (
             f"用户点名的文件本身（{doc_num}），与点名标题{ident}；"
             f"{primary.get('rank_label', '未定性')}、"
-            f"{primary.get('validity_label', '时效未标明')}。位阶低于其上位法，"
-            f"结论要与并列的上位法同读")
+            f"{primary.get('validity_label', '时效未标明')}。它的上位法在"
+            f"【其余法定依据】里并列给出，结论要与上位法同读")
     elif target:
-        # 只捞到官方解读，没捞到文件原文：解读是参考材料，按 ⑦ 不能当主依据，
-        # 主依据仍走正常分层，同时把"原文没取到"这件事说明白。
+        # 只捞到官方解读，没捞到文件原文：解读讲的是口径怎么执行，可以进答案，
+        # 但它不是被点名的那一份，所以不占主依据那一行；"原文没取到"要说明白。
         primary = E.pick_primary(ev)
         cited_note = (
-            f"点名的《{target.get('title', '')[:40]}》只取到官方解读、没取到原文，"
-            f"解读按 ⑦ 只能作参考；答案要写明原文待核")
+            f"点名的《{target.get('title', '')[:40]}》只取到官方解读、没取到原文："
+            f"解读交代执行口径，照常可用，但不能顶替被点名的那份文件当依据；"
+            f"答案要写明原文待核")
     else:
         primary = E.pick_primary(ev)
         if plan.get("cited_located") is False:
@@ -590,8 +616,8 @@ def compose(plan: dict) -> dict:
                 f"含住这几个字（包括在书名号里引用它的），按 ⑦ 不能顶替被点名的那份。"
                 f"下面的主依据按主题分层给出，答案要写明点名文件待核")
 
-    # 主依据那一行不再进并列/参考，否则同一份文件在输出里出现两次，
-    # 一次标"可作主依据"一次标"只能参考"。NPC 那条链路不带 url，所以
+    # 主依据那一行不再进后面的栏，否则同一份文件在输出里出现两次，
+    # 一次标"主依据"一次标"其余依据"。NPC 那条链路不带 url，所以
     # 有 url 按 url 认，没 url 按标题认。
     def _is_primary(e):
         purl, ptitle = primary.get("url", ""), primary.get("title", "")
@@ -600,10 +626,32 @@ def compose(plan: dict) -> dict:
         return e.get("title", "") == ptitle
 
     rest = [e for e in ev if not _is_primary(e)]
-    strong = [e for e in rest if e.get("score", 0) >= E.PRIMARY_THRESHOLD]
-    reference = [e for e in rest if e.get("score", 0) < E.PRIMARY_THRESHOLD]
+    # 按角色分栏，不按分数分栏。原先是 `score >= 50` 一刀切成"依据/参考"两堆，
+    # 结果是税屋与公众号的文章（层级 10 或 25）永远进不了前一种：一道题的口径
+    # 往往就写在那一层里，把整栏压进"只能参考"等于把最有用的东西锁起来。
+    statutory = [e for e in rest if e.get("role") in ("direct", "superior")]
+    practice = [e for e in rest if e.get("role") == "practice"]
+    to_verify = [e for e in rest if e.get("role") == "unmatched"]
     repealed = [e for e in ev if e.get("validity") == "repealed"]
     pending = [e for e in ev if e.get("validity") == "pending"]
+    # 收口闸：能不能给具体结论，看的是"有没有一条法定文件在规定这件事"，
+    # 不是各条分数够不够。立法过程件（草案）不算，废止的也不算。
+    citable = [e for e in ev
+               if e.get("role") in ("direct", "superior")
+               and not e.get("legislative_process")
+               and e.get("validity") != "repealed"]
+
+    def _rows(rows):
+        return [{"title": e.get("title", ""),
+                 "rank_label": e.get("rank_label", ""),
+                 "validity_label": e.get("validity_label", ""),
+                 "role_label": e.get("role_label", ""),
+                 "on_topic": e.get("on_topic"),
+                 "reliability": e.get("reliability", ""),
+                 "citation_hint": e.get("citation_hint", ""),
+                 "caveats": e.get("caveats", []),
+                 "url": e.get("url", ""),
+                 "basis": e.get("corroborated_by", "")} for e in rows]
 
     spec = A.QUESTION_TYPES[plan["type"]["type"]]
     parts = plan.get("unanswered", [])
@@ -614,28 +662,24 @@ def compose(plan: dict) -> dict:
         "must_answer": plan["must_answer"],
         # 用户点名文件时的说明（没点名或已取到原文则为空）
         "cited_note": cited_note,
-        # 主依据：位阶最高、时效可用那条
+        # 主依据：按角色与时效挑出来的那一条，理由与提醒都在 why 里
         "primary": {
             "title": primary.get("title", ""),
             "rank_label": primary.get("rank_label", ""),
             "validity_label": primary.get("validity_label", ""),
+            "role_label": primary.get("role_label", ""),
             "document_number": primary.get("document_number", ""),
-            "score": primary.get("score", 0),
+            "caveats": primary.get("caveats", []),
             "url": primary.get("url", ""),
             "why": primary.get("_why", ""),
         },
-        # 可作依据的，其余可以用来交叉验证
-        "supporting": [{"title": e.get("title", ""),
-                        "rank_label": e.get("rank_label", ""),
-                        "validity_label": e.get("validity_label", ""),
-                        "score": e.get("score", 0),
-                        "url": e.get("url", ""),
-                        "basis": e.get("corroborated_by", "")} for e in strong],
-        # 只能参考的，答案里要单列，不能和依据混写
-        "reference_only": [{"title": e.get("title", ""),
-                            "rank_label": e.get("rank_label", ""),
-                            "why": e.get("citation_hint", "")}
-                           for e in reference],
+        # 其余法定文件：上位授权与并列的直接规定，用来交叉验证与交代授权来源
+        "supporting": _rows(statutory),
+        # 执行口径与实务认定：税屋、公众号、总局官方解读、办税指南都在这一栏。
+        # 它是答案里"怎么落地"那一段的取材处，不是禁止引用的隔离区。
+        "practice": _rows(practice),
+        # 层级没判出、主题也没对上的线索：要先核对才能用，但照常列出
+        "to_verify": _rows(to_verify),
         "repealed": [e.get("title", "") for e in repealed],
         "pending": [e.get("title", "") for e in pending],
         # 答案里必须写出来的限制条件
@@ -656,10 +700,13 @@ def compose(plan: dict) -> dict:
             "没列出的文件不等于库里没有，先补取这一轮再下结论"
             if plan.get("errors") else ""),
         "evidence_gap": (
-            "没有取到任何现行有效的法定依据，结论只能给方向，不能给具体数额"
-            if not strong else ""),
-        "counts": {"total": len(ev), "strong": len(strong),
-                   "reference": len(reference), "repealed": len(repealed)},
+            "" if citable else
+            "本轮没有取到规定这道题的法定文件——各栏里只有执行口径、立法过程线索"
+            "或已废止件。结论只能给方向，不能给具体数额；先按【待核对线索】与"
+            "【执行口径与实务认定】里那份文件的文号补一轮检索，取不到再转人工确认"),
+        "counts": {"total": len(ev), "statutory": len(statutory),
+                   "practice": len(practice), "to_verify": len(to_verify),
+                   "repealed": len(repealed), "pending": len(pending)},
     }
 
 
@@ -701,20 +748,42 @@ def _print_accounting_gap(gap: list):
     for g in gap:
         print(f"  · 要先问清会计上的哪一件事：{g}")
     print("  · 读 subskills/chenyiwei-bbs/SKILL.md，准则原文与实务答疑都在那里")
-    print("  · 准则与答疑不是税收法定依据：只作为前提写进【适用边界】或参考栏")
+    print("  · 准则与答疑不是税收法定依据：前提写进【适用边界】，"
+          "口径进【执行口径与实务认定】那一栏")
 
 
 def _print_gather(plan: dict):
     _print_plan(plan)
-    print(f"\n实际取回 {len(plan.get('evidence', []))} 条依据"
-          f"（观察时点 {plan.get('at') or '未指定'}）：")
+    terms = "、".join(plan.get("topic_terms") or []) or "未传"
+    print(f"\n实际取回 {len(plan.get('evidence', []))} 条材料"
+          f"（观察时点 {plan.get('at') or '未指定'}，主题词 {terms}）：")
     for e in plan["evidence"][:15]:
-        print(f"  {e.get('score', 0):5.1f}分 {e.get('rank_label','')}/"
-              f"{e.get('validity_label','')}  {e.get('title','')[:44]}")
+        print(f"  [{e.get('role_label', '')}] {e.get('rank_label', '')}/"
+              f"{e.get('validity_label', '')}  {e.get('title', '')[:44]}")
     if len(plan["evidence"]) > 15:
         print(f"  … 另有 {len(plan['evidence']) - 15} 条")
     for err in plan.get("errors", []):
         print(f"  ⚠ {err}")
+
+
+def _print_rows(rows: list, title: str, limit: int, blurb: str = ""):
+    """按角色打印一栏材料，每条带上它自己的提醒。
+
+    提醒逐条打印而不是只印一个角标，是因为"这一条存疑"必须说清疑在哪一处、
+    要核对什么，读者才能动手核对；原先界面上那个"仅参考"小圆点做不到这点。
+    """
+    if not rows:
+        return
+    print(f"\n【{title}】{len(rows)} 条" + (f"　{blurb}" if blurb else ""))
+    for s in rows[:limit]:
+        print(f"  {s['rank_label']}/{s['validity_label']}  {s['title'][:44]}")
+        if s.get("basis"):
+            print(f"        时效判定依据：被现行有效的《{s['basis']}》"
+                  f"列为制定依据（本条无时效录入）")
+        for c in (s.get("caveats") or [])[:2]:
+            print(f"        提醒：{c}")
+    if len(rows) > limit:
+        print(f"  …另有 {len(rows) - limit} 条未列出")
 
 
 def _print_answer(a: dict):
@@ -726,27 +795,18 @@ def _print_answer(a: dict):
     if p["title"]:
         num = f"（{p['document_number']}）" if p.get("document_number") else ""
         print(f"  {p['title'][:60]}{num}")
-        print(f"  {p['rank_label']} / {p['validity_label']} / {p['score']} 分 — {p['why']}")
+        print(f"  {p.get('role_label', '')} / {p['rank_label']} / "
+              f"{p['validity_label']} — {p['why']}")
     else:
         print("  未取到可作主依据的条文")
     if a.get("cited_note"):
         print(f"  ⚠ {a['cited_note']}")
-    if a["supporting"]:
-        print(f"\n【并列依据】{len(a['supporting'])} 条")
-        for s in a["supporting"][:6]:
-            print(f"  {s['score']:5.1f} {s['rank_label']}/{s['validity_label']}"
-                  f"  {s['title'][:44]}")
-            if s.get("basis"):
-                print(f"        时效判定依据：被现行有效的《{s['basis']}》"
-                      f"列为制定依据（本栏无时效录入）")
-        if len(a["supporting"]) > 6:
-            print(f"  …另有 {len(a['supporting']) - 6} 条未列出")
-    if a["reference_only"]:
-        print(f"\n【只能参考，不能当依据】{len(a['reference_only'])} 条")
-        for s in a["reference_only"][:5]:
-            print(f"  {s['rank_label']}  {s['title'][:44]}")
-        if len(a["reference_only"]) > 5:
-            print(f"  …另有 {len(a['reference_only']) - 5} 条未列出")
+    _print_rows(a["supporting"], "其余法定依据", 6,
+                "上位授权与并列的直接规定，用来交叉验证与交代授权来源")
+    _print_rows(a["practice"], "执行口径与实务认定", 6,
+                "答案里「怎么落地」那一段从这里取材；口径要落到它引用的文号上")
+    _print_rows(a["to_verify"], "待核对线索", 5,
+                "层级与主题都还没对上，先核对再决定用不用")
     if a["repealed"]:
         print(f"\n【已废止，仅可用于说明沿革】")
         for s in a["repealed"][:5]:

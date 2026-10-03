@@ -152,7 +152,7 @@ def test_unlocated_cited_document_falls_back_with_a_note():
          "status": "现行有效"},
     ])
     a = AN.compose(plan)
-    # 修复前这一格是那份已废止的 2001 年通知（19.2 分），90 分的现行法律被挤到并列位
+    # 修复前这一格是那份已废止的 2001 年通知，现行有效的法律被挤到它后面
     assert a["primary"]["title"] == "中华人民共和国税收征收管理法", a["primary"]
     assert "没有定位到同一份文件" in a["cited_note"], a["cited_note"]
     # 没点名的题不带这句，免得答案里凭空多一段不相关的提醒
@@ -668,7 +668,7 @@ def test_legislative_note_reaches_the_answer_layer():
     """阶段判据要一路到答案骨架，跟 accounting_gap 同一条通道。
 
     只在判型那一步认出来不够：拿现行有效版当草案内容写进答案，界面上看不出
-    任何异样——90 分的现行有效法律本身就是"看起来对"的东西。
+    任何异样——现行有效的法律本身就是"看起来对"的东西。
     """
     plan = AN.build_plan("请解读《税收征管法》修订草案的主要变化")
     assert plan["legislative_stage"], plan

@@ -7,13 +7,12 @@
   2. 360 被封时地方口径与税屋这一层是空的，要在答案里明说、不要拿别的源顶替
   3. fgk 翻得越深相关性越差，深页条目必须回 L1 核对
   4. 公众号依赖会话，并发加压会触发反爬
-  5. `_reliability: medium` 只能用于定位
-  6. `_reliability: low` 不得当作权威依据引用
+  5. `_reliability: medium` 说的是这条的召回方式，要落成一句具体提醒
+  6. `_reliability: low` 同样只提醒核对，不折算成分数、不从挑选里剔除
 
-"靠人记住"等于没有约束：第 5、6 条最典型——标记只在输出里印一行，定级层压根
-不读它，于是 low 的条目照样能被挑成主依据、还打出"可作依据引用（法律）"。
-
-现在六条都落进代码，这里逐条钉住，并附带自检（确认规则不是永远绿的）。
+"靠人记住"等于没有约束：第 5、6 条原先只在输出里印一行，定级层压根不读它，
+于是标了 low 的条目照样能被挑成主依据、还打出"可作依据引用（法律）"。现在六条
+都落进代码，这里逐条钉住，并附带自检（确认规则不是永远绿的）。
 """
 
 import ast
@@ -256,56 +255,173 @@ class TestFrontendShowsSourceMetadata(unittest.TestCase):
         self.assertNotIn("document_number", self.OLD_BADGE)
 
 
-# ── ⑤⑥ 定级层必须认 `_reliability` ────────────────────────────────────────
-class TestReliabilityVetoInGrading(unittest.TestCase):
-    """标记要能真的拦住条目，不能只是印一行字。"""
+# ── ⑤⑥ 定级层读到 `_reliability` 后要给出可核对的提醒 ──────────────────────
+class TestReliabilityBecomesAReminder(unittest.TestCase):
+    """来源标记要说清"疑在哪一处、要核对什么"，不许再用降权代替核对。
+
+    2026-10-03 重写：这一组原先断言"标了 low 就把分清零、整组不许挑主依据"。
+    用户明确指出那是在限制材料的作用——读者只看到一个小标签，既不知道为什么，
+    也无从下手。现在同样的来源信息改写成逐条提醒，材料照常参与分层。
+    """
 
     LAW = "中华人民共和国企业所得税法"
 
-    def test_low_is_not_citable(self):
+    def test_low_carries_a_checkable_reminder(self):
         g = E.grade({"title": self.LAW, "_reliability": "low"})
         self.assertEqual("low", g["reliability"])
-        self.assertIn("不得作为依据引用", g["citation_hint"])
-        self.assertEqual(0.0, g["score"], "标了 low 还留 85 分，下游会当成高可信")
+        self.assertIn(E.RELIABILITY_CAVEAT["low"], g["caveats"])
+        self.assertNotIn("不得作为依据引用", g["citation_hint"])
 
-    def test_medium_is_locate_only_and_carries_the_source_note(self):
-        g = E.grade({"title": self.LAW, "_reliability": "medium",
-                     "_reliability_note": "取自总局检索第 3 页"})
-        self.assertIn("仅用于定位法规", g["citation_hint"])
-        self.assertIn("取自总局检索第 3 页", g["citation_hint"])
+    def test_medium_reminder_is_the_sources_own_sentence(self):
+        """同是 medium，三条来源各说各的原因，提醒必须用来源自己那句。
 
-    def test_unmarked_item_keeps_old_verdict(self):
-        """回归：没标记的条目判定口径一个字都不该变。"""
-        g = E.grade({"title": self.LAW})
+        `medium` 在本仓库有三个出处：NPC 正文检索按全文分词命中、总局法规库第 2
+        页起排序变松、立法过程件不在五个源的收录范围内。定级层原先按档位配一句
+        固定话（"这一条来自清单靠后的页位"），三处里只有法规库那处对得上，另两处
+        给的是假提醒——全文检索和站内检索没有"页位"这件事。
+
+        变异自检：把 `tax_evidence._caveats` 里那句改回
+        `RELIABILITY_CAVEAT[rel] + "；" + rel_note`，`assertEqual` 与
+        `not in` 两组断言同时报红；把 `RELIABILITY_CAVEAT["medium"]` 改写成带
+        某个具体机制的说法，最后一条断言报红。
+        """
+        fgk = E.grade({"title": self.LAW, "_reliability": "medium",
+                       "_reliability_note": FGK.FGK_DEEP_NOTE.format(page=3)},
+                      topic="企业所得税")
+        npc = E.grade({"title": self.LAW, "_reliability": "medium",
+                       "_reliability_note": T.RELIABILITY_NOTES["medium"]},
+                      topic="企业所得税")
+        self.assertEqual(FGK.FGK_DEEP_NOTE.format(page=3), fgk["caveats"][-1])
+        self.assertEqual(T.RELIABILITY_NOTES["medium"], npc["caveats"][-1])
+        for g in (fgk, npc):
+            self.assertTrue(all(E.RELIABILITY_CAVEAT["medium"] not in c
+                                for c in g["caveats"]), g["caveats"])
+        self.assertNotIn("第 3 页", "；".join(npc["caveats"]),
+                         "全文检索的条目不该被告知自己来自法规库的第 3 页")
+
+    def test_marker_without_a_note_falls_back_to_a_neutral_reminder(self):
+        """只有档位、没有原因说明时，兜底句不许断言某个具体机制。"""
+        g = E.grade({"title": self.LAW, "_reliability": "medium"})
+        self.assertIn(E.RELIABILITY_CAVEAT["medium"], g["caveats"])
+        for word in ("页位", "分词", "页"):
+            self.assertNotIn(word, E.RELIABILITY_CAVEAT["medium"], word)
+            self.assertNotIn(word, E.RELIABILITY_CAVEAT["low"], word)
+
+    def test_unmarked_item_gets_no_reliability_reminder(self):
+        g = E.grade({"title": self.LAW, "status": "全文有效"}, topic="企业所得税")
         self.assertEqual("ok", g["reliability"])
-        self.assertGreater(g["score"], 0)
-        self.assertIn("可作主依据", g["citation_hint"])
+        self.assertEqual([], [c for c in g["caveats"]
+                              if c in (E.RELIABILITY_CAVEAT["low"],
+                                       E.RELIABILITY_CAVEAT["medium"])])
+        self.assertEqual("direct", g["role"])
 
-    def test_pick_primary_skips_low(self):
-        best = E.pick_primary([
+    def test_reliability_does_not_change_the_pick(self):
+        """标了 low 的《企业所得税法》不再被整组剔除，也不再因此让位。
+
+        变异自检：把 `_reliability` 塞回 `_order_key`（例如 low 时 tier 取 0），
+        这一条与下一条都会报红——那正是本次撤掉的做法。
+        """
+        g = E.pick_primary([
             E.grade({"title": self.LAW, "_reliability": "low",
-                     "_reliability_note": "全文检索偏题"}),
-            E.grade({"title": "国家税务总局公告2018年第28号"}),
+                     "_reliability_note": "全文检索偏题"}, topic="企业所得税"),
+            E.grade({"title": "国家税务总局公告2018年第28号"}, topic="企业所得税"),
         ])
-        self.assertNotIn("low", best.get("reliability", ""))
-        self.assertIn("公告", best["title"])
+        self.assertEqual(self.LAW, g["title"])
+        self.assertEqual("low", g["reliability"])
+        self.assertIn("全文检索偏题", g["_why"])
 
-    def test_pick_primary_refuses_when_everything_is_low(self):
-        best = E.pick_primary([E.grade({"title": self.LAW, "_reliability": "low"})])
-        self.assertIn("全部带 _reliability: low", best["_why"])
-        self.assertNotIn("rank_label", best, "全是 low 时不该挑出任何主依据")
+    def test_pick_is_by_role_not_by_marker(self):
+        """两条在能不能引、角色、时效、层级、主题对应上全相等时，标记不参与排队。
 
-    def test_pick_primary_prefers_unmarked_over_medium(self):
-        best = E.pick_primary([
-            E.grade({"title": "财税〔2025〕9号通知", "_reliability": "medium"}),
-            E.grade({"title": "国家税务总局公告2018年第28号"}),
-        ])
-        self.assertEqual("ok", best["reliability"])
+        先断言两条真的并列，否则这条测的是排队规则而不是标记——上一次它就用一份
+        未定级的通知去比一份总局公告，角色本来就不同，结论说明不了任何事。
 
-    def test_pick_primary_falls_back_to_medium_with_a_caveat(self):
-        best = E.pick_primary([E.grade({"title": self.LAW, "_reliability": "medium"})])
-        self.assertEqual("medium", best["reliability"])
-        self.assertIn("不得作为条文依据", best["_why"])
+        变异自检：把 `_reliability` 塞进 `_order_key`（low 排后），两次断言里
+        必有一次报红。
+        """
+        a = E.grade({"title": "国家税务总局公告2018年第28号",
+                     "_reliability": "low"}, topic="企业重组")
+        b = E.grade({"title": "国家税务总局公告2019年第11号"}, topic="企业重组")
+        self.assertEqual(E._order_key(a), E._order_key(b),
+                         (a["rank"], a["role"], a["validity"], a["on_topic"]))
+        self.assertEqual("low", a["reliability"])
+        self.assertEqual(a["title"], E.pick_primary([a, b])["title"])
+        self.assertEqual(b["title"], E.pick_primary([b, a])["title"])
+
+    def test_every_candidate_keeps_its_own_caveats(self):
+        """全组都带标记时照样挑得出来，且落选项在 `_runners_up` 里带着提醒。"""
+        best = E.pick_primary([E.grade({"title": self.LAW, "_reliability": "low"},
+                                       topic="企业所得税")])
+        self.assertEqual(self.LAW, best["title"])
+        self.assertIn(E.RELIABILITY_CAVEAT["low"], best["_why"])
+        run = E.pick_primary([
+            E.grade({"title": self.LAW, "status": "全文有效"}, topic="企业所得税"),
+            E.grade({"title": "中华人民共和国增值税暂行条例", "status": "全文有效",
+                     "_reliability": "medium"}, topic="企业所得税"),
+        ])["_runners_up"]
+        self.assertIn(E.RELIABILITY_CAVEAT["medium"], run[0]["caveats"])
+
+
+# ── ⑤'' 聚合层带下来的标记必须说得出原因 ──────────────────────────────────
+class TestAggregatorCarriesTheReminder(unittest.TestCase):
+    """整源标记按定义就是"这一窗条目共同的取回方式"，逐条带上不算冤枉。
+
+    它原先只在源自己的输出里印一次，聚合后丢失——聚合清单上看不出这些条目来自
+    全文检索，定级层与界面都收不到这句提醒。
+
+    变异自检：把 `tax_aggregator` 里 `item["_reliability_note"] = source_note`
+    那两行删掉，第一条断言报红；把命令行摘要改回按档位配一句固定话（低档写
+    "不得作为权威依据引用"），第二条报红。
+    """
+
+    NPC_NOTE = "NPC 正文检索按全文分词命中，可能偏题；请回到标题检索确定条文归属"
+    DEEP_NOTE = "取自总局检索第 3 页：深页条目可能只是沾了检索词"
+
+    def _agg(self):
+        npc = {"total": 1, "results": [{"title": "中华人民共和国增值税暂行条例",
+                                        "url": "http://x/npc"}],
+               "_reliability": "medium", "_reliability_note": self.NPC_NOTE}
+        chinatax = {"total": 1, "results": [{"title": "国家税务总局公告2025年第3号",
+                                             "url": "http://x/ct"}]}
+        empty = {"total": 0, "results": []}
+        with mock.patch.object(AGG, "search_tax", return_value=npc), \
+             mock.patch.object(AGG, "search_chinatax", return_value=chinatax), \
+             mock.patch.object(AGG, "so360_search", return_value=empty), \
+             mock.patch.object(AGG, "search_shui5", return_value=empty), \
+             mock.patch.object(AGG, "search_wechat", return_value=empty):
+            return AGG.aggregate_search("增值税", size=5, scope="fulltext")
+
+    def test_source_level_marker_reaches_each_item_with_its_note(self):
+        r = self._agg()
+        row = [i for i in r["items"] if i["_source"] == "npc"][0]
+        self.assertEqual("medium", row["_reliability"])
+        self.assertEqual(self.NPC_NOTE, row["_reliability_note"])
+        # 没带标记的那一路不能被连坐
+        self.assertNotIn("_reliability",
+                         [i for i in r["items"] if i["_source"] == "chinatax"][0])
+
+    def test_cli_prints_the_reminder_text_not_a_level_ban(self):
+        """命令行摘要印每条自带的提醒原文；按档位配死一句禁令是旧做法。"""
+        res = {"searched_at": "2026-10-03 00:00:00",
+               "source_summary": {"npc": 1, "chinatax": 1},
+               "items": [{"_source": "npc", "title": "A",
+                          "_reliability": "medium", "_reliability_note": self.NPC_NOTE},
+                         {"_source": "chinatax", "title": "B",
+                          "_reliability": "medium", "_reliability_note": self.DEEP_NOTE},
+                         {"_source": "npc", "title": "C",
+                          "_reliability": "low"}],
+               "gaps": [], "errors": {}}
+        out = io.StringIO()
+        with mock.patch.object(AGG, "aggregate_search", return_value=res), \
+             mock.patch.object(sys, "argv", ["tax_aggregator.py", "增值税"]), \
+             contextlib.redirect_stdout(out):
+            AGG.main()
+        text = out.getvalue()
+        self.assertIn(self.NPC_NOTE, text)
+        self.assertIn(self.DEEP_NOTE, text)
+        self.assertIn("未写明存疑在哪一处", text, "只有档位没有说明时要明说缺的是什么")
+        for ban in ("不得作为权威依据引用", "只能参考", "不得作为依据引用"):
+            self.assertNotIn(ban, text, ban)
 
 
 # ── ⑤' 显示层也不许把标记吞掉 ──────────────────────────────────────────────
@@ -472,81 +588,189 @@ class TestGradingReadsFgkMetadata(unittest.TestCase):
         t = "国家税务总局关于发布《企业重组业务企业所得税管理办法》的公告"
         r = E.rank_of(t)
         self.assertEqual("normative", r["rank"])
-        self.assertGreaterEqual(r["score"], 50)
+        self.assertEqual(55, r["tier"])
+        # 判成"未定性"时层级掉到 0、角色掉到待核对线索——那才是这个用例要拦的
+        # 回归，所以两条都断言，而不是断言掉了几分
+        g = E.grade({"title": t}, topic="企业重组")
+        self.assertEqual("normative", g["rank"])
+        self.assertEqual(55, g["rank_tier"])
+        self.assertEqual("direct", g["role"])
+        # 主题词对不上时它仍是有层级的法定文件，落"上位依据与授权"：
+        # "待核对线索"只留给层级与主题两头都空着的那类（见 `role_of`）。
+        self.assertEqual("superior",
+                         E.grade({"title": t}, topic="留抵退税")["role"])
+        off = E.grade({"title": t}, topic="留抵退税")
+        self.assertIs(False, off["on_topic"])
+        self.assertIn("标题与正文里都没有本题的主题词", "；".join(off["caveats"]))
 
 
 class TestNormativeIsABasisNotReference(unittest.TestCase):
-    """现行有效的总局公告要能进依据层；这条线不能把它挡在外面。
+    """总局公告是本题的直接规定，不该被任何一根"参考"线挡在依据之外。
 
-    规范性文件是税务机关据以执法、纳税人据以办理的直接依据，写"只能参考，
-    不能当依据"会让答案绕开 L2 下挖真正取回的那层规则。"依据"这个身份
-    仍然由时效把关：时效一不明就自己掉回参考层。
+    2026-10-03 重写：这个类原先断言的是"分数够不够 50 那条线"，而那根线正是
+    本次撤掉的合成判据。改成断言角色——规范性文件在与本题对得上、且没废止时
+    就是"本题的直接规定"，并且挑得主依据，压过层级更高的法律。
     """
 
     ANN = "国家税务总局关于企业重组业务所得税处理有关征管问题的公告"
 
-    def _score(self, status):
-        g = E.grade({"title": self.ANN, "status": status}, at="2026-09-29")
-        return g["score"], g["validity"]
+    def test_current_announcement_is_a_direct_basis(self):
+        g = E.grade({"title": self.ANN, "status": "全文有效"},
+                    at="2026-09-29", topic="企业重组")
+        self.assertEqual("effective", g["validity"])
+        self.assertEqual("direct", g["role"])
 
-    def test_current_announcement_passes_the_line(self):
-        score, validity = self._score("全文有效")
-        self.assertEqual("effective", validity)
-        self.assertGreaterEqual(score, E.PRIMARY_THRESHOLD,
-                                "现行有效的规范性文件应可作依据")
+    def test_a_higher_tier_law_does_not_steal_the_headline(self):
+        """问企业重组的征管口径时，头条要给规定这件事的公告，不给《企业所得税法》。
 
-    def test_unknown_validity_falls_back_to_reference(self):
-        """折减要把它请回去，否则"没核对时效的公告"也能顶当依据。"""
-        for status, expect in (("", "unknown"), ("尚未生效", "pending"),
-                               ("全文废止", "repealed")):
-            score, validity = self._score(status)
-            self.assertEqual(expect, validity, status)
-            self.assertLess(score, E.PRIMARY_THRESHOLD, status)
+        变异自检：把 `pick_primary` 的排序键换成单按 `rank_tier` 降序，这一条
+        立刻报红——法律 90 压公告 55。旧的可引用性公式就是这个形状。
+        """
+        g = E.grade_all([
+            {"title": "中华人民共和国企业所得税法", "status": "全文有效"},
+            {"title": self.ANN, "status": "全文有效"},
+        ], at="2026-09-29", topic="企业重组")
+        best = E.pick_primary(g)
+        self.assertEqual(self.ANN, best["title"])
+        self.assertEqual("direct", best["role"])
 
-    def test_reference_tiers_stay_below_the_line(self):
-        """线以下的三类：技术口径、地方税务局文件、认不出形态的条目。"""
-        for title, want_low in (
-                ("关于企业重组业务所得税处理有关征管问题的公告的解读", "technical"),
-                ("解读：企业重组特殊性税务处理怎么备案", "technical"),
-                ("上海市税务局关于做好企业重组备案工作的通知", "local_normative"),
-                ("企业重组有关的几点提示", "unknown")):
-            g = E.grade({"title": title, "status": "全文有效"}, at="2026-09-29")
-            self.assertEqual(want_low, g["rank"], title)
-            self.assertLess(g["score"], E.PRIMARY_THRESHOLD,
-                            "{} 判成 {}，分数 {}".format(title, g["rank_label"],
-                                                       g["score"]))
-        # 可靠性标记优先于这条线：medium 的条目分数清成 0
-        g = E.grade({"title": self.ANN, "status": "全文有效",
-                     "_reliability": "medium"}, at="2026-09-29")
-        self.assertEqual(0.0, g["score"])
+    def test_validity_problem_becomes_a_reminder_not_a_ban(self):
+        """时效那一栏照常是唯一带后果的轴，但后果写成"要核对什么"。"""
+        for status, want in (("", "unknown"), ("尚未生效", "pending"),
+                             ("全文废止", "repealed")):
+            g = E.grade({"title": self.ANN, "status": status},
+                        at="2026-09-29", topic="企业重组")
+            self.assertEqual(want, g["validity"], status)
+            self.assertIn(E.VALIDITY_CAVEAT[want], g["caveats"], status)
+        # 已废止的那条角色转成政策沿革，仍在分层里列出，没有被删掉
+        self.assertEqual("history",
+                         E.grade({"title": self.ANN, "status": "全文废止"},
+                                 at="2026-09-29", topic="企业重组")["role"])
 
-    def test_the_old_line_would_have_failed_this(self):
-        """自检：拿 60 当线，现行有效的公告就进不了依据层。"""
-        self.assertLess(E.authority_score("normative", "effective"), 60.0)
-        self.assertGreaterEqual(E.authority_score("normative", "effective"),
-                                E.PRIMARY_THRESHOLD)
+    def test_practice_layer_keeps_its_own_role(self):
+        """税屋、公众号与官方解读各归"执行口径"，不再被压成不能引用的那堆。
 
-    def test_pending_without_effective_date_cannot_be_a_basis(self):
+        判的次序是"废止 → 实务形态 → 主题对得上 → 层级未定"：一份层级判不出来
+        的稿子只要字面上就在讲本题，它就是"本题的直接规定"，层级未定那件事由提醒
+        那几句话说清；层级与主题都落空的才落"待核对线索"。
+        """
+        cases = (
+            ({"title": "关于企业重组业务所得税处理有关征管问题的公告的解读"},
+             "technical", "practice"),
+            ({"title": "解读：企业重组特殊性税务处理怎么备案"},
+             "technical", "practice"),
+            ({"title": "六税两费减免的十个易错点", "source": "税屋 (shui5.cn)"},
+             "interpretation", "practice"),
+            ({"title": "实务问答：留抵退税的口径", "source": "微信公众号 (搜狗微信)"},
+             "technical", "practice"),
+            ({"title": "上海市税务局关于做好企业重组备案工作的通知"},
+             "local_normative", "direct"),
+            ({"title": "企业重组有关的几点提示"}, "unknown", "direct"),
+            ({"title": "几点提示"}, "unknown", "unmatched"),
+        )
+        for item, want_rank, want_role in cases:
+            g = E.grade(dict(item, status="全文有效"), at="2026-09-29",
+                        topic="企业重组")
+            self.assertEqual(want_rank, g["rank"], item["title"])
+            self.assertEqual(want_role, g["role"], item["title"])
+        # 层级未定但主题对得上的那条，提醒里必须写着"层级没判出来"这件事
+        g = E.grade({"title": "企业重组有关的几点提示", "status": "全文有效"},
+                    at="2026-09-29", topic="企业重组")
+        self.assertEqual("标题形态与来源都不足以定级", g["rank_by"])
+
+    def test_pending_without_effective_date_cannot_be_read_as_in_force(self):
         """判 --at 时"没查到施行日期"不等于"日期一定在过去"。
 
-        时点分支只要没取到 effective_date 就落回 effective，一份标着尚未
-        生效的公告在被推荐用法（带 --at）下会变成 55 分主依据；只有日期确认
-        早于观察时点才允许转正。
+        时点分支若只要没取到 effective_date 就落回 effective，一份标着尚未生效
+        的公告会在带 --at 的用法下直接顶成主依据；只有日期确认早于观察时点才
+        允许转正。转正那一条另配一句"生效日不晚于观察时点"的常规交代，它不是
+        提醒，所以 `qualified` 为假。
         """
         for it in ({"status": "尚未生效"},
                    {"status": "尚未生效", "publish_date": "2026-07-08"},
                    {"status": "未生效", "effective_date": ""}):
-            g = E.grade(dict(it, title=self.ANN), at="2026-09-29")
+            g = E.grade(dict(it, title=self.ANN), at="2026-09-29", topic="企业重组")
             self.assertEqual("pending", g["validity"], it)
-            self.assertLess(g["score"], E.PRIMARY_THRESHOLD, it)
-        # 有了日期且早于观察时点才转正，别把这一档一起压死
+            self.assertIn(E.VALIDITY_CAVEAT["pending"], g["caveats"], it)
         g = E.grade({"title": self.ANN, "status": "尚未生效",
-                     "effective_date": "2026-01-01"}, at="2026-09-29")
+                     "effective_date": "2026-01-01"}, at="2026-09-29",
+                    topic="企业重组")
         self.assertEqual("effective", g["validity"])
-        self.assertGreaterEqual(g["score"], E.PRIMARY_THRESHOLD)
+        self.assertNotIn("生效日 2026-01-01 不晚于观察时点 2026-09-29",
+                         g["caveats"], "这是判据来源的交代，不该占一条提醒")
         # 不传 --at 时本来就是纯状态判定，pending 不受影响
         self.assertEqual("pending",
                          E.judge_validity({"status": "尚未生效"}, "")["validity"])
+
+
+class TestConstitutionIsNotTheHeadline(unittest.TestCase):
+    """宪法位阶最高，但不能顶当主依据——旧公式给它 100×1.0 的全场最高分。"""
+
+    def test_flagged_and_yielded_to_the_law(self):
+        c = E.grade({"title": "中华人民共和国宪法", "category": "宪法"},
+                    at="2026-09-29", topic="税收法定")
+        self.assertEqual(100, c["rank_tier"])
+        self.assertTrue(c["not_directly_quotable"])
+        self.assertIn(E.CONSTITUTION_NOTE, c["caveats"])
+        self.assertEqual(E.CONSTITUTION_NOTE, c["citation_hint"].split("；")[1])
+        mixed = [c, E.grade({"title": "中华人民共和国税收征收管理法",
+                             "status": "全文有效"}, at="2026-09-29",
+                            topic="税收法定")]
+        self.assertEqual("中华人民共和国税收征收管理法",
+                         E.pick_primary(mixed)["title"])
+
+    def test_alone_it_is_picked_but_told_to_go_down_to_law(self):
+        """一组里只有宪法时仍要挑它，同时说明它对税务机关不构成征税依据。
+
+        变异自检：若改成"宪法一律不挑"，这一条报红——那时候答案会连一条
+        规定税收法定原则的文件都提不出来，而题问的正是这个原则。
+        """
+        only = [E.grade({"title": "中华人民共和国宪法", "category": "宪法"},
+                        at="2026-09-29", topic="税收法定")]
+        best = E.pick_primary(only)
+        self.assertEqual("中华人民共和国宪法", best["title"])
+        self.assertIn("不构成征税依据", best["_why"])
+
+
+class TestNoSynthesisedCitationScore(unittest.TestCase):
+    """可引用性那个合成分数整个撤掉了：留一个字段名就会被下游重新拿去排队。"""
+
+    def test_grade_exposes_the_axes_not_a_product(self):
+        g = E.grade({"title": "中华人民共和国企业所得税法", "status": "全文有效"},
+                    at="2026-09-29", topic="企业所得税")
+        for key in ("rank_tier", "validity", "on_topic", "role", "caveats",
+                    "not_directly_quotable"):
+            self.assertIn(key, g)
+        self.assertNotIn("score", g)
+        self.assertNotIn("score", E.rank_of("中华人民共和国宪法"))
+
+    def test_removed_symbols_stay_removed(self):
+        for name in ("authority_score", "PRIMARY_THRESHOLD", "RELIABILITY_BLOCK"):
+            self.assertFalse(hasattr(E, name), name)
+
+    def test_no_consumer_reads_a_score(self):
+        for rel in ("scripts/tax_answer.py", "scripts/tax_server.py",
+                    "tests/eval_answer.py", "frontend/index.html"):
+            text = (ROOT / rel).read_text(encoding="utf-8")
+            self.assertNotIn('get("score"', text, rel)
+            self.assertNotIn("PRIMARY_THRESHOLD", text, rel)
+
+    def test_frontend_prints_the_reminder_not_a_downweight_badge(self):
+        """界面上"⚪ 仅参考"那个角标换成了一句看得见的提醒。
+
+        角标只给一个记号：读者既不知道疑在哪一处，也无从核对，只能整条忽略。
+        现在卡面直接印提醒，句子取自条目自带的 `_reliability_note`。界面不再存
+        第二份文案：同一档位在不同来源里原因不同，按档位配死一句就会有一句是假的
+        （判据与定级层同一处，见 `tax_evidence._caveats`）。
+
+        变异自检：把角标那段 `${item._reliability==='medium'?...仅参考...}` 抄回
+        index.html，第一条断言报红；把 `rel-note` 那一行删掉，第二、三条报红；
+        在界面里另存一份按档位配的固定文案，第四条报红。
+        """
+        self.assertNotIn("仅参考", HTML, "降权标签不能留在界面上")
+        self.assertIn('class="rel-note"', HTML, "提醒要印在卡面上，不能只挂在 title 里")
+        self.assertIn("item._reliability_note", HTML, "提醒要用来源自己那句")
+        self.assertNotIn("RELIABILITY_NOTE", HTML, "界面不另存一份按档位配的文案")
 
 
 class TestValidityCorroboratedByCitation(unittest.TestCase):
@@ -589,10 +813,13 @@ class TestValidityCorroboratedByCitation(unittest.TestCase):
         for r in rows:
             if r.get("corroborated_by") != self.ANN:
                 continue
-            g = E.grade(r, at=self.AT)
+            g = E.grade(r, at=self.AT, topic="企业重组")
             self.assertEqual("effective", g["validity"])
-            self.assertGreaterEqual(g["score"], E.PRIMARY_THRESHOLD)
-            self.assertIn("制定依据", g["validity_note"])
+            self.assertIn("制定依据判定在效", g["validity_note"])
+            # 这一条的"现行有效"是佐证出来的，不是法规库录的：必须占一条提醒，
+            # 免得读的人把它当成源里的时效字段
+            self.assertIn("引用前按该文自身的时效复核", "；".join(g["caveats"]),
+                          g["caveats"])
 
     def test_explicit_status_beats_citation_evidence(self):
         """明文写着废止或未生效的，援引证据不能翻案。"""
@@ -682,10 +909,12 @@ class TestRoundFailureIsNotSilent(unittest.TestCase):
         self.assertTrue(a["evidence_gap"], "一条依据都没取到时该说证据缺口，不是取数失败")
 
     def test_legislation_lane_items_cannot_become_primary(self):
-        """立法过程实位取回的条目一律带 medium，定级层据此拒绝它当主依据。
+        """立法过程实位取回的条目带 `legislative_process`，定级层据此不挑它当主依据。
 
-        人大网站的草案与审议公告是"找到文本的线索"，本身不是依据；不标记的话，
-        它会以"未标时效"混进参考层，读起来像一条可以引的规定。
+        人大网站的草案与审议公告是"找到文本的线索"，本身不是已公布的规定。
+        这一条拒绝的理由是"它不是已公布的条文"这个事实，不是降权：2026-10-03
+        撤掉可引用性分数之后，`_reliability: medium` 只负责附带一句提醒，
+        真正把这一层挡在头条之外的是 `legislative_process` 这个标记。
         """
         page = {"results": [{"title": "法律草案审议 中国人大网",
                              "url": "http://www.npc.gov.cn/npc/c2/x.html"}], "total": 1}
@@ -694,8 +923,8 @@ class TestRoundFailureIsNotSilent(unittest.TestCase):
         self.assertEqual("", err)
         self.assertEqual("npc.gov.cn", hit.call_args.kwargs["site"])
         self.assertEqual("medium", rows[0]["_reliability"])
+        self.assertTrue(rows[0]["legislative_process"])
         graded = [E.grade(r, at="2026-09-29") for r in rows]
-        self.assertEqual(0.0, graded[0]["score"])
         best = E.pick_primary(graded)
         self.assertEqual("", best.get("title", ""), "立法过程线索不能被选成主依据")
         self.assertIn("立法过程线索", best["_why"])
@@ -704,6 +933,9 @@ class TestRoundFailureIsNotSilent(unittest.TestCase):
                                    "status": "全文有效"}, at="2026-09-29")]
         self.assertNotEqual("法律草案审议 中国人大网",
                             E.pick_primary(mixed)["title"])
+        # 但它没有被删掉：落选清单里仍列着这一条
+        self.assertIn("法律草案审议 中国人大网",
+                      [r["title"] for r in best["_runners_up"]])
 
     def test_draft_round_also_searches_shui5_and_wechat(self):
         """草案那一轮必须连带搜税屋与公众号：草案解读文章只活在这两个源里。
@@ -839,7 +1071,8 @@ class TestRulesCanActuallyFail(unittest.TestCase):
                                   {"npc": 3})
         self.assertTrue(note)
 
-    def test_evidence_veto_only_fires_on_known_levels(self):
+    def test_reliability_marker_normalizes_only_known_levels(self):
+        """认不出的取值一律当"没有标记"，免得凭空多出一条提醒。"""
         self.assertEqual("", E._reliability_of({"_reliability": "HIGH"}))
         self.assertEqual("low", E._reliability_of({"_reliability": " LOW "}))
         self.assertEqual("", E._reliability_of({}))

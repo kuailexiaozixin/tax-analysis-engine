@@ -1,55 +1,72 @@
 #!/usr/bin/env python3
 """
-依据定级 — 给检索到的每条依据打上效力位阶、时效状态和可用性判断。
+依据定级 — 给检索到的每条依据打上规范层级、时效、与本题的对应关系和角色。
 
 为什么需要这一层：五个源检索回来的东西不是一个量级的凭据。NPC 里的
 《企业所得税法》是全国人大立的法，总局的一纸公告是部门规范性文件，税屋的
-一篇文章是第三方解读。三者排在一起当"依据"用，读者分不出哪句能拿去和
-税务机关据理力争、哪句只是行业参考。把它们混成一堆贴进答案，是把检索
-结果直接当分析结论的通病。
+一篇文章是第三方解读。三者排在一起不加区分地用，读者分不出哪一句是能拿去和
+税务机关据理力争的条文、哪一句是要回到原文再核的执行口径。把它们混成一堆贴进
+答案，是把检索结果直接当分析结论的通病。
 
 同一层内部还要看时效。政策有生效和失效日期，同一问题在 2023 年和 2026 年
 答案可能完全不同；拿一份已废止的公告去回答 2026 年的问题，比不回答更糟，
 因为它看起来像个答案。
 
-这一层做四件事：
-  1. 按效力位阶定级（LEGAL_RANK）：宪法 > 法律 > 行政法规 > 部门规章 >
-     规范性文件 > 地方性文件 > 技术性口径 > 实务解读。冲突时高位阶优先。
-  2. 判时效（effective_at）：给定观察时点，判定每条依据在该时点是现行有效、
-     尚未生效、已废止还是查不到时效。
-  3. 给可引用性打分（authority_score）：位阶与时效的合成值，用于排序与
-     提示哪些依据只能当参考。
-  4. 合并去重与冲突提示：同一件事有多层依据时，把位阶最高的那条挑出来当主依据。
+这一层做四件事，四件事各用一根独立的轴，**不合成成一个分数**：
+  1. 判规范层级（LEGAL_RANK）：宪法、法律、行政法规、部门规章、规范性文件、
+     地方性法规、地方规范性文件。它只回答一件事——下位规则不得抵触上位规则，
+     两份文件打架时谁让位。**它不回答"本题该引哪一份"**，这两件事原先被
+     `位阶 × 时效系数 = 可引用性` 这一个乘法混在一起，混起来立刻出错：宪法
+     位阶 100、时效 1.0，按旧公式是全场最高分、会被挑成主依据，而我国法律
+     实践中宪法不得直接作为征税或裁判依据；反过来"小微企业六税两费减免"这
+     道题的直接依据是总局公告（规范性文件），引《企业所得税法》位阶再高也
+     答不了这题。
+  2. 判时效（judge_validity）：给定观察时点，判定每条依据在该时点是现行有效、
+     尚未生效、已废止还是查不到时效。这是唯一带"不能用"后果的轴——拿一份
+     已废止的公告回答 2026 年的问题比不回答更糟，因为它看起来像个答案。
+  3. 判与本题的对应关系（on_topic）：这条材料是不是真的规定了题面那件事。
+     判据是标题或正文里能不能找到本题的主题词，找不到就标"未核对"，
+     由上层决定要不要补一轮检索。原先这一维根本没有，检索结果跑题只能靠
+     各源自带的 `_reliability` 标记把分数清成 0 来间接表达。
+  4. 分层与平手裁决：同一件事有多份材料时，按「本题的直接规定 / 上位依据与
+     授权 / 执行口径与实务认定 / 政策沿革 / 待核对线索」五种**角色**分层。角色
+     不是等级高低——答一道具体题目的标准配置是直接规定、上位授权、执行口径
+     三层都有，缺哪层就写明缺哪层。
 
-第 3 步还要叠加各源自己给的可靠性标记（`_reliability`）。这是本层原先漏掉的一
-环：标记只在输出里印一行给人看，定级这里完全不读，于是 `low` 的条目照样能被挑
-成"主依据"并打出"可作依据引用（法律）"。把判定权留给读文档的人，等于没判定。
+原先第 3 步之后的可靠性否决（`_reliability` 命中就把分清零、`low` 整组剔除、
+界面上挂"仅参考"角标）已撤除。那一套是在用降权代替核对：它把"这条可能跑题"
+变成了"这条不许引用"，而用户看到的只是一个小标签，既不知道为什么、也无从
+下手核对。现在同样的信息改写成逐条的具体提醒（`caveats`）——说清楚存疑在哪
+一处、要核对什么——材料本身照常参与分层。
 
 它不做判断题，只给判断提供刻度。真正的判断由上层按 tax_analyze 判出的
 问题类型组织。
 
 Usage:
-  python tax_evidence.py --rank "中华人民共和国企业所得税法"
-  python tax_evidence.py --rank "国家税务总局公告2018年第28号" --at 2026-09-27
+  python tax_evidence.py --rank "中华人民共和国企业所得税法" --topic "企业所得税"
+  python tax_evidence.py --rank "国家税务总局公告2018年第28号" --at 2026-09-27 \
+      --topic "税前扣除凭证"
+  python tax_evidence.py --rank "即征即退的会计与税务处理" --source "税屋 (shui5.cn)"
 """
 
 import re
 
-# ── 效力位阶 ───────────────────────────────────────────────────────────────
-# 数字越大效力越高。分档依据是《立法法》确立的位阶：宪法、法律、行政法规、
-# 部门规章、地方性法规，再往下是规范性文件与技术口径。
-# 不在同一序列里的两类依据不能靠数字比大小，_NOT_COMPARABLE 记着这件事。
+# ── 规范层级 ───────────────────────────────────────────────────────────────
+# 数字是**层级序号**，只回答一件事：两份文件对同一件事规定冲突时谁让位
+# （《立法法》确立的位阶：宪法、法律、行政法规、部门规章、地方性法规，
+# 再往下是规范性文件）。它不是"该引哪一条"的权重，也不参与任何分数合成——
+# 位阶高只意味着下位不得抵触它，不意味着它更适合回答某个具体问题。
+# 这张表里**只装《立法法》序列内的层级**：技术性口径、实务解读、未定性都不在
+# 序列内（前两个是材料形态，最后一个是没判出来），拿它们比大小没有意义，
+# 所以不进表；要取序号一律走 `_tier()`，表里没有的一律按 0 处理。
 LEGAL_RANK = {
-    "constitution": 100,      # 宪法
+    "constitution": 100,      # 宪法 —— 位阶最高，但不得直接援引，见 NOT_DIRECTLY_QUOTABLE
     "law": 90,                # 法律（全国人大及其常委会）
     "admin_regulation": 80,   # 行政法规（国务院）
     "department_rule": 70,    # 部门规章（总局、财政部等部委以令形式发布）
     "normative": 55,          # 规范性文件（总局公告、通知、批复，不以令发布）
     "local_regulation": 50,   # 地方性法规与地方政府规章
     "local_normative": 40,    # 地方税务规范性文件
-    "technical": 25,          # 技术性口径：解读、指南、答复口径
-    "interpretation": 10,    # 实务解读：第三方文章、公众号
-    "unknown": 30,
 }
 RANK_LABEL = {
     "constitution": "宪法",
@@ -63,6 +80,24 @@ RANK_LABEL = {
     "interpretation": "实务解读",
     "unknown": "未定性",
 }
+
+# 这两档不在《立法法》的位阶序列里，它们是材料形态不是规范层级。混在
+# LEGAL_RANK 里靠数字比大小，就出现"一份总局官方解读（25）比地方政府规章
+# （50）低"这种没有意义的比较——两者根本不在同一根轴上。
+PRACTICE_RANKS = ("technical", "interpretation")
+
+# 指向实务材料来源的标记。这里用子串而不是全等：各源写进 `source` 的是给人看的
+# 标签（"税屋 (shui5.cn)""微信公众号 (搜狗微信)"），而 360 那一路回填的是纯域名
+# （`tax_so360._domain_of` 的返回值，如 "shui5.cn"）。原先写
+# `source in ("shui5.cn", "mp.weixin.qq.com")`，只能命中 360 回填的那批，
+# 税屋与公众号自己发回来的条目一条都不认，实务层因此被按标题形态漏判成"未定性"。
+PRACTICE_SOURCES = ("shui5.cn", "mp.weixin.qq.com", "weixin.sogou.com",
+                    "税屋", "微信公众号", "搜狗微信")
+
+
+def _tier(rank_key: str) -> int:
+    """取层级序号；不在位阶序列内的形态（含未定性）一律 0。"""
+    return LEGAL_RANK.get(rank_key, 0)
 
 # 位阶判定：先按标题形态的强特征，再按发布机关。
 # 顺序有讲究——"暂行"条例、"实施条例"这类形态比机关名更能定级，
@@ -83,11 +118,11 @@ _RANK_RULES = (
     (r"^中华人民共和国[一-龥]{2,12}(?:办法|规程)\s*$", "department_rule"),
     # 规范性文件：部委的公告/通知/批复/函/意见/决定。
     # 部委名可能多到四字（国家税务总局）或带空格（财政部 国家税务总局），
-    # 所以部委名段用"非空且不超过 12 字"来兜，不要写死部委清单。
+    # 所以中间段用"非句号字符、至多 60 个"来兜，不要写死部委清单。
     (r"^国家税务总局(?:公告)?\s*(?:第)?\d{4}\s*年?\s*第?\s*\d*\s*号", "normative"),
     # 中间段用 [^。] 而不是 [一-龥]：标题里带书名号时（"国家税务总局关于发布
     # 《企业重组业务企业所得税管理办法》的公告"）汉字类会断在《上，整条判成
-    # 未定性，把一份规范性文件压到 23.4 分。
+    # 未定性，一份规范性文件就这样丢了层级，连带角色也判错。
     (r"^国家税务总局[^。]{0,60}?(?:公告|通知|批复|函|意见|决定|令)", "normative"),
     (r"^(?:财政部|国家发展改革委|商务部|海关总署|国家统计局|国家外汇管理局)"
      r"[^。]{0,60}?(?:公告|通知|批复|函|意见|决定)", "normative"),
@@ -114,7 +149,7 @@ def rank_of(title: str, category: str = "", source: str = "") -> dict:
         source: 来源标识，用来给"实务解读"兜底。
 
     Returns:
-        {"rank","label","score","by"}，by 说明是按什么判出来的。
+        {"rank","label","tier","by"}，by 说明是按什么判出来的；tier 是层级序号。
     """
     title = (title or "").strip()
     cat = (category or "").strip()
@@ -142,15 +177,18 @@ def rank_of(title: str, category: str = "", source: str = "") -> dict:
         if pat.search(title):
             return _mk(key, f"标题形态匹配「{title[:24]}」")
 
-    if source in ("shui5.cn", "mp.weixin.qq.com") or "解读" in title:
+    if any(d in source for d in PRACTICE_SOURCES) or "解读" in title:
         return _mk("interpretation", "来源或标题指向实务解读")
 
     return _mk("unknown", "标题形态与来源都不足以定级")
 
 
 def _mk(key: str, by: str) -> dict:
+    # tier 是层级序号（只用于冲突裁决），不是可引用性分。字段名从 score 改成
+    # tier 是有意的：留着 score 就会被下游当权重拿去排队。不在位阶序列内的
+    # 形态走 `_tier()` 拿 0，不在这里给它们编一个假序号。
     return {"rank": key, "label": RANK_LABEL[key],
-            "score": LEGAL_RANK[key], "by": by}
+            "tier": _tier(key), "by": by}
 
 
 # ── 时效 ───────────────────────────────────────────────────────────────────
@@ -172,7 +210,12 @@ def judge_validity(item: dict, at: str = "") -> dict:
         at: 观察时点 YYYY-MM-DD，空串表示不判生效区间，只看状态字段。
 
     Returns:
-        {"validity","label","as_of","note"}。as_of 为空表示没做时点判定。
+        {"validity","label","as_of","note","qualified"}。as_of 为空表示没做时点
+        判定。qualified=True 表示这句 note 里带着"引用前要办的一件事"（文本被
+        改过、只列到部分失效、靠别文佐证、日期晚于时点），False 表示它只是在
+        交代这条结论从哪个字段得来。区分这两者是因为 note 会被拼进 `caveats`，
+        而"按状态字段判定"这种常规交代挤在提醒队列最前面，会把真正要核对的那句
+        顶下去，用户看到的就成了没有信息量的废话。
     """
     at = (at or "").strip()
     status = (item.get("status") or "").strip()
@@ -199,8 +242,8 @@ def judge_validity(item: dict, at: str = "") -> dict:
         base = "repealed"
     elif amended:
         # 法规库把"已修改"与"已废止/全文失效"分开发：标了已修改的仍然在效，
-        # 只是文本被改过。判成 unknown 会把仍在用的配套文件全压到 42.9 分、
-        # 一律赶进"只能参考"，而答案真正该说的是"引哪一版"。
+        # 只是文本被改过。判成 unknown 会把仍在使用的配套文件全拖进"时效未
+        # 标明"那一档，而答案真正该说的是"引哪一版"。
         base = "effective"
     else:
         base = "unknown"
@@ -217,7 +260,7 @@ def judge_validity(item: dict, at: str = "") -> dict:
     if base == "unknown" and cited_by:
         when = f"，观察时点 {at}" if at else ""
         return {"validity": "effective", "label": VALIDITY["effective"],
-                "as_of": at,
+                "as_of": at, "qualified": True,
                 "note": f"本条无时效录入，按现行有效的《{cited_by}》正文将其列为"
                         f"制定依据判定在效{when}；引用前按该文自身的时效复核"}
 
@@ -225,191 +268,298 @@ def judge_validity(item: dict, at: str = "") -> dict:
         eff = (item.get("effective_date") or "").strip()
         if eff and eff > at:
             return {"validity": "pending", "label": VALIDITY["pending"],
-                    "as_of": at, "note": f"生效日 {eff} 晚于观察时点 {at}"}
+                    "as_of": at, "qualified": True,
+                    "note": f"生效日 {eff} 晚于观察时点 {at}"}
         if base == "pending":
             # 状态说"尚未生效"，就要靠施行日期证明它在观察时点前已经生效。
             # 没有日期不能倒向 effective——那等于把"没查到日期"当成"日期必然
             # 在过去"，一份还没开始施行的公告会直接顶成主依据。
             if not eff:
                 return {"validity": "pending", "label": VALIDITY["pending"],
-                        "as_of": at,
+                        "as_of": at, "qualified": True,
                         "note": f"状态标尚未生效，且无施行日期可证实在 {at} 前生效"}
             return {"validity": "effective", "label": VALIDITY["effective"],
-                    "as_of": at, "note": f"生效日 {eff} 不晚于观察时点 {at}"}
+                    "as_of": at, "qualified": False,
+                    "note": f"生效日 {eff} 不晚于观察时点 {at}"}
         return {"validity": "effective", "label": VALIDITY["effective"],
-                "as_of": at,
+                "as_of": at, "qualified": bool(tail),
                 "note": f"按状态字段判定，效力期间含 {at}{tail}"}
 
     if base == "effective" and tail:
         return {"validity": base, "label": VALIDITY[base], "as_of": at,
-                "note": "按状态字段判定" + tail}
+                "qualified": True, "note": "按状态字段判定" + tail}
     return {"validity": base, "label": VALIDITY[base], "as_of": at,
+            "qualified": False,
             "note": "无状态字段可判" if base == "unknown" else "按状态字段判定"}
 
 
-# ── 合成打分 ───────────────────────────────────────────────────────────────
-# 位阶与时效的合成。位阶是主项，时效是减项：一份高位阶但已废止的法律，
-# 对今天的问题价值低于一份现行有效的部门规章。
-def authority_score(rank: str, validity: str) -> float:
-    """把位阶与时效合成 0~100 的可引用性分。
+# ── 与本题的对应关系 ───────────────────────────────────────────────────────
+# 这一维是后加的，因为它才是"该引哪一条"的真正判据，而旧实现里根本没有它：
+# 跑题只能靠各源自带的 `_reliability` 标记把分数清成 0 来间接表达，结果是
+# "一条《企业所得税法》因为检索方式跑题而被整条禁掉"这种荒谬判定。
+TOPIC_FIELDS = ("title", "content", "summary", "body")
 
-    纯位阶最多 90 分（法律），时效扣分把已废止压到该位阶的一半以下，
-    未知时效扣 10 分——宁可标出来让人自己判断，也不要当作确定有效。
+# 主题词参数允许是一串词：按这些分隔符切开，`tax_answer` 那边传进来的就是
+# 专题名、本体法名、口语短词几样拼在一起的东西，而不是一个词。
+_TOPIC_SEP = re.compile(r"[\s、，,；;/|]+")
+
+# 宪法单列：位阶最高，但不能直接拿去当征税或答复的依据。
+NOT_DIRECTLY_QUOTABLE = ("constitution",)
+CONSTITUTION_NOTE = ("宪法不直接作为征税与执法依据：它要靠《企业所得税法》《税收征收"
+                     "管理法》这类法律落实，答案里拿宪法条文当依据顶不住税务机关")
+
+
+def on_topic_of(item: dict, topic):
+    """这条材料有没有真的规定题面那件事。
+
+    Args:
+        item: 检索结果字典。
+        topic: 本题的主题词。给一个词、一串用空白或顿号分开的词、或直接给词表
+            都行——任一词命中即算命中。单词匹配是不够的：《国家税务总局关于
+            进一步支持小微企业和个体工商户发展有关税费政策的公告》是"六税两费
+            减免"这道题的直接规定，可它的标题里根本没有"六税两费"四个字，只有
+            "税费政策"。传进来的词越多，越可能撞中标题里那个说法。
+
+    Returns:
+        True  —— 标题或正文里找得到本题的主题词。
+        False —— 传了主题词，但这条材料的标题与正文里一处都没有，字面上对不上。
+        None  —— 判不了：没传主题词、传的词全太短，或这条材料没有任何可比文本。
+                 调用方不得把 None 当 False 用——"没取到正文"写成"对不上本题"，
+                 会把一份正文里全是本题规定的文件挤到待核对那一档去。
     """
-    base = LEGAL_RANK.get(rank, LEGAL_RANK["unknown"])
-    factor = {"effective": 1.0, "pending": 0.7, "unknown": 0.78,
-              "repealed": 0.35}[validity]
-    return round(base * factor, 1)
+    terms = _topic_terms(topic)
+    if not terms:
+        return None
+    texts = [item.get(f) for f in TOPIC_FIELDS]
+    texts = [v for v in texts if isinstance(v, str) and v]
+    if not texts:
+        return None
+    return _hit_in(texts, terms)
 
 
-# 能当依据的最低分。低于它只能当参考材料，不能当结论支撑。
-# 60 分这道线原先把 ⑧ 的规范性文件（55 分）也挡在依据层之外，事实不通：
-# 总局公告、财税通知是税务机关据以执法、纳税人据以办理的直接依据，
-# 只是不得与上位法抵触。判据该是"现行有效的法定文件"，不是"位阶高于某条线"。
-# 50 分的取舍：
-#   规范性文件 55、地方性法规 50 → 现行有效才算依据
-#   规范性文件×时效未标明 42.9、×已修改后废止 19.3 → 落回参考，正是要的效果
-#   技术性口径 25、实务解读 10、地方规范性文件 40、未定性 30 → 一律只作参考
-PRIMARY_THRESHOLD = 50.0
+def _hit_in(texts: list, terms: list) -> bool:
+    return any(t in s for s in texts for t in terms)
 
-# ── 可靠性标记的否决权 ─────────────────────────────────────────────────────
-# 各源在结果上打的 _reliability（全文检索偏题、fgk 深页、整源被判低可靠）。
-# 它优先于位阶与时效：一条《XX法》如果检索结果本身跑题，位阶再高也不能引用。
-# low  → 完全不可引用
-# medium → 只能用来定位法规，不能作为条文依据
-# 其余/缺失 → 不影响，按位阶时效正常判
-RELIABILITY_BLOCK = {
-    "low": "不得作为依据引用：_reliability=low（结果与查询无关）",
-    "medium": "仅用于定位法规，不得作为条文依据：_reliability=medium",
+
+def _topic_terms(topic) -> list:
+    """把主题词参数归一成词表；丢掉长度不足 2 的字，避免"税"这种单字到处命中。"""
+    if topic is None:
+        return []
+    raw = (_TOPIC_SEP.split(topic) if isinstance(topic, str)
+           else [str(t) for t in topic])
+    return [t.strip("《》〈〉“”\"'（）() ：:") for t in raw if len(t.strip()) >= 2]
+
+
+# ── 角色分层 ───────────────────────────────────────────────────────────────
+# 五档是角色不是等级：一份文件"是本题的直接规定"还是"它的上位授权"，与它
+# 位阶高低无关；答一道具体题目的标准配置是直接规定、上位授权、执行口径三层
+# 都有，缺哪层就写明缺哪层。
+ROLE_LABEL = {
+    "direct": "本题的直接规定",
+    "superior": "上位依据与授权",
+    "practice": "执行口径与实务认定",
+    "history": "政策沿革",
+    "unmatched": "待核对线索",
+}
+ROLE_ORDER = {"direct": 4, "superior": 3, "practice": 2, "history": 1,
+              "unmatched": 0}
+
+
+def role_of(rank_key: str, validity: str, topic_hit) -> str:
+    """这条材料在同一道题里充当什么角色。
+
+    `unmatched` 是给"层级没判出来、主题也没对上"那条的：把它写成"上位依据与
+    授权"是在替一份来历不明的材料担保层级关系，而这一组判定里恰恰两处都是空的。
+    """
+    if validity == "repealed":
+        return "history"
+    if rank_key in PRACTICE_RANKS:
+        return "practice"
+    if topic_hit is True:
+        return "direct"
+    if rank_key == "unknown":
+        return "unmatched"
+    return "superior"
+
+
+# ── 可靠性标记的去向：提醒，不是排除 ──────────────────────────────────────
+# 原先 `low` 把分数清成 0 并从 `pick_primary` 整组剔除，`medium` 只许"定位"。
+# 那是用降权代替核对：用户看到一个小标签，既不知道存疑在哪一处，也无从下手。
+# 同样这些来源信息现在写成一句说清"哪一处存疑、要核对什么"的提醒。
+# 这两个档位只作兜底：真正说得出存疑在哪一处的，是来源随条目带下来的
+# `_reliability_note`（见 `_caveats`）。同一个 `medium` 在三个来源里指的是
+# 三件不同的事——NPC 正文检索按全文分词命中、总局法规库第 2 页起排序变松、
+# 立法过程件不在五个源的收录范围内。把档位本身翻成某一句具体原因，就会给
+# 另外两个来源的条目配一句假提醒（说成"清单靠后的页位"，而全文检索和站内
+# 检索根本没有页位这件事）。
+RELIABILITY_CAVEAT = {
+    "low": ("来源把这一条标为可疑，召回的强弱不足以证明它规定了本题——"
+            "引用前回原文确认它到底有没有规定这件事，确认结果写进答案"),
+    "medium": ("来源提示这一条可能偏题，命中方式不是按标题精确对上本题——"
+               "先据它定位到法规名，再按那份法规的条文引用"),
+}
+
+# 时效是唯一带"不能用"后果的轴，但后果仍然写成提醒而不是禁令。
+VALIDITY_CAVEAT = {
+    "repealed": "已废止，只能用于说明政策沿革，且要写明原施行期间",
+    "pending": "尚未生效，不能用来回答当期问题，只能说明将来规则",
+    "unknown": "时效没有录入项可判，引用前要单独核对它现在是否还在效",
 }
 
 
 def _reliability_of(item: dict) -> str:
     """读出条目上的可靠性标记，归一成小写；没有或认不出就返回空串。"""
     rel = str(item.get("_reliability") or "").strip().lower()
-    return rel if rel in RELIABILITY_BLOCK else ""
+    return rel if rel in RELIABILITY_CAVEAT else ""
 
 
-def grade(item: dict, at: str = "") -> dict:
-    """给一条检索结果打完整定级。
+def _caveats(rank_key: str, val: dict, topic_hit, rel: str, rel_note: str) -> list:
+    """把这条材料身上所有"要核对什么"合成一个有序句子清单。
+
+    顺序按"越靠近这道题的结论越先看"：能不能引（宪法特判）→ 时效 → 与本题
+    对不对得上 → 来源自身的可靠性。
+    """
+    out = []
+    if rank_key in NOT_DIRECTLY_QUOTABLE:
+        out.append(CONSTITUTION_NOTE)
+    if val["validity"] in VALIDITY_CAVEAT:
+        out.append(VALIDITY_CAVEAT[val["validity"]])
+    if val.get("qualified") and val.get("note"):
+        out.append(val["note"])
+    if topic_hit is False:
+        out.append("标题与正文里都没有本题的主题词，这条是按字面召回的，"
+                   "引用前先确认它规定的是不是这件事")
+    if topic_hit is None:
+        out.append("没有传入本题主题词，这条与题目的对应关系未经核对")
+    if rel:
+        out.append(rel_note or RELIABILITY_CAVEAT[rel])
+    return out
+
+
+def grade(item: dict, at: str = "", topic: str = "") -> dict:
+    """给一条检索结果做完整定级：层级、时效、与本题的对应关系、要提醒什么。
 
     Args:
         item: 检索结果字典，至少含 title，可含 category/source/status/
-            effective_date/publish_date/url/_reliability。
+            effective_date/publish_date/url/content/summary/_reliability。
         at: 观察时点 YYYY-MM-DD。
+        topic: 本题的主题词，单词或词表都行（见 `on_topic_of`）。一般是
+            `resolve_tax_type` 归出的专题名、本体法名加口语短词。不传则
+            `on_topic` 为 None，程序不会把它当 False 用。
 
     Returns:
-        原字段 + rank/label/score/validity/citation_hint 三组，以及
-        归一后的 reliability（无标记时为 "ok"）。
+        原字段 + rank 组、validity 组、on_topic/role 组、caveats 与 citation_hint。
+        **没有 score 字段**——旧的可引用性合成本次被撤，理由见文件头。
     """
     rank = rank_of(item.get("title", ""), item.get("category", ""),
                    item.get("source", ""))
     val = judge_validity(item, at)
-    score = authority_score(rank["rank"], val["validity"])
+    topic_hit = on_topic_of(item, topic)
     rel = _reliability_of(item)
+    role = role_of(rank["rank"], val["validity"], topic_hit)
     out = dict(item)
     out["rank"] = rank["rank"]
     out["rank_label"] = rank["label"]
+    out["rank_tier"] = rank["tier"]
     out["rank_by"] = rank["by"]
     out["validity"] = val["validity"]
     out["validity_label"] = val["label"]
     out["validity_note"] = val["note"]
-    out["score"] = score
+    out["on_topic"] = topic_hit
+    out["role"] = role
+    out["role_label"] = ROLE_LABEL[role]
     out["reliability"] = rel or "ok"
-    # 标了 low/medium 时，可引用性分不再是"能不能用"的依据，清成 0 免得下游
-    # 看到 85 分又把它当高可信；能不能用由 citation_hint 说了算。
-    if rel:
-        out["score"] = 0.0
-    out["citation_hint"] = _hint(rank, val, score, rel,
-                                 item.get("_reliability_note", ""))
+    out["not_directly_quotable"] = rank["rank"] in NOT_DIRECTLY_QUOTABLE
+    out["caveats"] = _caveats(rank["rank"], val, topic_hit, rel,
+                              item.get("_reliability_note", ""))
+    out["citation_hint"] = _hint(out)
     return out
 
 
-def _hint(rank: dict, val: dict, score: float,
-          rel: str = "", rel_note: str = "") -> str:
-    """一句人话，说明这条依据该以什么身份引用。
+def _hint(g: dict) -> str:
+    """一句人话，说明这条材料该以什么身份进答案。
 
-    可靠性否决排在最前：位阶再高，检索结果跑题也不能拿来引用。
+    旧版这句里带"可引用性 X 分"和"只能作参考材料"，现在换成角色加首要提醒：
+    分数是拿来排队的，不是拿来禁止引用的。
     """
-    if rel:
-        tail = ("。" + rel_note) if rel_note else "。"
-        return RELIABILITY_BLOCK[rel] + tail
-    if val["validity"] == "repealed":
-        return ("已废止，不能作为结论依据；只可用于说明政策沿革，"
-                "且要写明原施行期间")
-    if val["validity"] == "pending":
-        return "尚未生效，只能用于说明将来规则，不能用于回答当期问题"
-    if val["validity"] == "unknown" and rank["rank"] in ("technical", "interpretation"):
-        return "参考材料，非法定依据；引用时要与法定依据分开列"
-    if score >= 80:
-        return f"可作主依据（{rank['label']}，效力最高一层）"
-    if score >= PRIMARY_THRESHOLD:
-        return f"可作主依据（{rank['label']}）"
-    return "只能作参考材料，不足以单独支撑结论"
+    head = f"{g['role_label']}（{g['rank_label']}、{g['validity_label']}）"
+    if g["caveats"]:
+        return head + "；" + g["caveats"][0]
+    return head + "；按现行有效条文引用"
 
 
 def pick_primary(graded: list) -> dict:
-    """从一组已定级的依据里挑主依据。
+    """从一组已定级的材料里挑主依据。
 
-    规则：带 low 的一律出局（不得作为依据引用）；立法过程件（人大网草案、
-    审议/征求意见公告，标 legislative_process）也一律出局——它只是"找到文本的
-    线索"，本身不是可引用的规定，跟 low 同处理，不能兜底当主依据。带 medium 的
-    排在同分数的正常依据之后，只有在没有别的可用依据时才轮到它，并附一句限制说明。
-    其余先按可引用性分降序，同分取位阶更高的。
+    规则（2026-10-03 重做，原先按"可引用性分降序 + low 整组剔除"）：
+      1. 立法过程件（人大网草案、审议/征求意见公告，标 `legislative_process`）
+         出局——它不是已公布的条文，这是事实层面的处置，不是降权。
+      2. 不可直接援引的层级（宪法）排在所有可直接援引的材料之后：它在分层里
+         照常出现（上位依据那一层本来就该有它），但不占头条。一组里只有宪法时
+         仍然挑它，并在 `_why` 里写明"要落到具体法律条文上才能对税务机关用"。
+      3. 其余按角色挑：本题的直接规定 > 上位依据与授权 > 执行口径与实务认定 >
+         政策沿革 > 待核对线索。
+      4. 同一角色内，时效判得出来的排在判不出来之前；再同则取规范层级高的
+         （只在可比的两档之间比，`technical`/`interpretation` 不参与比大小）。
+      5. `_reliability` 不再影响挑选，只影响这条被选中时附带哪句提醒。
 
-    返回的 dict 带 _why 说明为什么选它，以及 _runners_up 记下其余候选，
-    供答案里做依据分层展示。
+    返回的 dict 带 `_why` 说明为什么选它，以及 `_runners_up` 记下其余候选。
     """
     if not graded:
         return {"_why": "没有任何依据", "_runners_up": []}
 
-    # low 与立法过程线索都不能当主依据；两者一起从这里剔除。
-    def vetoed(g):
-        return (g.get("reliability") or "ok") == "low" or g.get("legislative_process")
-
-    usable = [g for g in graded if not vetoed(g)]
+    usable = [g for g in graded if not g.get("legislative_process")]
     if not usable:
-        if any(g.get("legislative_process") for g in graded):
-            why = ("本组只有立法过程线索（人大网草案、审议/征求意见公告），"
-                   "不是已公布的条文，不得作为主依据引用")
-        else:
-            why = "本组依据全部带 _reliability: low，不得作为依据引用"
         return {
-            "_why": why,
-            "_runners_up": [
-                {"title": g.get("title", ""), "rank_label": g.get("rank_label", ""),
-                 "score": g.get("score", 0), "reliability": g.get("reliability", "")}
-                for g in graded
-            ],
+            "_why": ("本组只有立法过程线索（人大网草案、审议/征求意见公告），"
+                     "不是已公布的条文，不能作为主依据引用"),
+            "_runners_up": [_brief(g) for g in graded],
         }
 
-    def sort_key(g):
-        # 第一个键把可靠性变成排序权重：low 排最后（其实已被剔除），medium 次之。
-        # 原先只按分数排，标了 low 的《XX法》照样排第一当主依据。
-        return (-{"low": 2, "medium": 1}.get(g.get("reliability") or "ok", 0),
-                g.get("score", 0),
-                LEGAL_RANK.get(g.get("rank", "unknown"), 0))
-
-    ordered = sorted(usable, key=sort_key, reverse=True)
+    ordered = sorted(usable, key=_order_key, reverse=True)
     best = dict(ordered[0])
-    best["_why"] = (f"{best.get('rank_label','未定性')}、"
-                    f"{best.get('validity_label','时效未标明')}，"
-                    f"可引用性 {best.get('score',0)} 分，为本组最高")
-    if best.get("reliability") == "medium":
-        best["_why"] += "；但本组其余依据都不比它更可靠，这条仍只能用于定位，不得作为条文依据"
-    best["_runners_up"] = [
-        {"title": g.get("title", ""), "rank_label": g.get("rank_label", ""),
-         "validity_label": g.get("validity_label", ""), "score": g.get("score", 0),
-         "reliability": g.get("reliability", "ok")}
-        for g in ordered[1:]
-    ]
+    why = (f"{best.get('role_label', '')}："
+           f"{best.get('rank_label', '未定性')}、"
+           f"{best.get('validity_label', '时效未标明')}")
+    if best.get("not_directly_quotable"):
+        why += ("；本组里没有可直接援引的法定文件，头条只能给宪法——它对税务机关"
+                "不构成征税依据，答案要补一轮检索落到具体法律条文")
+    if best.get("on_topic") is False:
+        why += "；本组里没有一条字面上对得上本题主题词，这条是按层级与时效给的"
+    if best.get("caveats"):
+        why += "；" + "；".join(best["caveats"][:2])
+    best["_why"] = why
+    best["_runners_up"] = [_brief(g) for g in ordered[1:]]
     return best
 
 
-def grade_all(items: list, at: str = "") -> list:
-    """批量定级，按可引用性分降序返回。"""
-    return sorted((grade(i, at) for i in items),
-                  key=lambda g: g.get("score", 0), reverse=True)
+def _brief(g: dict) -> dict:
+    return {"title": g.get("title", ""), "rank_label": g.get("rank_label", ""),
+            "validity_label": g.get("validity_label", ""),
+            "role_label": g.get("role_label", ""),
+            "on_topic": g.get("on_topic"),
+            "not_directly_quotable": g.get("not_directly_quotable", False),
+            "reliability": g.get("reliability", ""),
+            "caveats": g.get("caveats", [])}
+
+
+def _order_key(g: dict) -> tuple:
+    """一条已定级材料在队列里的位置，`pick_primary` 与 `grade_all` 共用。
+
+    两处各写一遍迟早会分叉——分叉之后"列表里第一位"和"挑出来的主依据"就不是
+    同一条，答案会自相矛盾。
+    """
+    return (0 if g.get("not_directly_quotable") else 1,
+            ROLE_ORDER.get(g.get("role"), 0),
+            1 if g.get("validity") != "unknown" else 0,
+            _tier(g.get("rank", "unknown")),
+            1 if g.get("on_topic") is True else 0)
+
+
+def grade_all(items: list, at: str = "", topic: str = "") -> list:
+    """批量定级，按"可直接援引 → 角色 → 时效是否判得出 → 层级"返回（不再按分数排）。"""
+    return sorted((grade(i, at, topic) for i in items),
+                  key=_order_key, reverse=True)
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
@@ -423,18 +573,37 @@ def main():
         except (AttributeError, ValueError):
             pass
 
-    p = argparse.ArgumentParser(description="依据效力位阶与时效定级")
-    p.add_argument("--rank", help="法规名或标题，判效力位阶")
+    p = argparse.ArgumentParser(
+        description="给一条依据定层级、时效、角色，并列出引用前要核对什么")
+    p.add_argument("--rank", help="法规名或标题，判规范层级")
     p.add_argument("--at", default="", help="观察时点 YYYY-MM-DD")
+    p.add_argument("--topic", default="",
+                   help="本题的主题词，多个词用空格或顿号分开；不传则「与本题的"
+                        "对应关系」判不了，输出里会明说这一条没核对过——"
+                        "不拿标题自己顶，那是自证")
+    p.add_argument("--source", default="",
+                   help="来源标识，用来给实务材料兜底（如「税屋 (shui5.cn)」）")
     args = p.parse_args()
 
     if args.rank:
-        r = rank_of(args.rank)
-        v = judge_validity({}, args.at)
+        g = grade({"title": args.rank, "source": args.source},
+                  at=args.at, topic=args.topic)
         print(f"标题：{args.rank}")
-        print(f"位阶：{r['label']}（{r['score']} 分）— {r['by']}")
-        print(f"时效：{v['label']}（观察时点 {args.at or '未指定'}）")
-        print(f"可引用性：{authority_score(r['rank'], v['validity'])} 分")
+        print(f"层级：{g['rank_label']}（层级序号 {g['rank_tier']}，只用于冲突裁决）"
+              f"— {g['rank_by']}")
+        print(f"时效：{g['validity_label']}（观察时点 {args.at or '未指定'}）"
+              f"；{g['validity_note']}")
+        hit = {True: "对得上本题主题词", False: "字面上对不上本题主题词",
+               None: "未传主题词，这一维没判"}[g["on_topic"]]
+        print(f"角色：{g['role_label']}（{hit}）")
+        print(f"来源可靠性：{g['reliability']}")
+        if g["not_directly_quotable"]:
+            print("不可直接援引：" + CONSTITUTION_NOTE)
+        if not g["caveats"]:
+            print("提醒：无 —— 按现行有效条文引用即可")
+        for c in g["caveats"]:
+            print(f"提醒：{c}")
+        print(f"一句话：{g['citation_hint']}")
         return
 
     p.print_help()

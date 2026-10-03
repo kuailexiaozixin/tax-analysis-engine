@@ -239,6 +239,7 @@ body{
 }
 .result-card .meta span{display:inline-flex;align-items:center;gap:3px}
 .result-card .id-row{font-size:10.5px;color:var(--g400);font-family:monospace;margin-top:3px}
+.result-card .rel-note{font-size:11px;color:#8a6d1f;margin-top:4px}
 
 .status-badge{
   display:inline-flex;align-items:center;gap:3px;
@@ -483,7 +484,7 @@ body{
 
 <!-- ═══ FILTERS ═══ -->
 <div class="filters-bar" id="filtersBar">
-  <div class="filter-group"><label>范围</label><select id="filterScope"><option value="title" selected>标题</option><option value="fulltext">全文（不相关，慎用）</option></select></div>
+  <div class="filter-group"><label>范围</label><select id="filterScope"><option value="title" selected>标题</option><option value="fulltext">全文（按全文分词命中，可能偏题）</option></select></div>
   <div class="filter-group"><label>匹配</label><select id="filterType"><option value="fuzzy">模糊</option><option value="exact">精确</option></select></div>
   <div class="filter-group"><label>时效</label><select id="filterStatus" title=""><option value="3" selected>现行有效</option><option value="">全部</option></select></div>
   <div class="filter-group"><label>排序</label><select id="filterSort"><option value="relevance">相关度</option><option value="date">日期↓</option></select></div>
@@ -721,6 +722,11 @@ function renderResults(data){
   /* NPC 条目给数字状态码，总局法规库条目给的是录入项文本（"全文有效"）。
    两种都要认，否则文本时效会掉进"时效未标注"——那等于把明明标了有效的文件
    显示成没标，用户在界面上就看不出它能不能引用。 */
+/* 来源存疑标记在卡面上写成一句完整的提醒，不再用一个小圆点代替。
+   提醒的原文取自条目自带的 `_reliability_note`：同一个 medium 档在 NPC 正文检索、
+   总局法规库深页说的是两件不同的事，界面自己按档位配一句固定话，就会有一句是假的。
+   来源没写明原因时才退成这句中性的话，且明说"未写明存疑在哪一处"。
+   标记不参与排序，也不改变这条材料出现在哪一栏。 */
 function statusBadge(item){
   const t=String(item.status||'');
   let cls=item.status_code!=null?statusMap[item.status_code]:null;
@@ -753,7 +759,8 @@ items.forEach((item,i)=>{
       :`<div class="id-row">${safeUrl?`🔗 原文：<a href="${esc(safeUrl)}" target="_blank" rel="noopener">${esc((safeUrl.match(/https?:\/\/(?:www\.)?([^/]+)/)||[,'非本库链接'])[1])}</a> · 非 NPC 库条目，点开无弹窗`:'非 NPC 库条目，点开无弹窗'}</div>`;
     h+=`${openTag}
       <div class="title"><span style="font-size:11px;color:var(--g400);margin-right:6px">#${i+1}</span> ${item._source?`<span class="source-label src-${item._source}">${srcIcons[item._source]||''} ${srcLabels[item._source]||''}</span>`:''}${st}</div>
-      <div class="meta"><span>${statusBadge(item)}</span>${item._reliability==='medium'?`<span class="status-badge s-unknown" title="${esc(item._reliability_note||'')}">⚪ 仅参考</span>`:''}${item.document_number?`<span>文号:${esc(item.document_number)}</span>`:''}${item.effect_level?`<span>效力级别:${esc(item.effect_level)}</span>`:''}${(item.publish_date||item.date)?`<span>📅 公布:${esc(item.publish_date||item.date)}</span>`:''}${item.effective_date?`<span>施行:${esc(item.effective_date)}</span>`:''}${item.issuing_authority?`<span>🏛️ ${esc(item.issuing_authority)}</span>`:''}</div>
+      <div class="meta"><span>${statusBadge(item)}</span>${item.document_number?`<span>文号:${esc(item.document_number)}</span>`:''}${item.effect_level?`<span>效力级别:${esc(item.effect_level)}</span>`:''}${(item.publish_date||item.date)?`<span>📅 公布:${esc(item.publish_date||item.date)}</span>`:''}${item.effective_date?`<span>施行:${esc(item.effective_date)}</span>`:''}${item.issuing_authority?`<span>🏛️ ${esc(item.issuing_authority)}</span>`:''}</div>
+      ${item._reliability?`<div class="rel-note">提醒：${esc(item._reliability_note||`来源把这一条标为 ${item._reliability} 档存疑，未写明存疑在哪一处——引用前先核对这条到底有没有规定本题这件事`)}</div>`:''}
       ${idRow}</div>`;
   });
   if(total>items.length)h+=`<p style="text-align:center;font-size:12px;color:var(--g400);margin-top:12px">显示前${items.length}条，共${total}条 · 缩小搜索范围以获取更精确结果</p>`;

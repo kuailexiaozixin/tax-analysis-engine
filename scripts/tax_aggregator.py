@@ -331,7 +331,11 @@ def aggregate_search(keyword: str, *,
             # 各源日期字段不统一，统一到 publish_date 供排序用
             if item.get("date") and not item.get("publish_date"):
                 item["publish_date"] = item["date"]
-            # 整源被判低可靠时逐条带上，否则聚合输出里这条禁令会失效
+            # 响应级标记说的是"这一整窗条目共同的取回方式"（NPC 正文检索就是全文
+            # 分词命中），逐条带上不算冤枉某一条。说明文字必须跟着一起带：只带档位
+            # 的话，界面与定级层就退回到"凭档位猜原因"。
+            # 本层五路源里没有会自带条目级标记的那一路（深页标记出自 tax_fgk，
+            # 只在 tax_answer 的分轮取数里出现），所以这里不存在两种标记撞车的情况。
             if source_rel:
                 item["_reliability"] = source_rel
                 if source_note:
@@ -466,12 +470,18 @@ Examples:
             print(f"   ⚠️ {src}: {err}")
     flagged = [i for i in result.get("items", []) if i.get("_reliability")]
     if flagged:
-        for lvl in ("low", "medium"):
-            n = sum(1 for i in flagged if i["_reliability"] == lvl)
-            if n:
-                hint = ("不得作为权威依据引用" if lvl == "low"
-                        else "可用于定位法规，确定条文归属请改用标题检索")
-                print(f"   ⚠️ {n} 条结果带 _reliability: {lvl}，{hint}")
+        # 按每条自带的提醒原文分组，不按档位分组：同一个 medium 在 NPC 正文检索
+        # 和总局法规库深页说的是两件不同的事，按档位配一句固定话就有一句是假的。
+        # 原先这里按档位写死"不得作为权威依据引用"，那是用禁令代替核对——读者既
+        # 不知道存疑在哪一处，也不知道要核对什么。
+        by_note = {}
+        for i in flagged:
+            key = (i.get("_reliability_note")
+                   or f"来源带 {i['_reliability']} 档标记，但未写明存疑在哪一处——"
+                      f"引用前先核对这条到底有没有规定本题这件事")
+            by_note[key] = by_note.get(key, 0) + 1
+        for note, n in by_note.items():
+            print(f"   ⚠️ {n} 条结果带来源存疑标记：{note}")
     if result.get("gaps"):
         print(f"   ⚠️ 缺失的层 {len(result['gaps'])} 处（答案里要明说，不要用其他源顶替）：")
         for g in result["gaps"]:
