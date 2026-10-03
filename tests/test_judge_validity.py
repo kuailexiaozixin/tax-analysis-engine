@@ -229,6 +229,136 @@ class TestSelfStatedExpiry(unittest.TestCase):
         self.assertNotIn("执行期限", r["note"])
 
 
+class TestSelfStatedPeriodStart(unittest.TestCase):
+    """执行期限的起日：只比止期会把"还有几天才开始"判成"在期内"。
+
+    两句正文都逐字取自本机现拉的法规库公告：财政部 税务总局公告2022年第30号
+    （公布 2022-09-30，期限自2022年10月1日至2023年12月31日）与2026年第22号
+    （公布 2026-07-27，期限自2026年9月1日至2027年8月31日）。这两份的"公布日
+    早于自己的起日"是真实形态，不是设想出来的题面。
+    """
+
+    H30 = ("一、自2022年10月1日至2023年12月31日，对出售自有住房并在现住房出售后"
+           "1年内在市场重新购买住房的纳税人，对其出售现住房已缴纳的个人所得税予以"
+           "退税优惠。")
+    N22 = ("自2026年9月1日至2027年8月31日，按应纳税额减半征收城镇土地使用税；"
+           "自2027年9月1日起，全额征收城镇土地使用税。")
+
+    def test_range_gives_both_ends(self):
+        self.assertEqual(E.period_start_of({"body": self.H30}), "2022-10-01")
+        self.assertEqual(E.expiry_of({"body": self.H30}), "2023-12-31")
+        # 同一段里还跟着"自2027年9月1日起"，它没有"至"，不成对、不参与
+        self.assertEqual(E.period_start_of({"body": self.N22}), "2026-09-01")
+        self.assertEqual(E.expiry_of({"body": self.N22}), "2027-08-31")
+
+    def test_start_after_observation_date_is_flagged(self):
+        it = {"status": "", "body": self.H30}
+        r = E.judge_validity(it, at="2022-09-30")
+        self.assertEqual(r["validity"], "unknown")
+        self.assertTrue(r["qualified"])
+        self.assertIn("自 2022-10-01 起，晚于观察时点 2022-09-30", r["note"])
+        self.assertIn("当期结论不得按它给", r["note"])
+        # 提醒句自己得说清结论从哪来：没有时效录入时写"本条无时效录入"。
+        # 这句是读者去核哪个字段的路标，不能被期限句吃掉。
+        self.assertTrue(r["note"].startswith("本条无时效录入，正文自载的执行期限自"))
+        self.assertIn(r["note"], E.grade(it, at="2022-09-30")["caveats"])
+
+    def test_regression_no_false_in_period_claim(self):
+        """回归锁：起日还没到就不能写"观察时点在期内"。
+
+        上一轮只比止期，2026年第22号在 at=2026-08-20 拿到的正是那句错话。
+        """
+        r = E.judge_validity({"status": "", "body": self.N22}, at="2026-08-20")
+        self.assertNotIn("在期内", r["note"])
+        r2 = E.judge_validity({"status": "全文有效", "body": self.N22}, at="2026-08-20")
+        self.assertNotIn("在期内", r2["note"])
+
+    def test_within_period_still_reports_the_date(self):
+        r = E.judge_validity({"status": "全文有效", "body": self.H30}, at="2022-12-31")
+        self.assertEqual(r["validity"], "effective")
+        self.assertIn("观察时点 2022-12-31 在期内", r["note"])
+        self.assertFalse(r["qualified"])
+
+    def test_start_equal_to_observation_date_has_begun(self):
+        r = E.judge_validity({"status": "全文有效", "body": self.H30}, at="2022-10-01")
+        self.assertIn("在期内", r["note"])
+        self.assertNotIn("还没开始执行", r["note"])
+
+    def test_expiry_equal_to_observation_date_still_in_period(self):
+        """止日含当日："至2023年12月31日"在 12 月 31 日当天仍在期内。
+
+        两端各钉一格：把当天判成已过会凭空给一条"查延续文件"的提醒，把已过的
+        判成在期内更糟。差一天就换位，所以 12-31 与 2024-01-01 都要断言。
+        """
+        for at, in_period in (("2023-12-31", True), ("2024-01-01", False)):
+            r = E.judge_validity({"status": "全文有效", "body": self.H30}, at=at)
+            self.assertEqual("在期内" in r["note"], in_period, msg=at)
+            self.assertEqual("止于" in r["note"], not in_period, msg=at)
+            self.assertEqual(r["qualified"], not in_period, msg=at)
+        # 无状态字段那一档同样含当日，日期仍要留在 note 里供"几时到期"取用
+        r = E.judge_validity({"status": "", "body": self.H30}, at="2023-12-31")
+        self.assertIn("观察时点 2023-12-31 在期内", r["note"])
+        self.assertFalse(r["qualified"])
+
+    def test_in_period_claim_never_says_past_expiry(self):
+        """期限那句里的"在期内"必须自己站得住，不能借上面分支的次序。
+
+        状态栏空、录入项施行日期晚于观察时点时，"执行期限已过"那条提醒被
+        "尚未生效"让位（test_future_effective_date_outranks_past_expiry），一路走到
+        末尾的常规交代档；此时正文止日已经过去，若只因为"抠到了止日"就附一句
+        "观察时点在期内"，同一条 note 里会同时出现施行日期未到与期限已过的错话。
+        """
+        it = {"status": "", "effective_date": "2027-01-01", "body": self.H30}
+        r = E.judge_validity(it, at="2026-10-03")
+        self.assertNotIn("在期内", r["note"])
+        self.assertNotIn("止于", r["note"])
+        self.assertEqual(r["note"], "无状态字段可判")
+
+    def test_reminder_names_the_status_field_it_read(self):
+        """提醒句的前半句要交代结论来自哪个录入项，两档各一句。"""
+        r = E.judge_validity({"status": "全文有效", "body": self.N22}, at="2026-08-20")
+        self.assertTrue(r["note"].startswith("状态标「全文有效」，正文自载的执行期限自"))
+        r2 = E.judge_validity({"status": "全文有效", "body": self.N22}, at="2027-09-01")
+        self.assertTrue(r2["note"].startswith("状态标「全文有效」，正文自载的执行期限止于"))
+
+    def test_entry_effective_date_wins_over_body_start(self):
+        # 录入项说 2022-01-01 已施行，正文那段期限的起日就不再报"还没开始"。
+        it = {"status": "全文有效", "effective_date": "2022-01-01", "body": self.H30}
+        r = E.judge_validity(it, at="2022-06-30")
+        self.assertNotIn("晚于观察时点", r["note"])
+
+    def test_effective_status_with_future_start_is_not_flipped(self):
+        """提醒不降档：判 pending 会把整份文件挡在当期依据之外。"""
+        r = E.judge_validity({"status": "全文有效", "body": self.N22}, at="2026-08-20")
+        self.assertEqual(r["validity"], "effective")
+        self.assertTrue(r["qualified"])
+
+    def test_two_ranges_refuse_to_give_either_end(self):
+        body = ("一、自2021年1月1日至2022年12月31日，甲项免征。"
+                "二、自2023年1月1日至2025年12月31日，乙项减半。")
+        self.assertEqual(E.period_start_of({"body": body}), "")
+        self.assertEqual(E.expiry_of({"body": body}), "")
+
+    def test_bare_marker_gives_no_start(self):
+        # 单独的"延续执行至X"只交代止期，起日没有，不能反过来判"还没开始"。
+        self.assertEqual(E.period_start_of({"body": "延续执行至2027年12月31日。"}), "")
+
+    def test_corroboration_and_future_start_both_survive(self):
+        it = {"status": "", "corroborated_by": "企业所得税法", "body": self.H30}
+        r = E.judge_validity(it, at="2022-09-30")
+        self.assertEqual(r["validity"], "effective")
+        self.assertIn("制定依据", r["note"])
+        self.assertIn("自 2022-10-01 起", r["note"])
+        self.assertEqual(r["note"].count("本条无时效录入"), 1)
+
+    def test_repealed_and_pending_ignore_the_start(self):
+        """明文废止/未生效的档位不归这段机制管，起日不额外插话。"""
+        for it in ({"status": "全文废止", "body": self.H30},
+                   {"status": "尚未生效", "body": self.H30}):
+            r = E.judge_validity(it, at="2022-09-30")
+            self.assertNotIn("还没开始执行", r["note"])
+
+
 if __name__ == "__main__":
     for _s in (sys.stdout, sys.stderr):
         try:
