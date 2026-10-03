@@ -28,6 +28,8 @@
 | `_reliability: low` 本仓库已无来源产出 | 标记值仍在 `_reliability_of` 的值域里，`tax_search` 那句"不得作为依据引用"随降权模型一起撤掉 | 带 `low` 的条目按同一规则处理：有说明照抄说明，没说明用 `RELIABILITY_CAVEAT["low"]` 那句中性提醒；`test_reliability_does_not_change_the_pick` 与 `test_pick_is_by_role_not_by_marker` 钉住"标记不改挑选结果" |
 | 立法过程草案件混进主依据 | `_legis_round` 给草案/审议页条目打 `legislative_process`；`pick_primary` 把它整条挡在主依据之外；`tax_answer` 草案轮覆盖 legis+shui5+wechat 三源 | 草案线索即使唯一召回也不当主依据，`_why` 写明"本组只有立法过程线索"，行本身仍留在【待核对线索】与 `_runners_up` 里；`test_legislation_lane_items_cannot_become_primary` 与两条 `test_draft_round_*` 钉住 |
 | 取数失败被记成"这一轮 0 条" | `_rows_and_error` 把源失败与判空分开带出；`gather` 记 `errors` 与 `rounds_done[].failed`；`compose`/`_print_answer` 打【取数失败】 | 主依据静默降级读得出来了；`test_source_defects.py::TestRoundFailureIsNotSilent` 三条（具名失败、干净空结果仍静默、草案轮不得顶位）|
+| 实务文章讲的规则可能早已废止，而"降权标签"看不出这一点 | `tax_answer.check_practice_citations` 按文号回法规库查存在与时效，写在条目 `official_status`；`tax_evidence.OFFICIAL_CAVEAT` 九种结果各一句，`citation_note` 报核对进行到哪 | 每条实务材料自己说清"援引的那份文件现在还算不算数、下一步做什么"；九种结果逐一可达由 `test_nine_outcomes_are_all_reachable_and_each_has_a_sentence` 钉，字面量漏配句子由 `test_every_outcome_literal_in_the_producer_has_a_caveat` 扫源码拦 |
+| `search_fgk` 零命中时也会写一句 `_error` 当说明 | `_doc_number_in_library` 只认 `_fetch_failed`／`_empty_reason` 两个标记判故障，句子本身不作判据 | 接口挂了与库里真没有这一份分成 `lookup_failed` 与 `not_in_library` 两种结果，读者动作不同；`test_zero_hit_with_an_explained_empty_is_a_miss_not_a_failure` 正反两个方向都钉 |
 | 总局接口的 `pageNum` 从 0 起算，与本项目对外的页码差一位 | `tax_web_search.search_chinatax` 在发请求处减 1；`tests/test_routing_terms.py::test_search5_page_index_is_zero_based` 打桩断言发出去的 `pageNum` | 基准错时结构照常、条数照常，只是每轮都丢掉相关度最高的首屏。清单缓存键带 `tax_fgk.LIST_KEY_REV` |
 | 文号、时效、效力级别原先一律报"未标明" | `tax_web_search` 把录入项 `govDoc.docNum`/`xxgk_aging`/`xxgk_effectLevel`/`cwrq` 落成 `document_number`/`status`/`effect_level`/`publish_date`，`tax_fgk._scan_list` 逐条透传，`tax_evidence.rank_of`/`judge_validity` 按 `effect_level` 定档、按 `status` 判时效 | 主依据一行直接印文号与时效；`status` 带上 `status_from` 说明是哪个录入项给的，判级理由可追溯 |
 | 解读件标题整份嵌着原文件名，被认成原文件本身 | `tax_evidence.rank_of` 先于分类与形态规则判「以「解读」收尾」→ 技术性口径；`tax_answer.locate_cited_document` 把原文排在解读之前 | 只取到解读时 `compose` 不把它放主依据，另给 `cited_note`（"原文待核"），答案里必须写这句 |
@@ -101,6 +103,7 @@ SKILL.md ② 末尾指向这一节。它回答两个问题：某一格动作**�
 | ② 规则陈述类不追问个案 | 脚本 | `tax_analyze.RULE_STATEMENT_TYPES` / `RULE_AXES`，产出 `rule_note` | 命令行【适用边界】那一栏有没有这句 |
 | ③④ 决定取数轮次与候选词 | 脚本给计划，Agent 放宽 | `tax_answer.build_plan`，回显在 `rounds_done` | `python scripts/tax_answer.py "<原话>" --plan` |
 | ④ 五源聚合与取数失败留名 | 脚本 | `tax_answer.gather`，产出 `rounds_done[].failed` | `tests/test_source_defects.py::TestRoundFailureIsNotSilent` |
+| ⑧ 实务口径援引的文号回官方库核对 | 脚本 | `tax_answer.check_practice_citations`（在 `gather` 里排在 `grade_all` 之前），产出 `plan["citation_check"]` 与每条的 `official_status` | `tests/test_source_defects.py::TestPracticeCitationCheck`、`TestCitationCheckReachesTheAnswer`；命令行看【执行口径与实务认定】末尾那句核对统计 |
 | ⑧ 层级、时效、主题对应三轴定级 | 脚本 | `tax_evidence.LEGAL_RANK` / `rank_of` / `judge_validity` / `on_topic_of` / `grade` | `tests/test_judge_validity.py` |
 | ⑧ 角色分层与主依据挑选 | 脚本 | `tax_evidence.role_of` / `pick_primary` / `_order_key`，理由写进 `_why` | `test_legislation_lane_items_cannot_become_primary`、`TestConstitutionIsNotTheHeadline` |
 | ⑧ 没取到法定依据时收口转「依据不足时」 | 脚本提示，Agent 换形态 | `compose` 的 `statutory` 为空时产出 `evidence_gap`，`_print_answer` 打"⚠ …"那一行 | 命令行读这一行是否出现 |
@@ -120,6 +123,20 @@ SKILL.md ② 末尾指向这一节。它回答两个问题：某一格动作**�
   不给自己没验证过的结论。别以为"有闸"就等于"所有站点都被限速保护"。
 - **缺口说明是"这次没取到"，不是"该层没有内容"**。程序只把这句话递过去，
   不替你重试、也不替你换源补缺；用什么口径回答仍然由上层决定。
+- **文号检索不出来有两种，本层只收掉了一种**。`_citation_phrase` 补前缀只在文号
+  左侧紧挨着机关名与文件类型时成立（"国家税务总局公告2021年第5号"）。文章写成
+  "《财政部税务总局关于……的公告》(2022年第15号" 时，文号左边是括号，补不出前缀，
+  只能拿裸短形去查——实测这样一趟给 2 条命中，取回的清单里没有一份文号对得上，
+  于是报 `not_in_library`，并把"用的哪个检索词、接口给了几条命中"一起写进提醒。
+  这一格要真正收掉得再按文件名对一遍，本层还没做。
+- **法规库那一轮"没命中"仍会被 ④ 写成"取数失败"**。`tax_fgk.search_fgk` 零命中时
+  写一句 `_error` 说明（翻完几页、共几条命中、范围限于文件类标签），而检索层的
+  `_rows_and_error` 认的是"`_error` 非空即失败"，`gather` 于是把这一轮记进
+  `errors` 与 `rounds_done[].failed`。文号核对那一路（`_doc_number_in_library`）
+  已经改成认 `_fetch_failed`／`_empty_reason` 标记，检索层这一路还没跟着改：其余四个
+  源不产这两个标记，把同一规则套上去会把它们真正的故障也读成"没命中"，比现在的
+  假"取数失败"更难发现。收掉它要先给五个源统一标记契约，不在本轮范围。登记在此，
+  不当已修。
 - **会计口径缺口靠词表认，认不到就没有第二道防线**。`tax_analyze.ACCOUNTING_SIGNALS`
   只收多字短语，词表外的说法不会报出来；子技能也不在 ④ 的聚合与 ⑧ 的定级里，
   `docNo` 与条文版次不一致这件事程序判不了，只能按硬规矩引"准则名＋条款号"。

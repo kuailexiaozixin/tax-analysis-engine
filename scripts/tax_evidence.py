@@ -407,17 +407,99 @@ VALIDITY_CAVEAT = {
 }
 
 
+# 实务材料（税屋、公众号）援引的那个文号，回官方库核对的结果。这一档回答的是
+# "这篇解读有没有一份现行有效的法定文件托着"——它不是层级问题（解读本来不是法），
+# 也不是这条材料自己的时效（文章当然"在效"），它说的是**口径的出处现在还算不算数**。
+# 由 `tax_answer.check_practice_citations` 联网核对后写进 `official_status`；本层只
+# 把它翻译成人话，不发网络请求。
+OFFICIAL_CAVEAT = {
+    "effective": ("它援引的《{title}》（{dn}）在{where}查得到，时效判为{vl}"
+                  "——这条口径有现行文件托着，答案里把文号写上"),
+    "repealed": ("它援引的《{title}》（{dn}）在{where}已判为{vl}"
+                 "——这篇讲的是一份不再执行的规则，按现行文件重新取一遍口径"
+                 "才能写进答案"),
+    "pending": ("它援引的《{title}》（{dn}）在{where}尚未生效"
+                "——这篇讲的是到观察时点还没开始执行的规则，当期口径仍按现行文件"),
+    "unknown": ("它援引的《{title}》（{dn}）在{where}查得到这一份，但它的时效"
+                "没有录入项可判——引用这条口径前要单独确认它现在是否还在效"),
+    "not_in_library": ("正文援引的文号{dn}在{where}没有对上同一份文件{note}"
+                       "——文号可能抄错、写法不同或不在收录范围，按这个文号回原文"
+                       "或向主管税务机关核对后再用"),
+    "no_citation": ("这篇实务材料没写出它依据的文号——口径要落到具体文件上，"
+                    "引用前向主管税务机关确认现行执行口径"),
+    "no_body": ("这一轮只取回标题或摘要、没读正文，所以不知道它援引了哪份文件"
+                "——不能据此说这篇没标出处，要看口径出处得取正文再核"
+                "（去掉 tax_answer 命令行上的 --no-body 重跑一遍）"),
+    "not_checked": ("这一篇援引的文号{dn}没来得及核对，本次核对上限 {limit} 个文号已用满"
+                    "——它是本轮没查而不是查无此件，引用前单独回库确认"),
+    "lookup_failed": ("这一轮没能连上{where}，文号{dn}的存在与时效未核对"
+                      "——不能把「查不到」读成「库里没有」，补一轮再定"),
+}
+
+
+# 核对结果的人话名。计数汇总句要用，不能让答案里出现 "not_in_library 2" 这种
+# 只有读代码的人才懂的键名。与 `OFFICIAL_CAVEAT` 必须同键，同键由用例钉住。
+OFFICIAL_OUTCOME_LABEL = {
+    "effective": "在库且现行有效",
+    "repealed": "在库但已废止",
+    "pending": "在库但尚未生效",
+    "unknown": "在库但时效判不出",
+    "not_in_library": "库里查不到同一份",
+    "no_citation": "正文未写文号",
+    "no_body": "未取正文所以没读文号",
+    "lookup_failed": "这一轮没连上库",
+    "not_checked": "核对轮次用满没查",
+}
+
+
+def _library_miss_note(status: dict) -> str:
+    """把"没对上"到底是怎么个没对上说出来：用的哪个词、接口给了几条命中。
+
+    零命中与有命中但清单里没这份，读者的下一步动作不一样（前者要怀疑检索词
+    的写法，后者要怀疑文号本身），所以这一句不能省。取数函数没给命中数时
+    就不编，句子退回不带证据的说法。
+    """
+    term = status.get("searched_as", "")
+    if not term:
+        return ""
+    hits = status.get("hits")
+    if hits == 0:
+        return f"（按「{term}」检索零命中：是这个词没对上，不是库里没有这一份）"
+    if isinstance(hits, int):
+        return f"（按「{term}」检索有 {hits} 条命中，取回的清单里没有一份文号与它相同）"
+    return f"（按「{term}」检索）"
+
+
+def official_caveat(status: dict) -> str:
+    """把一份 `official_status` 翻译成一句提醒；没有核对结果时给空串。"""
+    outcome = (status or {}).get("outcome", "")
+    if not outcome:
+        return ""
+    tpl = OFFICIAL_CAVEAT.get(outcome)
+    if not tpl:
+        # 认不出的 outcome 不能也返回空串：空串在这层的含义是"这条没核对过"，
+        # 漏配一句提醒就会静默消失。把 outcome 原样报出来，让人看得见。
+        return (f"这一篇援引的文号{status.get('doc_number', '')}的核对结果是"
+                f"未登记的「{outcome}」——本层认不出这个结果，引用前手工回库确认")
+    return tpl.format(title=status.get("title", ""), dn=status.get("doc_number", ""),
+                      where=status.get("where", "税务总局法规库"),
+                      vl=status.get("validity_label", ""),
+                      limit=status.get("limit", "未记录"),
+                      note=_library_miss_note(status))
+
+
 def _reliability_of(item: dict) -> str:
     """读出条目上的可靠性标记，归一成小写；没有或认不出就返回空串。"""
     rel = str(item.get("_reliability") or "").strip().lower()
     return rel if rel in RELIABILITY_CAVEAT else ""
 
 
-def _caveats(rank_key: str, val: dict, topic_hit, rel: str, rel_note: str) -> list:
+def _caveats(rank_key: str, val: dict, topic_hit, rel: str, rel_note: str,
+             official=None) -> list:
     """把这条材料身上所有"要核对什么"合成一个有序句子清单。
 
     顺序按"越靠近这道题的结论越先看"：能不能引（宪法特判）→ 时效 → 与本题
-    对不对得上 → 来源自身的可靠性。
+    对不对得上 → 它援引的官方文件现在还算不算数 → 来源自身的可靠性。
     """
     out = []
     if rank_key in NOT_DIRECTLY_QUOTABLE:
@@ -431,6 +513,10 @@ def _caveats(rank_key: str, val: dict, topic_hit, rel: str, rel_note: str) -> li
                    "引用前先确认它规定的是不是这件事")
     if topic_hit is None:
         out.append("没有传入本题主题词，这条与题目的对应关系未经核对")
+    if official:
+        line = official_caveat(official)
+        if line:
+            out.append(line)
     if rel:
         out.append(rel_note or RELIABILITY_CAVEAT[rel])
     return out
@@ -441,7 +527,9 @@ def grade(item: dict, at: str = "", topic: str = "") -> dict:
 
     Args:
         item: 检索结果字典，至少含 title，可含 category/source/status/
-            effective_date/publish_date/url/content/summary/_reliability。
+            effective_date/publish_date/url/content/summary/_reliability/
+            official_status（实务材料援引的文号回官方库核对的结果，
+            见 `tax_answer.check_practice_citations` 与 `OFFICIAL_CAVEAT`）。
         at: 观察时点 YYYY-MM-DD。
         topic: 本题的主题词，单词或词表都行（见 `on_topic_of`）。一般是
             `resolve_tax_type` 归出的专题名、本体法名加口语短词。不传则
@@ -471,7 +559,8 @@ def grade(item: dict, at: str = "", topic: str = "") -> dict:
     out["reliability"] = rel or "ok"
     out["not_directly_quotable"] = rank["rank"] in NOT_DIRECTLY_QUOTABLE
     out["caveats"] = _caveats(rank["rank"], val, topic_hit, rel,
-                              item.get("_reliability_note", ""))
+                              item.get("_reliability_note", ""),
+                              item.get("official_status"))
     out["citation_hint"] = _hint(out)
     return out
 

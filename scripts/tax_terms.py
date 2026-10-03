@@ -48,13 +48,27 @@ def strip_options(text: str) -> str:
     return stem or text.strip()
 
 
+def doc_numbers(text: str) -> list:
+    """按出现顺序取出一段文字里所有文号，去重。
+
+    `doc_number_of` 只给第一个，而核对实务材料要看整篇：文章标题里那个编号
+    往往就是它自己在解读的那份文件，正文里援引的才是它口径的出处。
+    """
+    found = []
+    for rx in _DOC_NUM_RES:
+        for m in rx.finditer(text or ""):
+            found.append((m.start(), re.sub(r"\s+", "", m.group(0))))
+    out, seen = [], set()
+    for _, dn in sorted(found):
+        if dn not in seen:
+            seen.add(dn)
+            out.append(dn)
+    return out
+
+
 def doc_number_of(text: str) -> str:
     """从一段文字里取出第一个文号，取不到给空串。"""
-    for rx in _DOC_NUM_RES:
-        m = rx.search(text or "")
-        if m:
-            return re.sub(r"\s+", "", m.group(0))
-    return ""
+    return doc_numbers(text)[0] if doc_numbers(text) else ""
 
 
 def cited_documents(text: str) -> list:

@@ -1061,6 +1061,336 @@ class TestTupleReturnContract(unittest.TestCase):
         self.assertEqual([("bad", 8, "results")], offenders)
 
 
+class TestPracticeCitationCheck(unittest.TestCase):
+    """#111：实务材料的口径要追到一份现行有效的法定文件上，逐条核对。
+
+    这一层替代的是"给税屋/公众号打 10 分、标成只能参考"：降权既不告诉读者哪条
+    口径有文件托着，也不告诉读者哪条悬空。现在按文号回官方库查存在与时效。
+    全部用例用打桩的库，不发真实检索。
+    """
+
+    @staticmethod
+    def _文章(content="", source="税屋 (shui5.cn)"):
+        row = {"title": "减征车辆购置税的执行口径", "source": source,
+               "url": "https://www.shui5.cn/article/9/1.html"}
+        if content:
+            row["content"] = content
+        return row
+
+    def _核对(self, rows, 库里=None, 库报错="", 命中数=None, 响应=None, **kw):
+        """跑一次核对，带回 (统计, 发出去查的检索词列表)。
+
+        `库报错` 走 `_fetch_failed` 标记——真实接口零命中时也会写一句 `_error`
+        当说明（`tax_fgk._scan_list`），本层认的是标记不是句子。要看接口原样
+        回的东西就用 `响应`，它绕过上面两个参数。
+        """
+        calls = []
+
+        def lookup(term):
+            calls.append(term)
+            if 响应 is not None:
+                return dict(响应)
+            if 库报错:
+                return {"_error": 库报错, "_fetch_failed": True}
+            return {"results": 库里 or [], "total_hits": 命中数}
+
+        stats = ANS.check_practice_citations(rows, at="2026-09-29",
+                                             lookup=lookup, **kw)
+        return stats, calls
+
+    有效件 = {"title": "财政部 税务总局关于减征车辆购置税的公告",
+              "document_number": "财政部 税务总局公告2023年第19号",
+              "status": "现行有效", "url": "http://x/19"}
+
+    def test_citation_found_in_library_is_named_with_its_number(self):
+        文 = self._文章("依据财政部 税务总局公告2023年第19号，新能源车免征购置税")
+        stats, calls = self._核对([文], 库里=[dict(self.有效件)])
+        # 发出去的是带机关的宽写法（实测裸短形在库里零命中），记下来的还是
+        # 文章里那枚短形——两头各管一件事
+        self.assertEqual(["财政部 税务总局公告2023年第19号"], calls)
+        st = 文["official_status"]
+        self.assertEqual("effective", st["outcome"], st)
+        self.assertEqual("2023年第19号", st["doc_number"], "记的是文章援引的那个短形")
+        self.assertEqual(self.有效件["title"], st["title"], "文件名要取库里的规范名")
+        self.assertEqual("http://x/19", st["url"])
+        self.assertEqual({"effective": 1}, stats["by_outcome"])
+        self.assertEqual(1, stats["checked"])
+
+    def test_reminder_lands_in_the_graded_caveats(self):
+        """核对结果只写进字段不算交付；定级那一条必须把它说成人话。"""
+        文 = self._文章("依据财政部 税务总局公告2023年第19号执行")
+        self._核对([文], 库里=[dict(self.有效件)])
+        g = E.grade(文, at="2026-09-29", topic="车辆购置税")
+        self.assertTrue(any("2023年第19号" in c and "税务总局法规库" in c
+                            for c in g["caveats"]), g["caveats"])
+
+    def test_repealed_citation_says_reread_the_current_text(self):
+        库 = dict(self.有效件, status="全文废止")
+        文 = self._文章("按财政部 税务总局公告2023年第19号的规定免征")
+        self._核对([文], 库里=[库])
+        line = E.official_caveat(文["official_status"])
+        self.assertEqual("repealed", 文["official_status"]["outcome"])
+        self.assertIn("不再执行的规则", line)
+
+    def test_library_miss_is_stated_as_a_miss_not_as_repealed(self):
+        """库里没有这一份，与库里有但已废止，是两条完全不同的下一步动作。"""
+        文 = self._文章("按国税发〔1999〕43号执行")
+        stats, _ = self._核对([文], 库里=[])
+        self.assertEqual("not_in_library", 文["official_status"]["outcome"], stats)
+        self.assertIn("没有对上同一份文件", E.official_caveat(文["official_status"]))
+
+    def test_zero_hit_with_an_explained_empty_is_a_miss_not_a_failure(self):
+        """接口自己说"这次没命中"和"这轮没连上"，不能读成同一件事。
+
+        真实 `search_fgk` 的形态（实测）：零命中时带一句 `_error` 但**不带**
+        `_fetch_failed`；请求或解析失败才带 `_fetch_failed`。拿 `_error` 当故障，
+        每一篇援引了生僻文号的文章都会被写成"连不上库、补一轮"，而补一百轮也
+        还是零命中。反向弄错同样糟：真挂了报成"库里没有这一份"，读者会去怀疑
+        自己抄错文号。所以两个方向都在这里钉住。
+        """
+        文 = self._文章("按财税〔1999〕43号执行")
+        stats, _ = self._核对([文], 响应={"results": [], "total_hits": 0,
+                                          "_error": "未检索到相关内容"})
+        self.assertEqual("not_in_library", 文["official_status"]["outcome"], stats)
+        self.assertIn("检索零命中", E.official_caveat(文["official_status"]))
+
+        挂 = self._文章("按财税〔1999〕43号执行")
+        self._核对([挂], 响应={"results": [], "_error": "连接超时",
+                              "_fetch_failed": True})
+        self.assertEqual("lookup_failed", 挂["official_status"]["outcome"])
+
+    def test_retrieval_term_borrows_the_issuer_not_the_prose(self):
+        """补前缀只能借原文里的机关名，借不到就用裸文号。
+
+        喂进 `_citation_phrase` 的是标题+正文拼起来的一整段（实测形态），
+        按字符宽度从右截会把"减征车辆购置税的执行口径 依据"一起当成检索词。
+        这种词在库里一个也命中不了，于是"现行有效"被写成"库里没对上"——
+        假结论还带一句看起来有据的说明。裸文号最坏是命中宽，不会指错文件。
+        """
+        self.assertEqual(
+            "财政部 税务总局公告2023年第19号",
+            ANS._citation_phrase("减征车辆购置税的执行口径 依据财政部 税务总局公告"
+                                 "2023年第19号", "2023年第19号"))
+        self.assertEqual(
+            "国家税务总局公告2021年第5号",
+            ANS._citation_phrase("国家税务总局公告2021年第5号", "2021年第5号"))
+        # 本身就带机关名的写法原样返回；认不到机关名不猜前缀
+        self.assertEqual("财税〔2016〕36号",
+                         ANS._citation_phrase("依据财税〔2016〕36号附件",
+                                              "财税〔2016〕36号"))
+        self.assertEqual("2024年第1号",
+                         ANS._citation_phrase("某单位关于优惠的公告2024年第1号",
+                                              "2024年第1号"))
+        # 原文里文号常被排版拆开（"2021 年第 5 号"），而 `tax_terms` 交回来的是
+        # 去过空格的短形：按字面 find 会找不到，前缀也就补不上了
+        self.assertEqual(
+            "国家税务总局公告2021年第5号",
+            ANS._citation_phrase("根据国家税务总局公告 2021 年第 5 号的规定",
+                                 "2021年第5号"))
+
+    def test_empty_library_document_number_does_not_count_as_a_match(self):
+        """只认 want 是 got 的子串：库里那条没录文号时不能算命中，否则任何一篇
+        正文里提到文号的文章都会匹配上这条空记录。"""
+        文 = self._文章("按国税发〔1999〕43号执行")
+        self._核对([文], 库里=[{"title": "某文件", "document_number": "",
+                                "status": "现行有效"}])
+        self.assertEqual("not_in_library", 文["official_status"]["outcome"])
+
+    def test_lookup_failure_is_not_read_as_missing(self):
+        文 = self._文章("按财税〔2016〕36号的规定")
+        self._核对([文], 库报错="响应不是 JSON")
+        st = 文["official_status"]
+        self.assertEqual("lookup_failed", st["outcome"], st)
+        line = E.official_caveat(st)
+        self.assertIn("不能把「查不到」读成「库里没有」", line)
+        self.assertNotIn("没有对上同一份文件", line)
+
+    def test_missing_body_is_not_reported_as_missing_citation(self):
+        """`--no-body` 那一趟只有标题：说"这篇没写文号"是假的，要说"没读正文"。"""
+        无正文 = self._文章()
+        有正文 = self._文章("这篇文章讲的是地方执行的口径细节，没引文号")
+        stats, calls = self._核对([无正文, 有正文])
+        self.assertEqual("no_body", 无正文["official_status"]["outcome"], stats)
+        self.assertEqual("no_citation", 有正文["official_status"]["outcome"], stats)
+        self.assertEqual([], calls)
+        self.assertIn("没读正文", E.official_caveat(无正文["official_status"]))
+        self.assertNotIn("没读正文", E.official_caveat(有正文["official_status"]))
+
+    def test_limit_stops_further_requests_and_says_so(self):
+        rows = [self._文章(f"依据国家税务总局公告202{i}年第5号执行") for i in range(1, 4)]
+        stats, calls = self._核对(rows, 库里=[dict(self.有效件)], limit=2)
+        self.assertEqual(2, len(calls), calls)
+        self.assertEqual(1, stats["skipped"], stats)
+        self.assertEqual("not_checked", rows[2]["official_status"]["outcome"])
+        self.assertIn("上限", E.official_caveat(rows[2]["official_status"]))
+        self.assertNotIn("没有对上同一份文件", E.official_caveat(rows[2]["official_status"]))
+
+    def test_same_number_is_looked_up_once_for_all_articles(self):
+        rows = [self._文章("按财政部 税务总局公告2023年第19号执行") for _ in range(3)]
+        stats, calls = self._核对(rows, 库里=[dict(self.有效件)])
+        self.assertEqual(1, len(calls), calls)
+        self.assertEqual(1, stats["checked"], stats)
+        self.assertEqual(3, stats["by_outcome"]["effective"], stats)
+        self.assertEqual({r["official_status"]["title"] for r in rows},
+                         {self.有效件["title"]})
+
+    def test_statutory_rows_are_left_alone(self):
+        """法定层自己有 status 字段可判时效，不该被这一层重复劳动一遍。"""
+        法 = {"title": "中华人民共和国车辆购置税法", "category": "法律",
+              "status": "现行有效", "url": "http://x/law"}
+        stats, calls = self._核对([法, self._文章("按2023年第19号执行")],
+                                  库里=[dict(self.有效件)])
+        self.assertNotIn("official_status", 法)
+        self.assertEqual(["2023年第19号"], calls)
+        self.assertEqual({"effective": 1}, stats["by_outcome"], stats)
+
+    def test_practice_recognition_shares_the_graders_vocabulary(self):
+        """认源用 `tax_evidence.PRACTICE_SOURCES`：这里各写一套源名就会静默空转。
+
+        实测过的三种真实形态都要认出来——税屋的标签、公众号的标签、360 回填的纯域名。
+        """
+        for src in ("税屋 (shui5.cn)", "微信公众号", "shui5.cn"):
+            row = self._文章("按财税〔2016〕36号执行", source=src)
+            self.assertTrue(ANS._is_practice_row(row), src)
+        self.assertFalse(ANS._is_practice_row(
+            {"title": "车辆购置税法", "source": "🏛️ 国家税务总局"}))
+
+    def test_nine_outcomes_are_all_reachable_and_each_has_a_sentence(self):
+        """九种结果逐一跑出来，一种都不许只在表里挂着。
+
+        这是这套用例自己的覆盖率检查：`OFFICIAL_CAVEAT` 里多一条却没有场景能产出它，
+        就说明本层的分支已经和文档对不上；少一条则这里直接红。
+        """
+        库 = {"results": [dict(self.有效件)]}
+        seen = set()
+
+        def 跑(rows, **kw):
+            ANS.check_practice_citations(rows, at="2026-09-29", **kw)
+            seen.update(r["official_status"]["outcome"] for r in rows
+                        if r.get("official_status"))
+
+        def 库内(status):
+            return lambda t: {"results": [dict(self.有效件, status=status)]}
+
+        # 库里查到了这一份的四种时效（结果名直接取 `judge_validity` 的取值）
+        for status in ("现行有效", "全文废止", "尚未生效", ""):
+            跑([self._文章("按财政部 税务总局公告2023年第19号执行")],
+               lookup=库内(status))
+        # 库里没有同一份 / 正文没写文号 / 没取正文 / 库没连上 / 轮次用满
+        跑([self._文章("按财税〔1999〕43号执行")], lookup=lambda t: {"results": []})
+        跑([self._文章("只讲口径，没引文号")], lookup=lambda t: 库)
+        跑([self._文章()], lookup=lambda t: 库)
+        跑([self._文章("按2023年第19号执行")],
+           lookup=lambda t: {"_error": "超时", "_fetch_failed": True})
+        跑([self._文章(f"依据国家税务总局公告202{i}年第5号执行") for i in range(1, 4)],
+           lookup=lambda t: 库, limit=1)
+        self.assertEqual(set(E.OFFICIAL_CAVEAT), seen,
+                         f"用例产出的结果与提醒表不一致：{sorted(seen)}")
+        self.assertEqual(set(E.OFFICIAL_CAVEAT), set(E.OFFICIAL_OUTCOME_LABEL),
+                         "两张表必须同键，否则汇总句里会漏出英文键名")
+        for key, tpl in E.OFFICIAL_CAVEAT.items():
+            self.assertTrue(E.official_caveat({"outcome": key}),
+                            f"{key} 的提醒句格式化后为空")
+
+    def test_every_outcome_literal_in_the_producer_has_a_caveat(self):
+        """新增核对结果却忘了配句子时，提醒会静默消失——这条拦字面量那一类漏配。
+
+        不跑代码，只读源码：把 `check_practice_citations` 里所有写进字典值的
+        小写英文字面量取出来（结果名都是这个形态），逐个要求在两张表里有条目。
+        时效那四种结果名来自 `judge_validity` 的取值，不在这个函数里写字面量，
+        由上面那条用例逐场景覆盖。
+        """
+        src = Path(ANS.__file__).read_text(encoding="utf-8")
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "check_practice_citations")
+        emitted = set()
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Dict):
+                for v in node.values:
+                    for s in ([v.value] if isinstance(v, ast.Constant) else
+                              ([v.body.value, v.orelse.value]
+                               if isinstance(v, ast.IfExp)
+                               and all(isinstance(x, ast.Constant)
+                                       for x in (v.body, v.orelse)) else [])):
+                        if isinstance(s, str) and re.fullmatch(r"[a-z][a-z_]{3,}", s):
+                            emitted.add(s)
+        self.assertTrue(emitted, "没从源码里取出任何结果字面量，用例失效了")
+        self.assertEqual(set(), emitted - set(E.OFFICIAL_CAVEAT),
+                         f"这些结果没有提醒句：{sorted(emitted - set(E.OFFICIAL_CAVEAT))}")
+
+    def test_unknown_outcome_is_not_silently_dropped(self):
+        """认不出的结果要报出来，不能和"没核对过"共用一个空串。"""
+        line = E.official_caveat({"outcome": "someday", "doc_number": "2023年第19号"})
+        self.assertIn("someday", line)
+        self.assertEqual("", E.official_caveat({}))
+
+
+class TestCitationCheckReachesTheAnswer(unittest.TestCase):
+    """核对要一路走到答案输出，不能停在 gather 的字典里。"""
+
+    # 判成 lookup 的问句只走 npc/fgk 两轮，永远碰不到税屋那一轮，这一层就没得核对；
+    # 换成算税题，第 3 轮才是实务材料源。
+    Q = "增值税小规模纳税人月销售额10万，应纳增值税多少"
+
+    def _跑一趟(self, check_citations=True, with_practice=True):
+        文 = {"title": "新能源车购置税免税口径", "source": "税屋 (shui5.cn)",
+              "url": "https://www.shui5.cn/article/9/1.html",
+              "content": "依据财政部 税务总局公告2023年第19号免征"}
+        法 = {"title": "中华人民共和国车辆购置税法", "category": "法律",
+              "status": "现行有效", "url": "http://x/law"}
+        库 = {"results": [{"title": "财政部 税务总局关于减征车辆购置税的公告",
+                          "document_number": "财政部 税务总局公告2023年第19号",
+                          "status": "现行有效", "url": "http://x/19"}]}
+        calls = []
+
+        def fake_fgk(term, size=5, **rest):
+            calls.append(term)
+            return dict(库)
+
+        def make(src):
+            """按源发桩：返回 fetcher，取数契约是 (条目, 失败说明)。"""
+            if src == "shui5":
+                return lambda term, size: ([dict(文)] if with_practice else [], "")
+            if src == "npc":
+                return lambda term, size: ([dict(法)], "")
+            return lambda term, size: ([], "")
+
+        with mock.patch.dict(ANS._FETCHERS,
+                             {s: make(s) for s in ("npc", "fgk", "shui5",
+                                                   "wechat", "legis")}), \
+             mock.patch.object(FGK, "search_fgk", fake_fgk):
+            return ANS.gather(self.Q, at="2026-09-29",
+                              check_citations=check_citations), calls
+
+    def test_gather_records_progress_and_compose_says_it(self):
+        plan, calls = self._跑一趟()
+        self.assertEqual(["财政部 税务总局公告2023年第19号"], calls)
+        self.assertEqual(1, plan["citation_check"]["checked"], plan["citation_check"])
+        a = ANS.compose(plan)
+        self.assertIn("税务总局法规库核对 1 个", a["citation_note"], a["citation_note"])
+        self.assertIn("在库且现行有效 1 条", a["citation_note"])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ANS._print_answer(a)
+        self.assertIn("文号已回税务总局法规库核对", out.getvalue())
+
+    def test_turning_the_check_off_leaves_a_visible_empty_not_a_fake_zero(self):
+        plan, calls = self._跑一趟(check_citations=False)
+        self.assertEqual([], calls)
+        self.assertIsNone(plan["citation_check"])
+        self.assertEqual("", ANS.compose(plan)["citation_note"])
+
+    def test_no_practice_row_says_none_needed_instead_of_nothing_found(self):
+        """一道纯法条题：这一栏要说"没有文号需要核对"，不是留空让人猜。"""
+        plan, calls = self._跑一趟(with_practice=False)
+        self.assertEqual([], calls)
+        self.assertEqual({"checked": 0, "skipped": 0, "by_outcome": {}},
+                         plan["citation_check"])
+        note = ANS.compose(plan)["citation_note"]
+        self.assertIn("没有取回税屋或公众号的文章", note)
+
+
 # ── 用例自身的能力自检：规则不能永远绿 ─────────────────────────────────────
 class TestRulesCanActuallyFail(unittest.TestCase):
     """把规则作用在构造的反例上，确认它真的拦得住。"""

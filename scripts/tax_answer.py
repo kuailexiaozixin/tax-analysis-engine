@@ -441,6 +441,214 @@ def corroborate_validity_from_target(evidence: list, at: str = "") -> list:
     return tagged
 
 
+# ── 实务层援引的文号回官方库核对 ───────────────────────────────────────────
+OFFICIAL_WHERE = "税务总局法规库"
+# 一次答案最多核对几个文号。实务文章里文号出现得密集（一篇点出五六个是常态），
+# 不设上限时一道题能打出去几十次检索，NPC 那一路还有限流。
+OFFICIAL_LOOKUP_LIMIT = 4
+
+
+def _is_practice_row(row: dict) -> bool:
+    """认这一条是不是实务材料那一路，判据直接用定级层的同一个常量。
+
+    条目上带的不是 "shui5" 这种源键，而是给人看的标签——`tax_shui5` 写
+    "税屋 (shui5.cn)"、`tax_wechat` 写"微信公众号"，360 回填的那批又是纯域名。
+    自己在这里列一组源键，列错时这个函数会一条都不认，核对静默变成空转，
+    输出上看不出任何异常；共用 `tax_evidence.PRACTICE_SOURCES` 就不会出现
+    "核对层认为不是实务、定级层认为是"这种两说的情形。
+    """
+    src = " ".join(str(row.get(k) or "") for k in ("source", "site", "url"))
+    return any(d in src for d in E.PRACTICE_SOURCES)
+
+
+_ISSUER_TOKENS = ("国家税务总局", "税务总局", "财政部", "海关总署",
+                  "人力资源社会保障部", "国务院办公厅", "国务院",
+                  "国税发", "国税函", "财税", "税总", "地税发")
+# 长写法在前：先试"暂行条例"再试"条例"，否则会截出错一半的前缀
+_CITATION_TYPES = ("暂行条例", "公告", "通知", "办法", "批复", "意见",
+                   "规定", "决定", "细则", "通告", "函")
+
+
+def _citation_phrase(text: str, dn: str) -> str:
+    """把裸文号补上它左侧原文里的机关与文件类型，凑成库里检索得到的写法。
+
+    实测两件事决定了这一层：`search_fgk("2023年第19号")` 一条都不给
+    （total_hits=0），而"国家税务总局公告2021年第5号"这种带前缀的写法能精确命中
+    一份；"财税〔2016〕36号"本身就带机关名，原样即可。`tax_terms` 抽出来的是
+    短形，直接拿去检索会一律落空，把现行有效的文件误报成"查不到"。
+
+    前缀只从文号左侧的原文取，并且只认 `_ISSUER_TOKENS` 里的机关名当起点：
+    正文与标题拼在一起后进来，纯按字符宽度截会把"减免购置税的执行口径 依据"
+    这类散文一起当成检索词——那种词一个也检索不出，还让"库里没有"变成假结论。
+    认不到机关名就照用裸文号，宁可检索得宽，不猜一个前缀。
+    """
+    m = re.search(r"\s*".join(re.escape(c) for c in dn), text or "")
+    if not m:
+        return dn
+    run = re.search(r"[\u4e00-\u9fa5 ]{1,24}$", text[:m.start()])
+    if not run:
+        return dn
+    head = run.group(0).rstrip()
+    ctype = next((t for t in _CITATION_TYPES if head.endswith(t)), "")
+    if not ctype:
+        return dn
+    segs = head[:len(head) - len(ctype)].split()
+    for i, seg in enumerate(segs):
+        at = [seg.find(t) for t in _ISSUER_TOKENS if t in seg]
+        if at:
+            phrase = segs[i][min(at):]
+            phrase += "".join(" " + s for s in segs[i + 1:])
+            return phrase + ctype + dn
+    return dn
+
+
+def _doc_number_in_library(term: str, want: str = "", lookup=None) -> tuple:
+    """按 term 检索，用 want 对文号，返回 (条目或 None, 取数失败说明, 接口命中数)。
+
+    检索词与比对词分开是因为它们各管一件事：`term` 要能在总局的检索里出结果
+    （带机关前缀，见 `_citation_phrase`），`want` 要尽量宽（就是文章里那枚文号，
+    库里多写几个字的机关名也算同一份）。合成一个词就会两头都失：短形检索不出，
+    长形又比不中。
+
+    三种"没有"必须分开，读者的下一步动作完全不同：
+      接口挂了（补一轮）；检索有命中但取回的清单里没一份文号对上（这个文号
+      可能不在收录范围或写法不同）；按这个词一个命中都没有（词没对上，
+      不等于库里没有）。后两种都走 not_in_library，句子里带上命中数说明。
+    失败与空结果的区分不用 `_error` 文本，用 `tax_fgk` 自己打的标记：
+    `_fetch_failed`（请求/解析失败）与 `_empty_reason`（接口给了命中数却没给清单）。
+    零命中时 `search_fgk` 也会写一句 `_error`，那是说明不是故障。
+    """
+    fn = lookup or (lambda t: FGK.search_fgk(t, size=5))
+    try:
+        r = fn(term)
+    except Exception as e:
+        return None, str(e).splitlines()[0][:110], None
+    if r.get("_fetch_failed") or r.get("_empty_reason"):
+        return None, r.get("_error") or "取数失败", None
+    rows = r.get("results") or []
+    hits = r.get("total_hits")
+    want = re.sub(r"\s+", "", want or term)
+    for row in rows:
+        got = re.sub(r"\s+", "", row.get("document_number") or "")
+        # 只认 want 是 got 的子串：文号抽取器给的是短形（"2021年第5号"），库里
+        # 带发文机关前缀（"国家税务总局公告2021年第5号"）。反方向会把空号或
+        # 半截号匹配成任何一份文件。
+        if got and (got == want or want in got):
+            return row, "", hits
+    return None, "", hits
+
+
+def check_practice_citations(rows: list, at: str = "", lookup=None,
+                            limit: int = OFFICIAL_LOOKUP_LIMIT) -> dict:
+    """把实务材料援引的文号回官方库核对存在与时效，结果原地写进 `official_status`。
+
+    为什么要这一层：税屋与公众号那一路是法条落到实践的地方，它的价值恰恰在于
+    告诉纳税人"口径怎么执行"；价值对应的是责任——这条口径得追到一份现行有效的
+    法定文件上。原先的做法是给这一层打 10 分、标成"只能参考"，那是用降权代替
+    核对，读者既看不出哪条有文件托着、也看不出哪条是悬空的。现在逐条核对，
+    `outcome` 有九种取值，各配一句下一步动作（句子在 `tax_evidence.OFFICIAL_CAVEAT`）：
+    在库且现行有效（effective）、在库但已废止（repealed）、在库但尚未生效
+    （pending）、在库但时效判不出来（unknown）、库里查不到同一份
+    （not_in_library），再加本层自己的四种缺口：正文没写文号（no_citation）、
+    这一轮没取正文所以没读过文号（no_body）、这一轮没连上库（lookup_failed）、
+    核对轮次用满（not_checked）。
+
+    Args:
+        rows: gather 取回的条目列表，原地标注；只动 `_is_practice_row` 认出的那些。
+        at: 观察时点，用来判那份文件在题面时点是否还在效。
+        lookup: 文号→库的取数函数，返回与 `FGK.search_fgk` 同形的 dict；离线用例打桩用。
+        limit: 本次最多发几轮真实核对。同一个文号只查一次，命中缓存的不计数。
+
+    Returns:
+        {"checked": 发过核对请求的文号数（取数失败也算发过）,
+         "skipped": 因上限没发请求的条数,
+         "by_outcome": {outcome: 条数}}——前两个数说明核对到了什么程度，
+        第三个数说明核对的结果各自是什么，别让读者从提醒句数去猜。
+    """
+    checked, skipped, by_outcome = {}, 0, {}
+    for row in rows:
+        if not _is_practice_row(row):
+            continue
+        # 正文在两个解读源里都叫 `content`（`tax_shui5`/`tax_wechat` 的 read_body 分支），
+        # `body` 是点名文件那一路取回来的键；标题里的文号也要读——被解读的那份
+        # 文件的文号常常只出现在标题上，它就是这一篇的口径出处。
+        body = row.get("content") or row.get("body") or ""
+        text = " ".join(x for x in (row.get("title", ""), body,
+                                    row.get("summary") or row.get("snippet") or "") if x)
+        own = re.sub(r"\s+", "", row.get("document_number") or "")
+        dns = [d for d in TT.doc_numbers(text) if re.sub(r"\s+", "", d) != own]
+        if not dns:
+            # 没抽到文号有两种完全不同的原因：这一篇确实没写，与这一轮压根没取正文
+            # （`gather(read_body=False)` 是常用形态）。写成同一句会把"没读"报成
+            # "文章没标出处"，读者的下一步动作完全不同。
+            st = {"outcome": "no_citation" if (body or row.get("summary")) else "no_body",
+                  "doc_number": "", "title": "", "where": OFFICIAL_WHERE}
+        else:
+            dn = dns[0]
+            if dn in checked:
+                st = dict(checked[dn])
+            elif len(checked) >= limit:
+                st = {"outcome": "not_checked", "doc_number": dn, "title": "",
+                      "where": OFFICIAL_WHERE, "limit": limit}
+                skipped += 1
+            else:
+                # 检索词用补过前缀的写法（见 `_citation_phrase`），记下来的还是
+                # 文章里那枚文号：读者要核对的是文章写了什么，不是我们拿什么去查。
+                term = _citation_phrase(text, dn)
+                hit, err, hits = _doc_number_in_library(term, dn, lookup)
+                if err:
+                    st = {"outcome": "lookup_failed", "doc_number": dn,
+                          "title": "", "where": OFFICIAL_WHERE, "error": err}
+                elif not hit:
+                    st = {"outcome": "not_in_library", "doc_number": dn,
+                          "title": "", "where": OFFICIAL_WHERE,
+                          "searched_as": term, "hits": hits,
+                          "also_cited": dns[1:3]}
+                else:
+                    # 库里查到了这一份：它的时效直接就是本层的结果名。
+                    # `judge_validity` 的四个取值（effective/pending/repealed/
+                    # unknown）与 `OFFICIAL_CAVEAT` 的四个同名条目是一一对应的，
+                    # 这里不再另写一张映射表——写表就会多一处要同步的地方，而那位
+                    # 真加了新时效档时，`official_caveat` 会把认不出的结果原样报出来
+                    # 而不是静默给空串，比映射表的默认分支更显眼。
+                    v = E.judge_validity(hit, at)["validity"]
+                    st = {"outcome": v, "doc_number": dn,
+                          "title": hit.get("title", ""),
+                          "where": OFFICIAL_WHERE,
+                          "validity_label": E.VALIDITY[v],
+                          "url": hit.get("url", "")}
+                checked[dn] = st
+                st = dict(st)
+        row["official_status"] = st
+        by_outcome[st["outcome"]] = by_outcome.get(st["outcome"], 0) + 1
+    return {"checked": len(checked), "skipped": skipped, "by_outcome": by_outcome}
+
+
+def citation_note(cc: dict | None) -> str:
+    """把文号核对进行到什么程度说一句人话。
+
+    逐条的提醒已经挂在各条自己的 caveats 里，这一句管的是整体：读者看到
+    "3 个文号里 1 个已废止"与看到"没核对过"，下一步动作完全不同。上限用满、
+    库没连上这两种"没查成"必须显式说出来，否则空白的 by_outcome 会被读成
+    "都查过了、都没问题"。
+    """
+    if not cc:
+        return ""
+    by = cc.get("by_outcome") or {}
+    if not by:
+        # 说清楚是"哪一类条目没取回"：上面【执行口径与实务认定】那一栏可能明明
+        # 有条目（官方解读也算实务），这一句却要说没核对，读者就会以为两句打架。
+        # 核对只管税屋与公众号，"实务材料"四个字撑不住这个区分。
+        return "本轮没有取回税屋或公众号的文章，没有文号需要回官方库核对"
+    detail = "、".join(f"{E.OFFICIAL_OUTCOME_LABEL.get(k, k)} {v} 条"
+                       for k, v in sorted(by.items(), key=lambda kv: kv[1],
+                                          reverse=True))
+    head = f"实务口径援引的文号已回{OFFICIAL_WHERE}核对 {cc.get('checked', 0)} 个"
+    if cc.get("skipped"):
+        head += f"，另有 {cc['skipped']} 条因单次上限 {OFFICIAL_LOOKUP_LIMIT} 个没查"
+    return f"{head}；结果分布：{detail}。单条的下一步动作见该条提醒行"
+
+
 _TAIL_RE = None
 
 
@@ -463,7 +671,8 @@ def _strip_question_tail(question: str) -> str:
 
 
 def gather(question: str, at: str = "", read_body: bool = True,
-           max_per_round: int | None = None) -> dict:
+           max_per_round: int | None = None,
+           check_citations: bool = True) -> dict:
     """按 plan 逐轮检索，合并去重后定级。
 
     Args:
@@ -472,10 +681,13 @@ def gather(question: str, at: str = "", read_body: bool = True,
         read_body: 是否取税屋正文。取正文要启浏览器，慢，不取时仍能拿到
             标题与地址用于分层展示。
         max_per_round: 每轮每源最多取几条，调试时用来压时间。
+        check_citations: 是否把实务材料援引的文号回官方库核对。这一项要发
+            真实检索（每次答案至多 `OFFICIAL_LOOKUP_LIMIT` 个文号），
+            离线用例与只想要底稿时传 False。
 
     Returns:
         plan 字段 + {"evidence":[定级后的依据], "rounds_done":[...],
-        "errors":[...]}。
+        "errors":[...], "citation_check":{核对进度}}。
     """
     plan = build_plan(question)
     tname = plan["type"]["type"]
@@ -544,6 +756,13 @@ def gather(question: str, at: str = "", read_body: bool = True,
                             "found": got_this_round,
                             "failed": failed_this_round})
 
+    # 实务材料援引的文号回官方库核对存在与时效。必须排在定级之前：`grade` 要把
+    # `official_status` 翻成提醒句，定级完再标就晚了。核对本身要发检索，
+    # 每份答案用满 OFFICIAL_LOOKUP_LIMIT 次为止，同一文号只查一次；
+    # 单个文号的取数失败由 `_doc_number_in_library` 收成 lookup_failed，
+    # 不会把这一层抛成整条答案的失败。
+    citation_check = check_practice_citations(evidence, at) if check_citations else None
+
     # 点名文件正文把上位规则列为制定依据，据此给这些文件补时效证据，再定级。
     corroborated = corroborate_validity_from_target(evidence, at)
     # 主题词只给"题面在问哪件事"，不给本体法名：《企业所得税法》《增值税暂行
@@ -557,6 +776,7 @@ def gather(question: str, at: str = "", read_body: bool = True,
     plan["rounds_done"] = rounds_done
     plan["errors"] = errors
     plan["corroborated"] = corroborated
+    plan["citation_check"] = citation_check
     plan["at"] = at
     plan["terms"] = terms
     # 点名了文件但库里没捞到那一份：compose 要把这件事说明白，不能拿同域文件顶位
@@ -678,6 +898,9 @@ def compose(plan: dict) -> dict:
         # 执行口径与实务认定：税屋、公众号、总局官方解读、办税指南都在这一栏。
         # 它是答案里"怎么落地"那一段的取材处，不是禁止引用的隔离区。
         "practice": _rows(practice),
+        # 这一栏的口径出处核到什么程度（查了几个文号、结果各是什么）。
+        # 没跑核对那一层时是空串，读者据此知道"没核"而不是"核过没问题"。
+        "citation_note": citation_note(plan.get("citation_check")),
         # 层级没判出、主题也没对上的线索：要先核对才能用，但照常列出
         "to_verify": _rows(to_verify),
         "repealed": [e.get("title", "") for e in repealed],
@@ -805,6 +1028,8 @@ def _print_answer(a: dict):
                 "上位授权与并列的直接规定，用来交叉验证与交代授权来源")
     _print_rows(a["practice"], "执行口径与实务认定", 6,
                 "答案里「怎么落地」那一段从这里取材；口径要落到它引用的文号上")
+    if a.get("citation_note"):
+        print(f"  {a['citation_note']}")
     _print_rows(a["to_verify"], "待核对线索", 5,
                 "层级与主题都还没对上，先核对再决定用不用")
     if a["repealed"]:
@@ -853,11 +1078,15 @@ def main():
     p.add_argument("--answer", action="store_true", help="检索并组织依据分层")
     p.add_argument("--at", default="", help="观察时点 YYYY-MM-DD")
     p.add_argument("--no-body", action="store_true", help="不取税屋正文（更快）")
+    p.add_argument("--no-citation-check", action="store_true",
+                   help="不把实务材料援引的文号回官方库核对（每次答案省掉至多 "
+                        f"{OFFICIAL_LOOKUP_LIMIT} 次检索）")
     p.add_argument("--json", action="store_true")
     args = p.parse_args()
 
     if args.answer or args.gather:
-        plan = gather(args.question, at=args.at, read_body=not args.no_body)
+        plan = gather(args.question, at=args.at, read_body=not args.no_body,
+                      check_citations=not args.no_citation_check)
         if args.answer and not args.json:
             _print_answer(compose(plan))
             return
