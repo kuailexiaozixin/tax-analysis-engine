@@ -18,10 +18,12 @@ search5 的 pageNum 从 0 起算，收在 tax_web_search.search_chinatax 里（�
 按 1 起算发出去，取回的是真实第二屏，目标文件落在第 5 屏；按 0 起算后它就是
 第 1 屏的首条。
 
-法规库条目在总局站里占比低，靠不靠前一屏要看检索词：窄词（「特别纳税调整
-实施办法」命中 21 条）第 1 屏就有 5 条法规库条目；宽词（「转让定价」命中
-174 条）第 1、2、5 屏各 0 条，法规文件散在第 3、4、6 屏。所以只读第 1 页
-会把"库里没有"错报成"确实没有"，必须按页筛。
+检索范围默认锁在文件类标签（tax_web_search.FILE_LABELS），不是全站。这一维
+决定翻页窗口里装的是什么：「转让定价」按全站取，前 3 屏一条法规库条目都没有
+（全是新闻与各地动态，自适应就此收尾，得 0 条），收窄到文件类标签后 18 条
+命中全部取回；「小微企业」全站 4822 条、首屏十条无一条是文件，收窄后 184 条。
+代价是会漏掉标在「视频政策解读」「图片政策解读」上的法规库条目，那些页面回的是
+media_only 空正文，本来就引不了条文；要连它们一起搜，命令行给 --all-labels。
 
 Usage:
   python tax_fgk.py "研发费用" --size 10
@@ -32,8 +34,8 @@ Usage:
   python tax_fgk.py --cache-stats / --cache-clear       # 查看 / 清空缓存
 
 翻页约定：默认按需自适应——连续 IDLE_PAGE_LIMIT(3) 页没捞到新的法规库条目
-就收尾，不再往后翻（总局站里法规库条目占比低、集中在靠前页，后面多是新闻）。
-显式给 --pages 则关掉自适应，严格翻满该页数。
+就收尾，不再往后翻（范围已是文件类标签，还连着几页空手，剩下的只是沾词的
+别的文件）。显式给 --pages 则关掉自适应，严格翻满该页数。
 
 缓存约定：只缓存"检索清单"（标题/文号/日期/URL），**正文永不缓存**——
 条文必须每次现拉，避免把已废止/被修订的旧条文当现行有效引用。
@@ -58,7 +60,8 @@ import tax_http
 from tax_cache import CacheManager
 from tax_web_search import (FGK_MARKER, CHINATAX_HOST, FGK_HOST,
                             add_filter_args, aging_of, filters_from_args,
-                            search_chinatax)
+                            label_scope_text, order_text, search_chinatax,
+                            search_opts_from_args)
 
 
 def filters_token(filters: dict) -> str:
@@ -71,11 +74,29 @@ def filters_token(filters: dict) -> str:
         return ""
     return "flt:" + ";".join(f"{k}={filters[k]}" for k in sorted(filters))
 
+
+def scope_token(file_only: bool, order: str) -> str:
+    """把非默认的检索范围收成缓存键段；默认范围返回空串。
+
+    清单的内容由 (label 白名单, orderBy) 决定，与 filters 是两个维度：白名单关掉
+    之后同一检索词回的是另一个集合的排序，两种清单绝不能共用一条缓存。默认
+    （file_only=True + relevance）不追加键段，让键回到 LIST_KEY_REV 那一条，
+    只有偏离默认才另立键。
+    """
+    parts = []
+    if not file_only:
+        parts.append("labels=all")
+    if order != "relevance":
+        parts.append(f"order={order}")
+    return ";".join(parts)
+
+
 # 总局检索接口把 pageSize 卡在 10 条，传更大的值无效，只能按页翻。
 PAGE_SIZE = 10
-# 翻页上限。实测“转让定价”全量 174 条命中分布在约 18 页，第 6 页之后仍有
-# 法规库条目（默认 6 页只会筛出约 28% 的 fgk 条目）；故放宽到 20 页以覆盖
-# 完整法规集。命中量极大的关键词用 --pages 自行收敛即可。
+# 翻页上限。默认范围收窄到文件类标签后，法规库条目集中得很靠前（2026-10-02 实测
+# 「转让定价」18 条命中只占 2 页，第 3 页就空了；「研发费用加计扣除」62 条命中，
+# 取满 30 条只用掉 3 页）；留到 20 页是给「增值税」这类命中上千条的宽词兜底
+# （1908 条要 191 页，只能取回前一截）。命中量极大的关键词用 --pages 自行收敛。
 MAX_PAGES = 20
 
 # 清单缓存 TTL（秒）。只缓存检索清单，正文永远现拉。默认关闭，用 --cache 打开。
@@ -83,8 +104,9 @@ MAX_PAGES = 20
 CACHE_TTL = 3600
 
 # 按需自适应收尾：连续这么多页都没捞到新的法规库条目，就不再往后翻。
-# 总局站里法规库条目占比低且集中在靠前的页，后面的页基本是新闻，继续翻
-# 只是白烧请求。要严格翻满某个页数，用 --pages 显式指定（那时不做自适应）。
+# 默认范围已经是文件类标签，还在连着几页捞不到新条目，说明剩下的只是与检索词
+# 沾边的别的文件，继续翻只是白烧请求。要严格翻满某个页数，用 --pages 显式指定
+# （那时不做自适应）。
 IDLE_PAGE_LIMIT = 3
 
 # 第几页之内算"浅页"。总局检索按相关度排序，越往后越松：第 1 页基本都在主题
@@ -100,7 +122,12 @@ FGK_DEEP_NOTE = (
 # 清单缓存键的翻页基准版本号。总局接口的 pageNum 原是从 0 起算、我们按 1
 # 起算发送，等于每轮检索都丢掉相关度最高的首屏；按 1 起算后，用旧基准写下的
 # 清单缺的就是这一屏，必须让它整体失效重抓，所以把基准写进键里。
-LIST_KEY_REV = "pn0"
+# pn0 之后追加 files：清单默认改为只在 FILE_LABELS 那十类文件标签里检索。
+# 实测同一批检索词在两种范围下的差距：「转让定价」全站前 3 页一条法规库条目都
+# 没有（自适应收尾，得 0 条），收窄后 18 条全部取回；「小微企业」全站 4822 条
+# 命中、首屏十条无一条是文件，收窄后 184 条。旧键写下的清单是按全站排序取的，
+# 不能继续顶替新默认，故一并作废。
+LIST_KEY_REV = "pn0-files"
 
 _cache = CacheManager(enabled=False, namespace="fgk")
 
@@ -300,17 +327,24 @@ def attach_associations(entries: list) -> list:
 
 
 def _scan_list(keyword: str, size: int, max_pages: int,
-               adaptive: bool = True, filters: dict = None) -> dict:
+               adaptive: bool = True, filters: dict = None,
+               file_only: bool = True, order: str = "relevance") -> dict:
     """只翻检索清单，不取正文（这一层才可缓存）。
 
     adaptive=True 时按需收尾：连续 IDLE_PAGE_LIMIT 页没捞到新的法规库条目
-    就停。总局站里法规库条目占比低且集中在靠前页，后面的页多是新闻，继续
-    翻只是白烧请求。要严格翻满就用 adaptive=False（CLI 显式给 --pages 时）。
+    就停。要严格翻满就用 adaptive=False（CLI 显式给 --pages 时）。
 
     filters 是 tax_web_search.build_filters 产出的收窄维度，逐页原样带进
     search_chinatax。把 column=政策法规 / xxgkSonTaxPolicy=<税种> 下推到检索
     侧，才是把翻页窗口对准法规文件的做法（否则自适应那 200 条窗口够不到散在
     深处的法规）。
+
+    file_only 与 order 是 search_chinatax 的检索选项，同样逐页带下去：
+    file_only=True 时只在文件类标签里搜，翻页窗口对准的就是文件本身；实测
+    「小微企业」全站 4822 条首屏十条没有一条文件，收窄后 184 条首屏全是
+    文件。代价是会漏掉标在「视频政策解读」「图片政策解读」上的法规库条目
+    （2026-10-02 实测「研发费用加计扣除」前 3 页有 7 条），那两类回的是
+    media_only 空正文，本来就引不了条文。要连它们一起拿，传 file_only=False。
     """
     results = []
     seen = set()
@@ -323,7 +357,8 @@ def _scan_list(keyword: str, size: int, max_pages: int,
     total_hits = 0
     for page in range(1, max(1, max_pages) + 1):
         found = search_chinatax(keyword, page=page, size=PAGE_SIZE,
-                                filters=filters)
+                                filters=filters, file_only=file_only,
+                                order=order)
         if not first_error and found.get("_error"):
             first_error = found["_error"]
         if page == 1:
@@ -391,6 +426,8 @@ def _scan_list(keyword: str, size: int, max_pages: int,
     }
     if filters:
         result["filters"] = filters
+    if file_only is False:
+        result["label_scope"] = label_scope_text(file_only)
     # 检索本身失败要透出错误，不要和"库里没有"混为一谈
     if first_error:
         result["_error"] = first_error
@@ -410,19 +447,25 @@ def _scan_list(keyword: str, size: int, max_pages: int,
             tail = (f"（连续 {idle_pages} 页无新法规库条目，已自适应收尾）"
                     if stopped_early else "")
             result["_error"] = (f"翻完前 {pages} 页总局检索结果（共 {total_hits} 条命中）"
-                                f"未筛出法规库条目{tail}")
+                                f"未筛出法规库条目{tail}"
+                                # 默认范围只在文件类标签里搜，视频/图片解读那两类
+                                # 法规库条目本来就不在窗口内；这句话必须写出来，
+                                # 否则"未筛出"会被读成"库里没有这份文件"。
+                                + ("（检索范围限于文件类标签，视频与图片解读类条目不在内，"
+                                   "要连它们一起搜用 --all-labels）" if file_only else ""))
     return result
 
 
 def search_fgk(keyword: str, size: int = 10, with_body: bool = False,
                max_pages: int = MAX_PAGES, adaptive: bool = True,
-               filters: dict = None) -> dict:
+               filters: dict = None, file_only: bool = True,
+               order: str = "relevance") -> dict:
     """
     在税务总局法规库检索法规文件清单。
 
     缓存策略：**只缓存清单，正文永不缓存**。清单按
-    (keyword, size, max_pages, adaptive, filters) 缓存 CACHE_TTL 秒；命中缓存时
-    直接返回清单，正文（with_body）仍逐条现拉。
+    (keyword, size, max_pages, adaptive, filters, 检索范围) 缓存 CACHE_TTL 秒；
+    命中缓存时直接返回清单，正文（with_body）仍逐条现拉。
 
     Args:
         keyword: 检索词
@@ -432,6 +475,10 @@ def search_fgk(keyword: str, size: int = 10, with_body: bool = False,
         adaptive: 连续 IDLE_PAGE_LIMIT 页无新法规库条目即收尾（默认开）；
                   要严格翻满 max_pages 就传 False
         filters: build_filters 产出的收窄维度；并入缓存键，不同维度不会共用缓存
+        file_only: 检索范围，True（默认）只在文件类标签里搜，见 _scan_list；
+                   False 连新闻/视频/各地动态一起搜。两种范围是不同集合，各自入键
+        order: 传给 search_chinatax 的排序，relevance（默认）/ date_desc /
+               category / date_asc
 
     Returns:
         {"keyword","total","total_hits","pages_scanned","stopped_early","results",
@@ -442,9 +489,14 @@ def search_fgk(keyword: str, size: int = 10, with_body: bool = False,
     """
     # 不带维度时不追加键段，旧基准（LIST_KEY_REV）写下的无过滤清单继续命中，
     # 不必整体重抓；带维度时把排序后的键值拼进去，None 与 {} 视作同一种"无过滤"。
+    # 检索范围与排序只有偏离默认时才追加（scope_token），否则白名单默认一改，
+    # 旧的全站清单就会顶着新默认被取出来。
     key_parts = ["fgk", LIST_KEY_REV, keyword, str(size), str(max_pages),
                  str(adaptive)]
     token = filters_token(filters)
+    if token:
+        key_parts.append(token)
+    token = scope_token(file_only, order)
     if token:
         key_parts.append(token)
     cache_key = _cache._key(*key_parts)
@@ -457,7 +509,8 @@ def search_fgk(keyword: str, size: int = 10, with_body: bool = False,
         if cached_age is not None:
             result["_cache_age_s"] = round(cached_age, 1)
     else:
-        result = _scan_list(keyword, size, max_pages, adaptive, filters)
+        result = _scan_list(keyword, size, max_pages, adaptive, filters,
+                            file_only=file_only, order=order)
         _cache.set(cache_key, result)  # 缓存的是"无正文"的清单
 
     # 正文永远现拉，绝不缓存（避免引用过期条文）
@@ -521,11 +574,13 @@ def main():
 
     try:
         filters = filters_from_args(args)
+        opts = search_opts_from_args(args)
     except ValueError as e:
         p.error(str(e))
 
     result = search_fgk(args.keyword, size=args.size, with_body=args.body,
-                        max_pages=max_pages, adaptive=adaptive, filters=filters)
+                        max_pages=max_pages, adaptive=adaptive, filters=filters,
+                        **opts)
     if args.assoc:
         attach_associations(result["results"])
 
@@ -538,6 +593,8 @@ def main():
         age = result.get("_cache_age_s")
         cache_tag = f" [清单缓存{' ' + str(int(age)) + 's 前' if age is not None else ''}]"
     print(f"🔍 税务总局法规库 \"{args.keyword}\" | {result['searched_at']}{cache_tag}")
+    print(f"   检索范围: {label_scope_text(opts['file_only'])} | "
+          f"排序: {order_text(opts['order'])}")
     if result.get("_error"):
         print(f"⚠️  {result['_error']}")
     early = (f"（连续 {IDLE_PAGE_LIMIT} 页无新法规库条目，已自适应收尾）"

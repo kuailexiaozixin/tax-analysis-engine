@@ -108,10 +108,12 @@ def _make_fake_search(pages_fgk_count: dict, total_hits: int = 100):
     """
     calls: list = []
     filters_seen: list = []
+    opts_seen: list = []
 
-    def fake(keyword, page=1, size=PAGE_SIZE, filters=None):
+    def fake(keyword, page=1, size=PAGE_SIZE, filters=None, **opts):
         calls.append(page)
         filters_seen.append(filters)
+        opts_seen.append(opts)
         n_fgk = pages_fgk_count.get(page, 0)
         items = []
         for i in range(PAGE_SIZE):
@@ -119,6 +121,7 @@ def _make_fake_search(pages_fgk_count: dict, total_hits: int = 100):
         return {"total": total_hits, "results": items}
 
     fake.filters_seen = filters_seen
+    fake.opts_seen = opts_seen
     return fake, calls
 
 
@@ -507,8 +510,8 @@ def test_filters_produce_too_narrow_instead_of_libraries_empty():
     empty_with_note = {"total": 0, "results": [], "filters": {"docYear": "2018"},
                        "_filter_note": "命中 0 条，分不清拼窄还是没有"}
     try:
-        tax_fgk.search_chinatax = lambda keyword, page=1, size=10, filters=None: \
-            empty_with_note
+        tax_fgk.search_chinatax = lambda keyword, page=1, size=10, filters=None, \
+            **opts: empty_with_note
         r = tax_fgk._scan_list("测试词", size=5, max_pages=2, filters={"docYear": "2018"})
     finally:
         tax_fgk.search_chinatax = saved_scan
@@ -527,7 +530,8 @@ def test_scan_list_flags_fetch_failure_apart_from_empty():
     saved_scan = tax_fgk.search_chinatax
     failed = {"total": 0, "results": [], "_error": "HTTP 500"}
     try:
-        tax_fgk.search_chinatax = lambda keyword, page=1, size=10, filters=None: failed
+        tax_fgk.search_chinatax = lambda keyword, page=1, size=10, filters=None, \
+            **opts: failed
         r = tax_fgk._scan_list("测试词", size=5, max_pages=2)
     finally:
         tax_fgk.search_chinatax = saved_scan
@@ -537,6 +541,104 @@ def test_scan_list_flags_fetch_failure_apart_from_empty():
     assert "_filter_note" not in r and "_empty_reason" not in r, r
     assert "未筛出法规库条目" not in r["_error"], r["_error"]
     print("  [PASS] 清单层请求失败带 _fetch_failed，与未筛出/拼窄分开报")
+
+
+# ── 检索范围与排序（label 白名单 / orderBy） ─────────────────────────────────
+
+def test_scan_list_threads_scope_and_order_to_every_page():
+    """file_only 与 order 必须像 filters 一样逐页下推，不能只在首页生效。
+
+    对应的坑：翻页窗口是按范围/排序取的那一屏序列，若后续页漏掉参数，取回的
+    清单就是"首页收窄、后页全站"的混合体——条数照常、结构照常，只有逐页核对
+    参数才能发现。默认（白名单+相关度）也要显式发出去，且此时不打 label_scope。
+    """
+    fake, calls = _make_fake_search({1: 2, 2: 2, 3: 2})
+    with _patched(search_chinatax=fake):
+        r = tax_fgk._scan_list("测试词", size=6, max_pages=3, adaptive=False,
+                               file_only=False, order="date_desc")
+    assert len(calls) == 3 and len(fake.opts_seen) == 3, (calls, fake.opts_seen)
+    assert all(o == {"file_only": False, "order": "date_desc"}
+               for o in fake.opts_seen), fake.opts_seen
+    assert r.get("label_scope") == "全站（含新闻、视频、各地动态）", r
+
+    fake2, _ = _make_fake_search({1: 2, 2: 2})
+    with _patched(search_chinatax=fake2):
+        r2 = tax_fgk._scan_list("测试词", size=4, max_pages=2, adaptive=False)
+    assert all(o == {"file_only": True, "order": "relevance"}
+               for o in fake2.opts_seen), fake2.opts_seen
+    assert "label_scope" not in r2, "默认范围不需要回显，界面上会当成一条异常说明"
+    print(f"  [PASS] {len(fake.opts_seen)} 页都带同一组范围/排序；全站回显、默认不回显")
+
+
+def test_zero_hit_sentence_names_the_label_scope():
+    """收窄到 0 条时那句成因必须点出"文件类标签之外不在窗口内"。
+
+    对应的坑：默认白名单把「视频政策解读」「图片政策解读」两类法规库条目挡在窗口
+    外（2026-10-02 实测「研发费用加计扣除」全站前 3 页有 7 条这类），界面若只印
+    "未筛出法规库条目"，用户会读成"库里没有这份文件"。关掉白名单后这句话就失去
+    依据，必须跟着消失。
+    """
+    fake, _ = _make_fake_search({})            # 十条全是新闻，没有法规库条目
+    with _patched(search_chinatax=fake):
+        narrowed = tax_fgk._scan_list("测试词", size=5, max_pages=1, adaptive=False)
+        whole = tax_fgk._scan_list("测试词", size=5, max_pages=1, adaptive=False,
+                                   file_only=False)
+    assert narrowed["total"] == 0, narrowed
+    assert "文件类标签" in narrowed["_error"] and "--all-labels" in narrowed["_error"], \
+        narrowed["_error"]
+    assert "--all-labels" not in whole.get("_error", ""), whole["_error"]
+    print("  [PASS] 白名单下 0 条那句点出范围并给出 --all-labels；全站下不写")
+
+
+def test_scope_token_only_adds_a_key_segment_when_not_default():
+    """scope_token 只在偏离默认时追加键段，默认必须回空串。
+
+    默认那份清单的键要落回 LIST_KEY_REV 那一条，否则改一次默认就把自己刚建的
+    缓存全冲掉；反过来只要偏离默认就必须另立键，否则全站清单会顶替白名单清单
+    被读出来（test_scope_and_order_have_their_own_cache_keys 验的是这条的实际后果）。
+    """
+    assert tax_fgk.scope_token(True, "relevance") == ""
+    assert tax_fgk.scope_token(False, "relevance") == "labels=all"
+    assert tax_fgk.scope_token(True, "date_desc") == "order=date_desc"
+    assert tax_fgk.scope_token(False, "date_desc") == "labels=all;order=date_desc"
+    print("  [PASS] 默认空串、关白名单/换序各自成段，两者同时偏则并段")
+
+
+def test_scope_and_order_have_their_own_cache_keys():
+    """换范围或换排序必须另立缓存，不许读回默认那份清单。
+
+    这条管的是真会发生的错法：同一检索词在两种范围下取回的是完全不同的集合
+    （「转让定价」全站前 3 页 0 条、白名单 18 条），共用一条缓存时用户点了
+    --all-labels 却拿回白名单的结果，还以为是全站就长这样。
+    """
+    fake, _ = _make_fake_search({1: 10})
+    with _temp_cache():
+        with _patched(search_chinatax=fake):
+            r1 = search_fgk("测试词", size=2, max_pages=3)
+            assert r1["_from_cache"] is False, "第一次取不该命中"
+            n = len(fake.opts_seen)
+            r2 = search_fgk("测试词", size=2, max_pages=3)
+            assert r2["_from_cache"] is True, "同参数第二次应命中"
+            assert len(fake.opts_seen) == n, "命中缓存却又发了请求"
+
+            r3 = search_fgk("测试词", size=2, max_pages=3, file_only=False)
+            assert r3["_from_cache"] is False, "全站范围读到了白名单的缓存"
+            assert fake.opts_seen[-1] == {"file_only": False, "order": "relevance"}, \
+                "search_fgk 的参数没传到清单层"
+            assert r3.get("label_scope"), "全站那份要带着范围回显，缓存后也不能丢"
+
+            r4 = search_fgk("测试词", size=2, max_pages=3, order="date_desc")
+            assert r4["_from_cache"] is False, "换排序读到了相关度的缓存"
+            assert fake.opts_seen[-1]["order"] == "date_desc"
+
+            r5 = search_fgk("测试词", size=2, max_pages=3, file_only=False,
+                            order="date_desc")
+            assert r5["_from_cache"] is False, "范围与排序的组合又是一份，不能复用单偏那份"
+
+            r6 = search_fgk("测试词", size=2, max_pages=3)
+            assert r6["_from_cache"] is True, "默认那份不能被偏默认的请求冲掉"
+            assert "label_scope" not in r6, r6
+    print("  [PASS] 缓存按 (范围, 排序) 分键：默认命中、四种偏离各自重取")
 
 
 # ── 关联文件查询（queryManuscriptAssociation） ──────────────────────────────
@@ -675,6 +777,11 @@ def main():
         ("filters 分键缓存", test_search_fgk_caches_each_filter_set_apart),
         ("带维度 0 条报拼窄", test_filters_produce_too_narrow_instead_of_libraries_empty),
         ("请求失败带 _fetch_failed", test_scan_list_flags_fetch_failure_apart_from_empty),
+        ("范围/排序逐页下推", test_scan_list_threads_scope_and_order_to_every_page),
+        ("0 条成因点出范围", test_zero_hit_sentence_names_the_label_scope),
+        ("scope_token 只在偏离默认时成段",
+         test_scope_token_only_adds_a_key_segment_when_not_default),
+        ("范围/排序各自分键缓存", test_scope_and_order_have_their_own_cache_keys),
         ("articleId 从 URL 取", test_article_id_from_url_forms),
         ("关联解析实测形态", test_fetch_associations_parses_measured_payload),
         ("关联失败路径报错", test_fetch_associations_error_paths),

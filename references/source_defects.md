@@ -46,11 +46,16 @@
 | 全网那一趟取到的条数一变，整路结果静默消失 | `tax_server._search_web_broad` 一律返回 `(results, why)` 二元组；`test_broad_web_survives_to_the_payload` 在真实边界打桩，1/2/3 条各断一次；`test_source_defects.py::TestTupleReturnContract` 静态扫 `-> tuple[A, B]` 的函数不许 `return` 单值 | 调用方按 `items, why = ...` 解包，返回裸列表时成败取决于长度 |
 | 取数失败那句裸异常把界面与命令行的错误行撑满 | `tax_http.short_reason`：抹掉链接与参数串、折行压平、丢掉 urllib3 的 `(Caused by ...)` 嵌套、按空格边界截断，末尾留异常类名 | `str(e)` 给的是三百多字整条查询串，真正的原因反而读不出来（用例 `test_http_layer.py::TestShortReason`）|
 | 用户问的是草案，取回的同名现行版本被当成草案内容 | `tax_analyze.LEGISLATIVE_STAGES` 与 `legislative_stage` 在 ① 登记立法阶段，`legislative_note` 写成整句；命令行与界面"收录范围"共用这一句 | 判据只看题面用词；盯它的是 `test_legislative_stage_flags_draft_wording` 与 `test_legislative_note_survives_the_keyword_swap` |
-| 接口对「维度拼窄」与「该库根本没有」回的是同一个 0，用户看不出区别 | `tax_web_search.build_filters` 只放行五组有实测数字支撑的收窄维度，`search_chinatax` 在 `filters` 非空且 `total==0` 时写 `_filter_note`（把发出去的维度一并附在句尾），`tax_fgk._scan_list` 把它从第一页接住并顶替"翻完前 N 页"那句 | 2026-10-01 起这五组已接进命令行；盯它的是 `test_search5_zero_with_filters_says_it_might_be_too_narrow` 与 `test_filters_produce_too_narrow_instead_of_libraries_empty` |
+| 接口对「维度拼窄」与「该库根本没有」回的是同一个 0，用户看不出区别 | `tax_web_search.build_filters` 只放行有实测数字支撑的七组收窄维度（2026-10-01 五组＋2026-10-02 的时效与效力等级），`search_chinatax` 在 `filters` 非空且 `total==0` 时写 `_filter_note`（把发出去的维度一并附在句尾），`tax_fgk._scan_list` 把它从第一页接住并顶替"翻完前 N 页"那句 | 这七组都已接进命令行；盯它的是 `test_search5_zero_with_filters_says_it_might_be_too_narrow` 与 `test_filters_produce_too_narrow_instead_of_libraries_empty`。取值域外（`--aging 有效`）在 `build_filters` 就 `ValueError`，因为接口对域外值是静默回基线 |
 | 同一文件在库里有现行版与被废止版两份，正文里却读不到对方的链接 | `tax_fgk.fetch_associations` 走 `queryManuscriptAssociation`（POST 到 www 域、入参是 `article_id_from_url` 从 URL 末段取的 id），关联条目里相对链接一律补 `FGK_HOST` 前缀；`--assoc` 逐条挂载 | 静态详情页 HTML 里那四组是空的，`fetch_fgk_body` 又把标签全剥干净，所以 `<a href>` 一条都抠不出来；接口主机与链接主机相反这件事是本机实测出来的（POST www 200 / fgk 404，链接 fgk 200 / www 404），盯它的是 `test_fetch_associations_parses_measured_payload` 与 `test_article_id_from_url_forms` |
-| 界面高级筛选栏的范围／匹配／日期只对 NPC 生效，数据源选到税务总局／法规库就被静默丢掉，控件看着全局实则空转 | `tax_server.api_search` 的 chinatax／fgk 分支经 `tax_web_search.build_filters` 把三控件翻成 search5 `filters` 透传（范围→`wordPlace`、匹配→`participleRule`、日期→`cwrqStart`/`cwrqEnd`），非法日期报 400；`build_filters` 没有 `xxgkAging`，故界面 `syncFilterControls` 在该两源把"时效"置灰；0 条成因走 `result._filter_note`，深页条目走 `_reliability` 角标 | 实测范围=标题「增值税」收 2998、全文回基线 13152；盯它的是 `test_chinatax_maps_ui_filters_into_the_request`、`test_fgk_fulltext_does_not_narrow_to_title`、`test_bad_date_on_chinatax_is_400_not_silent_baseline` |
-| 归类把 sta 专题自动换源到法规库那条路仍把三控件丢掉，只有手选数据源才生效 | `tax_server.api_search` 抽出 `_ui_filters`，sta 专题改查 `search_fgk` 时也走它下推 filters（非法日期同样 400） | 换源那一路以前只透 `body`，界面收窄对专题题静默无效；盯它的是 `test_sta_topic_routed_to_fgk_carries_ui_filters` |
+| 界面高级筛选栏的范围／匹配／日期／排序只对 NPC 生效，数据源选到税务总局／法规库就被静默丢掉，控件看着全局实则空转 | `tax_server.api_search` 的 chinatax／fgk 分支经 `tax_web_search.build_filters` 把控件翻成 search5 `filters` 透传（范围→`wordPlace`、匹配→`participleRule`、日期→`cwrqStart`/`cwrqEnd`、时效→`xxgkAging`），排序另走 `tax_server.SORT_TO_ORDER`（日期↓→`orderBy=1`），非法日期与非法时效报 400；「时效」那一栏在 search5 两源换成五个文本值且默认「全部」——白名单基数 1908 条里 1165 条该栏为空，照 NPC 的默认「现行有效」收窄会把现行文件一起筛掉；0 条成因走 `result._filter_note`，深页条目走 `_reliability` 角标 | 实测两栏都收窄（范围=标题＋时效=全文有效）「增值税」1908→146，单发时效 252；全站基数下同一维是标题 2998、基线 13152；盯它的是 `test_chinatax_maps_ui_filters_into_the_request`、`test_fgk_fulltext_does_not_narrow_to_title`、`test_bad_date_on_chinatax_is_400_not_silent_baseline`、`test_bad_aging_on_chinatax_is_400_not_silent_baseline`、`test_ui_aging_reaches_xxgk_aging_and_blank_sends_nothing`、`test_sort_from_ui_reaches_order_on_both_search5_paths` |
+| 「时效」换值域时把「全部」那项写成空数组，浏览器下拉里冒出一个 `undefined` 选项，而 `select.value` 仍回 `""` 看着正常 | `frontend/index.html` 的 `syncFilterControls` 把两档值域都写成 `['值','文案']` 两项数组；`test_frontend_aging_control.py::TestOptionPairsAreNeverIncomplete` 静态扫 `const opts=` 那行，命中空项 `[[]` 就报红 | **这条只有真浏览器读那一栏才看得见**：本机 2026-10-02 打开 `filterStatus` 逐源读出 chinatax／fgk 首项是字面量 `undefined`（`st.value` 却是 `""`，纯静态读源码与后端测试全绿），修回 `['','全部']` 后复读四源选项集：npc／aggregated 两档、chinatax／fgk 「全部」+五档 |
+| 归类把 sta 专题自动换源到法规库那条路仍把那几个控件丢掉，只有手选数据源才生效 | `tax_server.api_search` 抽出 `_ui_filters`，sta 专题改查 `search_fgk` 时也走它下推 filters 与 `SORT_TO_ORDER`（非法日期、非法时效同样 400） | 换源那一路以前只透 `body`，界面收窄对专题题静默无效；盯它的是 `test_sta_topic_routed_to_fgk_carries_ui_filters` |
 | 取数真失败与"翻了没筛出/库里没有"共用一句 `_error`，界面一律印"未找到" | `tax_web_search._empty_result` 与 `tax_fgk._scan_list` 的 `first_error` 分支各补 `_fetch_failed`，`renderResults` 把它单列成"取数失败…可稍后重试"排在最前，不进未找到分支 | 服务侧故障被读成"换个词重搜就有"是静默降级；盯它的是 `test_request_failure_is_flagged_not_read_as_no_hit`、`test_scan_list_flags_fetch_failure_apart_from_empty`、`test_fetch_failed_flag_survives_into_payload` |
+| 检索不发 `label` 时是全站，法规库清单被新闻与各地动态挤满：「转让定价」全站前 3 屏 0 条法规库条目，自适应早停在第 3 页收尾，整趟取回 **0** 条 | `tax_web_search.FILE_LABELS` 是十个文件类标签的白名单，`search_chinatax` 与 `tax_fgk._scan_list` 默认按它发（`file_only=True`，只有 CLI 的
+`--all-labels` 能关，界面那一路恒用默认范围）；实测同一词收窄后 18 条全部取回，
+「小微企业」4822→184。清单缓存键的 `LIST_KEY_REV` 随之从 `pn0` 改成 `pn0-files`，
+非默认范围另走 `tax_fgk.scope_token` | 收窄的代价是漏掉标在「视频政策解读」「图片政策解读」上的法规库条目（实测「研发费用加计扣除」全站前 3 页 7 条），那类回的是 `media_only` 空正文；`_scan_list` 在 0 条那句 `_error` 里把范围写明，不让人把"窗口里没有"读成"库里没有"。盯它的是 `test_file_labels_is_the_default_scope`、`test_all_labels_switch_reopens_the_whole_site`、`test_scan_list_threads_scope_and_order_to_every_page`、`test_scope_and_order_have_their_own_cache_keys`、`test_zero_hit_sentence_names_the_label_scope` |
 
 ## 两个值得单独说明的细节
 
@@ -126,3 +131,13 @@ SKILL.md ② 末尾指向这一节。它回答两个问题：某一格动作**�
   怎么把状态补上，这条管发出去之前别把两维拼一起。程序拦不住谁去拼这条必然为零的
   查询，而 0 条与"库里确实没有"在结果里长得一模一样。参数与分面的实测数字见
   `commands.md`「search5 的可发参数与分面字段」。
+- **「公布日期」那一栏在 NPC 单源与多源聚合两路上还做不到收窄**（2026-10-02 经
+  `/api/search` 实测新发现，两处都还没收口）。多源聚合是 `tax_server.api_search` 没把
+  `date_from`/`date_to` 交给 `tax_aggregator.aggregate_search`——该函数签名里就没有这两个
+  参数；同一个请求体带与不带 `date_from=2026-01-01` 回来的 12 条一模一样，里面仍有
+  2019-11-27 的条目。NPC 单源是接口侧的毛病：`tax_search.search_tax` 把区间填进 `gbrq`
+  之后，`searchContent` 就不起作用了——`search_tax("中华人民共和国增值税法", search_type=1,
+  date_from="2026-01-01")` 回 88 条，首条《民族团结进步促进法》，88 条里没有一条含"增值税"；
+  同一词不带日期是 2 条，检索词本身仍是好的（《中华人民共和国增值税法》与其实施条例）。
+  危害方向要说准：不是"收窄成 0"，是**带着日期反而把与检索词无关的清单递回来**，
+  而界面没有任何一句话提示这一点。税务总局／法规库两路是真收窄（`cwrqStart`/`cwrqEnd`）。

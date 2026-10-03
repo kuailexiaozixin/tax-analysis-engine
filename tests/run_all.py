@@ -61,6 +61,8 @@ OFFLINE_GROUP = [
     ("服务端路由用例（9 路由/状态码/打桩上游）", [PY, str(TESTS_DIR / "test_server_routes.py")]),
     ("前端省份控件契约（控件在官方解读页、站点清单与后端一致）",
      [PY, str(TESTS_DIR / "test_frontend_province_ui.py")]),
+    ("前端时效控件值域契约（按源换值域/选项两项齐全/赋值只走共享入口）",
+     [PY, str(TESTS_DIR / "test_frontend_aging_control.py")]),
     ("源缺陷修复回归（深页标记/缺口说明/可靠性否决/搜狗闸/下载收口）",
      [PY, str(TESTS_DIR / "test_source_defects.py")]),
     ("检索词整形与路由用例（选项剥离/点名文件定位/短词降级/sta 检索词）",

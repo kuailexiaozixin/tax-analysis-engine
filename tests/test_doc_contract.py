@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """文档内部契约的离线用例。不联网、不开浏览器、不调模型。
 
-守的是四类结构问题——都不问内容对错，只问"改了一处有没有忘了另一处"：
+守的是五类结构问题——都不问内容对错，只问"改了一处有没有忘了另一处"：
 
   1. `references/*.md` 顶部目录里每个锚点都必须落到本文某个真实二级标题；对
      `output_templates.md` 与 `out_of_library_layers.md` 这两份按"一节一行"维护
@@ -18,6 +18,10 @@
      一句无法核对的自我声明。
   4. SKILL.md 与全部 `references/*.md` 的正文里不得出现段内紧挨着的重复片段——
      改文档时"上一行行尾留半句、下一行行首又写一遍"这种自伤，按行扫看不出。
+  5. 模板三个补充块（立法理由、易混点、救济与期限）的定性在两处复写：SKILL.md ⑥
+     说它们是必查项，模板说各自去哪几层取、取不到时留痕那一句怎么写。⑥ 的定性漂回
+     "可选"，或模板那句留痕被换成"取不到就不写"，模型就有一条不必检索的出口——
+     留白还会让 ⑦ 第 9 条无从核对，因为读者分不清是没查到还是根本没查。
 
 第 3 项的"文件 → 章节名"抽取只认 SKILL.md 现有的两种句式（`` `x.md` 的"Y"一节``
 与 `` `x.md`「Y」 ``，后者已是多数），扩句式前先加提取规则，否则新指针会静默逃过
@@ -27,8 +31,10 @@
 本文件落地时做过两轮就地变异核验：往 SKILL.md 与两份 reference 文档里逐个注入 16 种
 破坏（删枚举值、表格改名、矩阵塞域外取值、删整条交互 bullet、删候选总览档位、指针
 指向不存在的小节、「」式指针整体不认、半句贴两遍、归属表符号漂走等），逐条确认对应
-用例报红，16/16 命中，每轮注入后按字节断言还原。注入用的临时脚本不入库，日常回归靠
-本文件里的 `test_mutation_*` 自检（它们改的是内存副本，不落盘）。
+用例报红，16/16 命中，每轮注入后按字节断言还原。第 5 项落地时同样注入过（把留痕句
+改回"就整段不写"，正向与反向两条判据同时报红），此后收进
+`test_mutation_gap_note_replaced_by_silence_is_caught` 常驻自检。注入用的临时脚本不入库，
+日常回归靠本文件里的 `test_mutation_*` 自检（它们改的是内存副本，不落盘）。
 """
 
 import re
@@ -225,6 +231,24 @@ def adjacent_dupes(md: str) -> list:
         out += [m.group(1) for m in re.finditer(r"(.{5,20}?)\1", s)
                 if re.search(r"[一-鿿]", m.group(1))]
     return sorted(set(out))
+
+
+# 三个补充块（立法理由 / 易混点 / 救济与期限）里"确实取不到时那句留痕话"的取值。
+# 判据比的是整句而不是"未取到"三个字：三个字在他处也会合法出现，按词在不在文件里
+# 判会像早先那版枚举检查一样假绿。
+GAP_NOTE = {
+    "立法理由": ("未取到官方说明", "不得凭训练数据", "④ 五源"),
+    "易混点": ("未定位到相邻规定的原文", "④ 五源"),
+    "救济与期限": ("未取到明文", "不得删", "税收争议救济"),
+}
+
+# "查不到就留白"的出口措辞。出现任何一条都算缺陷，见 TestOptionalReasoningBlocks。
+SILENT_EXIT_WORDS = ("就整段不写", "就不写这一段", "就不写这一行", "就不写这一条")
+
+
+def silent_exit_words(md: str) -> list:
+    """模板正文里出现的留白措辞，按写出顺序返回。"""
+    return [w for w in SILENT_EXIT_WORDS if w in md]
 
 
 def forms_listed_in_skill(skill_md: str) -> tuple:
@@ -519,6 +543,59 @@ class TestProseSelfInjury(unittest.TestCase):
         self.assertNotEqual(broken, md, "变异片段没找到，判据读的原文变了")
         self.assertEqual(adjacent_dupes(md), [])
         self.assertIn("它解决的是六段式", adjacent_dupes(broken), "贴两遍不会被报红")
+
+
+class TestOptionalReasoningBlocks(unittest.TestCase):
+    """三个补充块都要求"取不到要留痕"，且正文里不得出现留白措辞。
+
+    这三块从另一技能的固定三层输出借来，借的前提是它们在本仓不许退化成可选段：
+    立法理由撞 ⑦ 第 9 条（不得用训练数据的政策信息），救济与期限撞 ⑦ 第 2 条
+    （争议类必须走到 L4），SKILL.md ④ 末又早写了"五源均无结果时不要直接结束，
+    明确告知未找到"。模板若再开一条"取不到就不写"的出口，等于同一件事留了个更松的
+    走法，模型一定走那条——而留白比写错更难发现：读者看不出到底查过没有，⑦ 第 9 条
+    也因此无从核对。所以这里的判据是双向的：正向钉每块的留痕句，反向禁留白措辞。
+    """
+
+    @staticmethod
+    def _md():
+        return (REF_DIR / "output_templates.md").read_text(encoding="utf-8")
+
+    def test_the_three_blocks_are_present(self):
+        md = self._md()
+        for lab in GAP_NOTE:
+            self.assertTrue(labelled_span(md, lab), "模板里没有【%s】那一块" % lab)
+
+    def test_each_block_demands_a_disclosed_gap(self):
+        """每块都得在自己那段里写出留痕句与检索对象，不是全文某处出现就算过。"""
+        md = self._md()
+        for lab, tokens in GAP_NOTE.items():
+            span = labelled_span(md, lab)
+            for tok in tokens:
+                self.assertIn(tok, span, "【%s】块缺「%s」" % (lab, tok))
+
+    def test_no_silent_exit_wording(self):
+        self.assertEqual(silent_exit_words(self._md()), [],
+                         "模板出现了查不到就留白的出口措辞：%s"
+                         % silent_exit_words(self._md()))
+
+    def test_skill_side_says_they_are_mandatory(self):
+        """⑥ 把这三段定性成必查项；定性漂回"可选"就等于把留白合法化。"""
+        skill = SKILL.read_text(encoding="utf-8")
+        self.assertIn("必查项不是可选项", skill, "⑥ 没写明这三段是必查项")
+        for lab in GAP_NOTE:
+            self.assertIn(lab, skill, "⑥ 漏了 %s 这一段" % lab)
+
+    def test_mutation_gap_note_replaced_by_silence_is_caught(self):
+        """自检：把留痕句改回"就整段不写"，正向与反向两条判据都要报红。"""
+        md = self._md()
+        broken = md.replace("未取到官方说明", "就整段不写", 1)
+        self.assertNotEqual(broken, md, "变异没落到立法理由那句留痕上")
+        self.assertEqual(silent_exit_words(md), [])
+        self.assertIn("未取到官方说明", labelled_span(md, "立法理由"))
+        self.assertNotIn("未取到官方说明", labelled_span(broken, "立法理由"),
+                         "改留白后正向判据没报红")
+        self.assertIn("就整段不写", silent_exit_words(broken),
+                      "改留白后反向判据没报红，说明措辞检查形同虚设")
 
 
 def _cn_count(token: str) -> int:

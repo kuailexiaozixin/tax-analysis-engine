@@ -107,10 +107,11 @@ NPC 法规库那个接口（`tax_search.py`）经实测是**从 1 起算**，两
 - **效力级别** `effect_level`：接口给 `xxgk_effectLevel`（如"税务规范性文件"），
   定级时优先按它归档，比按标题形态猜准。
 
-默认**按需自适应**：连续 3 页没捞到新的法规库条目就收尾（上限 20 页）——总局站里
-法规库条目占比低、集中在靠前页，后面多是新闻，硬翻到底只是白烧请求。代价是
-**可能漏掉间隔 3 页以上的条目**；若出现 `total` 很少但 `total_hits` 很大的可疑情形，
-就用 `--pages N` 显式指定页数——那时会关掉自适应、严格翻满，但翻得越深相关性越差。
+默认**按需自适应**：连续 3 页没捞到新的法规库条目就收尾（上限 20 页）。默认检索范围
+已是文件类标签（见下文「文件类标签下的分布」），还连着 3 页空手，剩下的只是与检索词
+沾边的别的文件，硬翻到底只是白烧请求。代价是**可能漏掉间隔 3 页以上的条目**；若出现
+`total` 很少但 `total_hits` 很大的可疑情形，就用 `--pages N` 显式指定页数——那时会关掉
+自适应、严格翻满，但翻得越深相关性越差。
 
 返回里三个字段合起来看：`total_hits`（命中总数）、`pages_scanned`（实际翻了几页）、
 `stopped_early`（是否因自适应早停）。三者能区分"确实没有"、"翻到上限也没有"
@@ -129,14 +130,58 @@ NPC 法规库那个接口（`tax_search.py`）经实测是**从 1 起算**，两
 16199 与 16919，这一档不能当常量引用（16919 恰好等于下表 `columnList` 各桶之和，两次
 之差多半出在索引状态，本机没有更细的证据）。
 
-**已接进命令行的只有五组**（2026-10-01 起）：`wordPlace`、`participleRule`、
-`xxgkSonTaxPolicy`、`docType`+`docYear`+`docNo`、`cwrqStart`+`cwrqEnd`，都由
-`tax_web_search.build_filters` 拼参数、`search_chinatax(filters=…)` 并入请求，命令行
-开关见下文「search5 收窄维度的命令行」。表里其余参数（`xxgkEffectLevel`、`xxgkAging`、
-`column`、`label` 等）仍未接，`tax_web_search.search_chinatax` 固定发的还是 `siteCode`、
-`searchWord`、`type`、`pageSize`、`pageNum`、`orderBy`、`column`、`label` 八项（后两项发
-空串），`xxgk_aging` 与 `xxgk_effectLevel` 只当**返回字段**读。往命令行加新维度时按行
-核对这张表，不要凭记忆改。
+**已接进命令行的有七组**（2026-10-01 起五组，2026-10-02 补 `xxgkAging`、
+`xxgkEffectLevel`）：`wordPlace`、`participleRule`、`xxgkSonTaxPolicy`、
+`docType`+`docYear`+`docNo`、`cwrqStart`+`cwrqEnd`、`xxgkAging`、`xxgkEffectLevel`，
+都由 `tax_web_search.build_filters` 拼参数、`search_chinatax(filters=…)` 并入请求，
+命令行开关见下文「search5 收窄维度的命令行」。另有两项不是收窄维度而是检索选项，
+走 `search_chinatax` 的关键字参数：`label` 默认发 `FILE_LABELS` 那十个文件类标签
+（`--all-labels` 关），`orderBy` 由 `--order` 选（默认相关度）。仍未接的是 `column`、
+`xxgkTaxPolicy`、`xxgkFormulatedYear`、`xxgkIndustryType`、`likeDoc`、`searchWordMd5`。
+往命令行加新维度时按行核对这张表，不要凭记忆改。
+
+### 文件类标签下的分布（2026-10-02 实测，检索词仍是「增值税」）
+
+上一张表的基数是全站（13152 条）。默认范围换成 `FILE_LABELS` 后基数变成 1908，
+两维的取值域就是照这一行实测钉的：
+
+| 发送的参数（叠在 `label=FILE_LABELS` 上） | `total` | 备注 |
+|---|---|---|
+| 基线：`label=FILE_LABELS` | 1908 | 全站同词 13152 |
+| `wordPlace=1`（仅标题） | 908 | 界面「范围」那一栏的默认就是它，不是全站同维的 2998 |
+| `xxgkAging=全文有效` | 252 | 五档之和 743，即 1165 条（约六成）该栏为空 |
+| `wordPlace=1` + `xxgkAging=全文有效` | 146 | 界面把范围与时效两栏一起收窄时的实际命中（2026-10-02 经 `/api/search` 实测） |
+| `xxgkAging=已修改` | 163 | |
+| `xxgkAging=全文失效` | 9 | |
+| `xxgkAging=全文废止` | 318 | |
+| `xxgkAging=尚未生效` | 1 | |
+| `xxgkEffectLevel=法律` | 9 | 八档之和 1626 |
+| `xxgkEffectLevel=行政法规` | 10 | |
+| `xxgkEffectLevel=国务院文件` | 9 | |
+| `xxgkEffectLevel=税务部门规章` | 30 | |
+| `xxgkEffectLevel=税务规范性文件` | 681 | |
+| `xxgkEffectLevel=财税文件` | 636 | 与全站单发同值，财税文件全在标签白名单内 |
+| `xxgkEffectLevel=其他文件` | 61 | |
+| `xxgkEffectLevel=工作通知` | 190 | |
+| `xxgkEffectLevel=财税文件` + `xxgkAging=全文有效` | 0 | 两维同发必然归零，见 `source_defects.md` |
+| `likeDoc=1` | 1908 | 与基线同值，这一维在本接口上不起作用 |
+| `xxgkIndustryType=科技创新` | 0 | 2026-10-02 四种组合都测过：全站×增值税、全站×空检索词、白名单×增值税、白名单×空检索词，一律 0（同基数不发这一维依次是 13152 / 43105 / 1908 / 5676）。行业维在本接口不可用，接进来只会把命中清零 |
+
+时效这一维**不能拿来当默认**：六成条目该栏为空，默认收窄到「全文有效」会把没录
+时效的现行文件一起筛掉。网页端的「时效」控件因此只在税务总局／法规库两个源下
+给五个文本值，且默认「全部」（`tax_server._ui_filters` 的 `aging` 参数不兜默认）。
+
+`label` 白名单换的是翻页窗口的成分，实测两例（`tax_fgk._scan_list`，自适应早停、
+最多 20 页）：
+
+| 检索词 | 全站 | 文件类标签 |
+|---|---|---|
+| 转让定价 | 181 条命中，前 3 屏 0 条法规库条目，自适应收尾得 **0** 条 | 18 条命中，**18** 条全部取回 |
+| 小微企业 | 4822 条命中，首屏十条是 亚洲／各地动态×3／媒体视点×4／视频图解／视频政策解读 | 184 条命中，首屏十条全是文件 |
+
+代价：标在「视频政策解读」「图片政策解读」上的法规库条目会被漏掉（2026-10-02 实测
+「研发费用加计扣除」全站前 3 页有 7 条这一类）。那类页面回的是 `media_only` 空正文，
+本来就引不了条文；要连它们一起取，命令行加 `--all-labels`。
 
 | 发送的参数（单发） | `total` | 实测备注 |
 |---|---|---|
@@ -165,12 +210,20 @@ NPC 法规库那个接口（`tax_search.py`）经实测是**从 1 起算**，两
 | 不发 `type` | 13152 | 我们现在固定发的 `type=1` 实测无效果 |
 | 不发 `column` 与 `label` | 13152 | 空串与不发等价 |
 
-`orderBy` 四种取值都不改 `total`（都是 13152），只换首屏内容。发 2 时首条 `pubDate` 是
-2025-12-31、末条是 2026-01-30——按时间倒序不可能出现末条晚于首条，所以外部资料记的
-"2＝日期倒序"实测不成立。发 3 时首条是 1984-10-18，发 1 时首末条都在 2026-09-30，这两档
-的语义本机没有可判的口径，不下结论。可用的部分只有一句：**要按时间收口就本地排序，
-并且用 `cwrqStart`/`cwrqEnd` 或 `xxgkFormulatedYear` 把窗口框住**，排序键指望不上——
-这与本文 L1 节那条 NPC 排序的结论同向。
+`orderBy` 四种取值都不改 `total`（全站基数都是 13152，白名单基数都是 1908），只换首屏
+内容。2026-10-02 在白名单基数下按「增值税」连取两页 20 条，逐条读 `cwrq` 与 `label`
+判出四档语义：
+
+| `orderBy` | 20 条 `cwrq` 序列 | 判据 |
+|---|---|---|
+| 1 | 2026-09-04 → 2026-04-22，**严格单调递减**，`label` 跨类混排 | 成文日期倒序，最新在前 |
+| 3 | 1984-10-18 → 1994-04-28，**严格单调递增** | 成文日期升序 |
+| 2 | 非单调（2026-01-30 与 2026-01-01 来回跳），`label` 成片：前 9 条里 8 条财税文件，随后集中到税务规范性文件，末尾才是文字政策解读、税务部门规章 | **按类别排，不是按日期排** |
+| 5 | 非单调，首末都在中间年份 | 相关度（本项目默认） |
+
+所以「2＝日期倒序」是错的，日期倒序要用 1；本项目的 `ORDER_VALUES` 就是照这张表定的，
+`--order date_desc` 发的是 `orderBy=1`。同一个检索词连测三个（增值税、小微企业、研发
+费用）都单调递减，不是单次巧合。
 
 响应里另有八个 `*List` 分面。它们是选维度的依据，不是命中数：`columnList` 各桶之和
 16919、`effectLevelList` 光空串一桶就 15245，都比 `total` 的 13152 大，两套数不在同一
@@ -215,8 +268,9 @@ NPC 法规库那个接口（`tax_search.py`）经实测是**从 1 起算**，两
 
 ### search5 收窄维度的命令行
 
-五个开关在 `tax_web_search.py` 与 `tax_fgk.py` 上共用一套（`build_filters` 拼参数），
-都可选，不填就等于不发消息维度：
+七个收窄开关在 `tax_web_search.py` 与 `tax_fgk.py` 上共用一套（`build_filters` 拼参数），
+都可选，不填就等于不发这一维；另有 `--order` 与 `--all-labels` 两项检索选项
+（`search_opts_from_args` 收，走 `search_chinatax` 的关键字参数）：
 
 ```bash
 # 站点检索：仅标题 + 精准分词 + 税种分面
@@ -229,6 +283,16 @@ python scripts/tax_web_search.py "研发费用" --doc-type "财政部 税务总�
 # 成文日期区间：只给日期会被补成整点时间戳（2024 全年收成 207 条，不给时间戳是 2428 条）
 python scripts/tax_web_search.py "增值税" --cwrq-from 2024-01-01 --cwrq-to 2024-12-31
 
+# 按录入的时效或效力等级收窄（取值域就是命令行回显的那几档，域外值发请求前就报错）
+python scripts/tax_web_search.py "增值税" --aging 全文有效          # 1908 → 252
+python scripts/tax_web_search.py "增值税" --effect-level 财税文件   # 1908 → 636
+
+# 换排序：date_desc 是 orderBy=1（成文日期最新在前），别按外部资料写的 2 发
+python scripts/tax_web_search.py "增值税" --order date_desc --size 8
+
+# 要连新闻、视频、各地动态一起搜时才关白名单（小微企业 184 → 4822）
+python scripts/tax_web_search.py "小微企业" --all-labels
+
 # 法规库清单同样可下推维度（把翻页窗口对准法规文件，见上文 columnList 那段）
 python scripts/tax_fgk.py "增值税" --tax-type 增值税 --pages 5
 
@@ -236,14 +300,21 @@ python scripts/tax_fgk.py "增值税" --tax-type 增值税 --pages 5
 python scripts/tax_fgk.py "研发费用" --size 1 --assoc
 ```
 
-三条要记住的：
+五条要记住的：
 
 - 维度拼到 0 条时报的是 `_filter_note`（"分不清拼窄还是没有"）而不是"库里没有这份
   文件"——放宽一维重取才有结论。判据与实测数字见 `source_defects.md`「仍然是边界的
   几件事」那条"效力等级 × 时效两维同时发必然 0"。
 - 带维度的清单按维度分缓存键，换一维不会读回上一维的结果；不带维度与带维度也不同键。
+  检索范围（`--all-labels`）与排序（`--order`）另走 `tax_fgk.scope_token`，只有偏离默认
+  才追加键段，默认那一条键由 `LIST_KEY_REV` 的 `pn0-files` 兜住。
 - 日期/年份/编号格式不合法（`2024-1-1`、`2024-13-01`、`doc-year 18` 这类）在发请求前
   就 `ValueError` 拦下——非法值发出去接口只会静默回基线命中或 0，不报错，那样错得最难查。
+  时效与效力等级两维同理：域外值（`--aging 有效`）也在这里拦，`--order` 由 argparse 的
+  `choices` 拦。
+- 界面那一路（`tax_server._ui_filters`）已把「时效」控件接到 `xxgkAging`：数据源选税务
+  总局／法规库时，该栏整栏换成 search5 的五个文本值且默认「全部」；NPC／聚合那两路仍发
+  数字 `status`。两套值域互不发对方那条链。
 
 ## L3：360 站内搜索（地方口径）
 
@@ -330,8 +401,9 @@ print(json.dumps(A.search_terms('<用户原话>'),ensure_ascii=False,indent=2))"
 | 详情元数据（`tax_detail.py`） | **开** | 1 小时 | 详情接口慢、元数据变动频率低，值得用一点新鲜度换速度 |
 
 总局清单的缓存键里带一个翻页基准版本号（`tax_fgk.LIST_KEY_REV`）。改翻页基准、
-改每页条数这类会影响"清单里缺了哪一屏"的代码时，把它一起改，改前留存的清单
-就不会在改后被当成新结果复用。
+改每页条数、改默认检索范围这类会影响"清单里装的是哪一屏"的代码时，把它一起改，
+改前留存的清单就不会在改后被当成新结果复用（2026-10-02 默认范围由全站改成
+文件类标签，就是照这条把 `pn0` 改成 `pn0-files`）。
 
 ```bash
 # NPC 法规库检索 —— 清单缓存，默认关，TTL 5 分钟

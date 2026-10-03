@@ -407,6 +407,115 @@ def test_build_filters_rejects_malformed_values():
     print("  [PASS] build_filters 拦住非法年份/编号/日期，空输入返回空 dict")
 
 
+def test_aging_and_effect_level_domains():
+    """时效与效力等级两维：域内的值原样进 filters，域外的值在发请求前报错。
+
+    为什么要在这一层拦：接口对不认识的取值不发错、也不报错，而是回未过滤的基线
+    命中（实测「增值税」白名单基线 1908）。调用方看到的是一堆结果，以为筛过了，
+    其实一档都没筛。
+    """
+    assert W.build_filters(aging="全文有效") == {"xxgkAging": "全文有效"}
+    assert W.build_filters(effect_level="财税文件") == {"xxgkEffectLevel": "财税文件"}
+    # 五个时效值与八个效力等级值全部放行，取值域整表钉住（少一档就会被发现）
+    assert len(W.AGING_VALUES) == 5 and len(W.EFFECT_LEVEL_VALUES) == 8
+    for a in W.AGING_VALUES:
+        assert W.build_filters(aging=a)["xxgkAging"] == a
+    for e in W.EFFECT_LEVEL_VALUES:
+        assert W.build_filters(effect_level=e)["xxgkEffectLevel"] == e
+    # NPC 那侧的写法（现行有效／已废止）不在 search5 值域里，必须报错而不是发出
+    for bad in ("现行有效", "有效", "废止", "全文有效,已修改"):
+        try:
+            W.build_filters(aging=bad)
+            raise AssertionError(f"域外时效却放行：{bad!r}")
+        except ValueError:
+            pass
+    for bad in ("部门规章", "税法", "null"):
+        try:
+            W.build_filters(effect_level=bad)
+            raise AssertionError(f"域外效力等级却放行：{bad!r}")
+        except ValueError:
+            pass
+    # 空串等于不发这一维（界面「全部」与命令行不填都走这条路）
+    assert W.build_filters(aging="", effect_level="") == {}
+    # 两侧带空白的合法值要放行（build_filters 自己 strip）；只剩空白的要报错，
+    # 因为"填了但筛不动"与"没填"是两件事，静默当成没填会谎报筛过
+    assert W.build_filters(aging=" 全文有效 ")["xxgkAging"] == "全文有效"
+    for blank in ("   ", "\t", "\n"):
+        try:
+            W.build_filters(aging=blank)
+            raise AssertionError(f"纯空白时效却放行：{blank!r}")
+        except ValueError:
+            pass
+        try:
+            W.build_filters(effect_level=blank)
+            raise AssertionError(f"纯空白效力等级却放行：{blank!r}")
+        except ValueError:
+            pass
+    print("  [PASS] 时效五档、效力等级八档逐档放行，域外写法（含 NPC 值域）报错")
+
+
+def test_file_labels_is_the_default_scope():
+    """不发 --all-labels 时 label 必须发 FILE_LABELS，而不是空串（全站）。
+
+    对应的缺陷：不发这一维等于搜全站。实测「转让定价」全站前 3 屏一条法规库条目
+    都没有（自适应在第 3 页收尾，整趟取回 0 条），发白名单后同一词 18 条全部取回。
+    变异验证：把 params 里 label 的三元表达式改回常量空串，本条与下一条一起报红。
+    """
+    saved = W.requests.get
+    sent = []
+
+    def fake(url, params=None, **kw):
+        sent.append(dict(params))
+        return _Resp(_payload(1, [_ITEM]))
+
+    try:
+        W.requests.get = fake
+        W.search_chinatax("转让定价")                      # 默认
+        W.search_chinatax("转让定价", file_only=True)      # 显式开
+    finally:
+        W.requests.get = saved
+
+    for q in sent:
+        assert q["label"] == W.FILE_LABELS, q
+        assert set(W.FILE_LABELS.split(",")) == {
+            "法律", "行政法规", "国务院文件", "税务部门规章", "税务规范性文件",
+            "财税文件", "其他文件", "工作通知", "政策指引", "文字政策解读"}, q["label"]
+        # 白名单里必须留着解读那一类，否则 ④ 要的官方说明会被一起挡掉
+        assert "文字政策解读" in q["label"], q
+        # 默认排序仍是相关度
+        assert q["orderBy"] == W.ORDER_VALUES["relevance"], q
+    # 命令行与清单回显那句「十类」是照着名单写的：加一类却不改文案，回显就开始撒谎
+    assert W.FILE_LABELS.count(",") + 1 == 10, W.FILE_LABELS
+    assert "十类" in W.label_scope_text(True), W.label_scope_text(True)
+    print("  [PASS] 默认发十类文件标签（含文字政策解读），排序默认相关度")
+
+
+def test_all_labels_switch_reopens_the_whole_site():
+    """--all-labels / file_only=False 时 label 要退回空串，两档范围得能切换。"""
+    saved = W.requests.get
+    sent = []
+
+    def fake(url, params=None, **kw):
+        sent.append(dict(params))
+        return _Resp(_payload(1, [_ITEM]))
+
+    try:
+        W.requests.get = fake
+        W.search_chinatax("小微企业", file_only=False, order="date_desc")
+    finally:
+        W.requests.get = saved
+
+    q = sent[0]
+    assert q["label"] == W.ALL_LABELS == "", q
+    assert q["orderBy"] == "1", q          # date_desc 发的是 orderBy=1
+    try:
+        W.search_chinatax("小微企业", order="newest")
+        raise AssertionError("域外排序名却发了请求")
+    except ValueError:
+        pass
+    print("  [PASS] 关白名单退回全站空串；date_desc 发 orderBy=1；域外排序名报错")
+
+
 def test_out_of_range_page_and_missing_list_are_told_apart():
     """命中数大于 0 却是空页：翻页越界与首屏没给清单，两种成因的文案不同。"""
     saved = W.requests.get
@@ -428,7 +537,9 @@ def test_out_of_range_page_and_missing_list_are_told_apart():
     # 清单层把这个空页原样透出，不许写成"翻完 N 页未筛出法规库条目"
     saved_scan = tax_fgk.search_chinatax
     try:
-        tax_fgk.search_chinatax = lambda keyword, page=1, size=10, filters=None: first
+        def stub(keyword, page=1, size=10, filters=None, **opts):
+            return first        # opts 收 file_only/order，签名要跟 _scan_list 同步
+        tax_fgk.search_chinatax = stub
         r = tax_fgk._scan_list("企业重组业务所得税处理", size=5, max_pages=3)
     finally:
         tax_fgk.search_chinatax = saved_scan
@@ -683,6 +794,9 @@ def main():
         test_search5_filters_reach_the_query_string_and_are_echoed,
         test_search5_zero_with_filters_says_it_might_be_too_narrow,
         test_build_filters_rejects_malformed_values,
+        test_aging_and_effect_level_domains,
+        test_file_labels_is_the_default_scope,
+        test_all_labels_switch_reopens_the_whole_site,
         test_out_of_range_page_and_missing_list_are_told_apart,
         test_request_failure_is_flagged_not_read_as_no_hit,
         test_accounting_gap_flags_questions_keyed_on_accounting,

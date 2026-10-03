@@ -108,6 +108,7 @@
 | **测试** | `test_server_routes.py` | 服务端 9 路由用例：状态码与错误码、分支路由（npc/chinatax/fgk/aggregated）、付费闸门关着时不许碰模型、上游报错如实透出不吞成空结果、会计口径与立法阶段两条提示都按用户原话判定而非按改写后的检索词、全网那一趟在真实边界（`so360_search`）打桩断言 1/2/3 条都能到载荷（全打桩，不联网） |
 | **测试** | `test_http_layer.py` | 统一请求层守门：AST 扫全项目、除白名单外禁止绕过 `tax_http` 的裸请求（含别名写法）、参数只透传不补全、`verify` 必填、取数失败那句错误说明的整形（丢链接与 `(Caused by ...)`、压平折行、截断不切词） |
 | **测试** | `test_frontend_province_ui.py` | 前端省份控件契约：控件长在"官方解读"页而非搜索栏、高级筛选恰为 6 组、搜索请求不带 `province`、结果头不再显示省市标签、前端站点清单与 `tax_server.search_interpretations` 的默认 sources 逐字一致（读文件断言，不开浏览器） |
+| **测试** | `test_frontend_aging_control.py` | 前端时效控件值域契约：`AGING_S5` 五档与后端 `tax_web_search.AGING_VALUES` 逐项一致、`AGING_FROM_NPC` 换出的文本必落在值域内、`syncFilterControls` 不再 `disabled`、拼 option 的两项数组不许写成空项（真浏览器里读到过 `undefined` 选项）、`filterStatus` 赋值只走 `setNpcStatus`、`doSearch` 按 `s5` 分流 `status`/`aging`（读文件断言，不开浏览器） |
 | **测试** | `test_source_defects.py` | 源缺陷回归：fgk 深页标 `medium`、聚合缺口归因（税屋空归到 360）、网页渲染 `degraded_note`、定级层认 `_reliability`（low 出局 / 全 low 拒挑主依据 / 无标记口径不变）、渲染层不吞标记（单源也会印出"可能偏题"）、搜狗串行闸与最小间隔（并发峰值 == 1）、NPC 下载单一路径收口、**返回值契约**（AST 扫全项目：声明 `-> tuple[A, B]` 的函数不许 `return` 单值） |
 | **门禁** | `check_doc_cli.py` | 文档-代码契约，两类检查：**命令级**（同行里点了脚本名的命令行，逐参数比对代码的参数表）+ **片段级**（孤立的 `` `--a --b` `` 必须能落在某一个脚本上），挡住"文档写了、代码没有"与"参数挂错脚本" |
 | **测试** | `test_check_doc_cli.py` | 文档契约规则自检：构造样例钉住片段级检查既能报出坏片段、也不误报好片段。规则一旦改对就永远绿，没有自检就无法证明它还在工作 |
@@ -221,7 +222,8 @@ POST /api/search
   "sort": "relevance",
   "source": "npc",
   "date_from": null,
-  "date_to": null
+  "date_to": null,
+  "aging": ""
 }
 ```
 
@@ -507,6 +509,7 @@ tax-analysis-engine/
 │   ├── test_server_routes.py       # 服务端路由用例：9 个路由的状态码与分支、两条提示按原话判定、全网那趟在真实边界打桩（全打桩，不联网）
 │   ├── test_http_layer.py          # 统一请求层守门：AST 扫全项目、禁止绕过 tax_http 的裸请求、错误说明整形
 │   ├── test_frontend_province_ui.py # 前端省份控件契约：控件在哪 / 筛选组数 / 站点清单与后端一致
+│   ├── test_frontend_aging_control.py # 前端时效控件值域契约：五档与后端一致 / option 两项齐全 / 赋值只走共享入口
 │   ├── test_source_defects.py      # 源缺陷回归：深页标记 / 缺口说明 / 可靠性否决 / 搜狗闸与下载收口 / tuple 返回值契约
 │   ├── test_eval_set.py            # 评测集规则的离线用例：时效判档、去重键、分类表同步
 │   ├── test_routing_terms.py       # 判型与词表用例：选项干扰剥离 / 会计口径缺口 / 点名文件同一性 / 立法阶段 / 意图词表三处对齐

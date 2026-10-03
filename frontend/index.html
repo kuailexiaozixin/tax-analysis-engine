@@ -537,17 +537,37 @@ function toggleFilters(){
   bar.classList.toggle('open');
 }
 
-/* 「时效」控件只在 NPC 与多源聚合那两路参与检索：数据源选到税务总局或法规库时，
-   后端没有对应的 xxgkAging 维度可下推（build_filters 未收这一维），保留控件会
-   让人以为选了有用。这里在该两源下置灰并写明原因，其余控件（范围/匹配/日期）
-   已由 tax_server.api_search 翻成 search5 filters 透传，不禁。 */
+/* 「时效」这一控件在两条链路上量的是同一根轴（这份文件现在还作不作数），但值域
+   不通用：NPC 库用数字码（3=现行有效），search5（税务总局／法规库）用文本
+   （全文有效 等五项，取值域见 tax_web_search.AGING_VALUES）。原先在 search5 那
+   两源把它置灰，是因为后端 build_filters 还没收 xxgkAging；2026-10-02 接入后
+   置灰的理由已不成立，改成整栏换值域。
+   换值域时的默认值不同是实测决定的：NPC 那侧默认「现行有效」，而 search5 侧
+   增值税×文件类标签 1908 条里只有 743 条录了时效，默认收窄会把 1165 条没录
+   时效的现行文件一起筛掉，所以那两源默认退回「全部」。 */
+const AGING_S5=['全文有效','已修改','全文失效','全文废止','尚未生效'];
+const AGING_FROM_NPC={'3':'全文有效','2':'已修改','1':'全文废止','4':'尚未生效'};
+function statusSpaceIsS5(){
+  const s=document.getElementById('filterSource').value;
+  return s==='chinatax'||s==='fgk';
+}
 function syncFilterControls(){
-  const src=document.getElementById('filterSource').value;
   const st=document.getElementById('filterStatus');
-  const off=(src==='chinatax'||src==='fgk');
-  st.disabled=off;
-  st.style.opacity=off?'0.4':'1';
-  st.title=off?'税务总局／法规库检索暂不支持按时效过滤（该维度未接入）':'';
+  const s5=statusSpaceIsS5();
+  const want=st.value;                       // 换栏前用户选中的值
+  const opts=s5?[['','全部'],...AGING_S5.map(v=>[v,v])]:[['3','现行有效'],['','全部']];
+  st.innerHTML=opts.map(o=>`<option value="${o[0]}">${o[1]}</option>`).join('');
+  // 换数据源后旧值多半不在新值域里，退回该源的默认而不是留个空白选项
+  st.value=([...st.options].some(o=>o.value===want)?want:(s5?'':'3'));
+  st.title=s5?'按法规库录入的时效收窄；默认「全部」，因为多数条目该栏为空'
+             :'按 NPC 库的时效码收窄，默认「现行有效」';
+}
+/* 按 NPC 的时效码设置那一栏，落到哪个值域看当前数据源。向导（step 4「只看现行有效」）
+   与主搜索栏共用这一个入口，免得当源是 search5 时把「3」写进一个不含该选项的
+   select——那样选择会被静默吞成空值，用户以为收窄了其实没有。 */
+function setNpcStatus(code){
+  const st=document.getElementById('filterStatus');
+  st.value=statusSpaceIsS5()?(AGING_FROM_NPC[code]||''):code;
 }
 
 /* ═══════════ QUICK TAX ═══════════ */
@@ -614,12 +634,16 @@ async function doSearch(){
   c.innerHTML=`<div class="loading-state"><div class="loading-spinner"></div><p>正在查询…</p><p style="font-size:12px;color:var(--g400)">"${esc(keyword)}"</p></div>`;
   btn.disabled=true;btn.textContent='查询中…';
   try{
-    // 这里刻意没有 province：本接口查的是 NPC 全国性法规，没有省级维度，
+    // 这里刻意没有 province：本接口查的是全国性法规库，没有省级维度，
     // 服务端收到 province 也只是原样回填、不过滤。地方口径走弹窗里的"官方解读"（换站点检索）。
+    // 时效那一栏按当前数据源的值域发：NPC／聚合发数字 status，search5 发文本 aging，
+    // 另一栏留空——服务端各读各的，不会把「3」当时效文本发下去。
+    const s5=statusSpaceIsS5(), stv=document.getElementById('filterStatus').value;
     const payload={
       keyword,scope:document.getElementById('filterScope').value,
       exact:document.getElementById('filterType').value==='exact',
-      status:parseInt(document.getElementById('filterStatus').value)||null,
+      status:s5?null:(parseInt(stv)||null),
+      aging:s5?stv:'',
       sort:document.getElementById('filterSort').value,
       source:document.getElementById('filterSource').value,
       date_from:document.getElementById('filterDateFrom').value||null,
@@ -931,7 +955,7 @@ function renderGuideStep(step){
   else{const tl={vat:'增值税',cit:'企业所得税',iit:'个人所得税',invoice:'发票管理',prefer:'税收优惠'};const il={policy:'查政策',preference:'优惠资格',risk:'风险自查',filing:'申报流程',invoice:'发票问题',calc:'计算标准'};const tLabel=tl[guideState.tax_type]||guideState.tax_type||'';const iLabel=il[guideState.intent]||guideState.intent||'';body.innerHTML=`<div class="step"><div class="step-label">Step 4/4${tLabel?' · '+tLabel:''}${iLabel?' · '+iLabel:''}</div><div class="step-question">补充条件（可选，可多选）</div><div class="choice-grid"><div class="choice${guideState.enterprise_type==='small'?' picked':''}" onclick="guidePick('enterprise_type','small')"><span class="ci">🏪</span>小规模纳税人<span class="cl">年应税≤500万</span></div><div class="choice${guideState.enterprise_type==='general'?' picked':''}" onclick="guidePick('enterprise_type','general')"><span class="ci">🏭</span>一般纳税人</div><div class="choice${guideState.enterprise_type==='micro'?' picked':''}" onclick="guidePick('enterprise_type','micro')"><span class="ci">🌱</span>小微企业<span class="cl">利润≤300万</span></div><div class="choice${guideState.enterprise_type==='hitech'?' picked':''}" onclick="guidePick('enterprise_type','hitech')"><span class="ci">🔬</span>高新技术企业</div><div class="choice${guideState.timeframe==='latest'?' picked':''}" onclick="guidePick('timeframe','latest')"><span class="ci">🆕</span>只看最新政策</div><div class="choice${guideState.timeframe==='2024'?' picked':''}" onclick="guidePick('timeframe','2024')"><span class="ci">📅</span>2024年以来的</div><div class="choice${guideState.scope==='national'?' picked':''}" onclick="guidePick('scope','national')"><span class="ci">✅</span>只看现行有效<span class="cl">默认</span></div><div class="choice${guideState.scope==='all_status'?' picked':''}" onclick="guidePick('scope','all_status')"><span class="ci">🗂</span>含已修改·已废止</div></div><div style="margin-top:14px"><div style="font-size:12px;color:var(--g500);margin-bottom:4px">或直接输入关键词：</div><input type="text" id="customKeyword" style="width:100%;padding:8px 12px;border:1px solid var(--g200);font-size:13px;background:var(--white);color:var(--black)" placeholder="例如：研发费用加计扣除、留抵退税…"></div></div>`;foot.innerHTML=`<button onclick="executeGuidedSearch()">🔍 生成搜索 →</button><button class="reset" onclick="renderGuideStep('intent')">← 返回修改</button>`;}
 }
 
-function executeGuidedSearch(){const taxMap={vat:'增值税',cit:'企业所得税',iit:'个人所得税',invoice:'发票管理办法',prefer:'税收优惠',stamp:'印花税',deed:'契税',property:'房产税',consumption:'消费税',tariff:'关税',land_vat:'土地增值税',admin:'税收征收管理法'};const intentMap={policy:'',preference:'优惠',risk:'风险 合规',filing:'申报',invoice:'发票',calc:'标准 扣除'};const entMap={small:'小规模纳税人',general:'一般纳税人',micro:'小微企业',hitech:'高新技术企业'};let parts=[];const taxK=guideState.tax_type?taxMap[guideState.tax_type]||guideState.tax_type:'';if(taxK)parts.push(taxK);if(guideState.intent&&intentMap[guideState.intent])parts.push(intentMap[guideState.intent]);if(guideState.enterprise_type&&entMap[guideState.enterprise_type])parts.push(entMap[guideState.enterprise_type]);const custom=document.getElementById('customKeyword')?.value?.trim();if(custom)parts.push(custom);document.getElementById('searchInput').value=parts.join(' ')||'增值税';if(guideState.timeframe==='latest')document.getElementById('filterSort').value='date';if(guideState.timeframe==='2024')document.getElementById('filterDateFrom').value='2024-01-01';if(guideState.scope==='national')document.getElementById('filterStatus').value='3';if(guideState.scope==='all_status')document.getElementById('filterStatus').value='';toggleGuidance();doSearch();}
+function executeGuidedSearch(){const taxMap={vat:'增值税',cit:'企业所得税',iit:'个人所得税',invoice:'发票管理办法',prefer:'税收优惠',stamp:'印花税',deed:'契税',property:'房产税',consumption:'消费税',tariff:'关税',land_vat:'土地增值税',admin:'税收征收管理法'};const intentMap={policy:'',preference:'优惠',risk:'风险 合规',filing:'申报',invoice:'发票',calc:'标准 扣除'};const entMap={small:'小规模纳税人',general:'一般纳税人',micro:'小微企业',hitech:'高新技术企业'};let parts=[];const taxK=guideState.tax_type?taxMap[guideState.tax_type]||guideState.tax_type:'';if(taxK)parts.push(taxK);if(guideState.intent&&intentMap[guideState.intent])parts.push(intentMap[guideState.intent]);if(guideState.enterprise_type&&entMap[guideState.enterprise_type])parts.push(entMap[guideState.enterprise_type]);const custom=document.getElementById('customKeyword')?.value?.trim();if(custom)parts.push(custom);document.getElementById('searchInput').value=parts.join(' ')||'增值税';if(guideState.timeframe==='latest')document.getElementById('filterSort').value='date';if(guideState.timeframe==='2024')document.getElementById('filterDateFrom').value='2024-01-01';setNpcStatus(guideState.scope==='national'?'3':'');toggleGuidance();doSearch();}
 
 function esc(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
 </script>

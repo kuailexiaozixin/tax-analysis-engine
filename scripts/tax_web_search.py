@@ -64,16 +64,57 @@ _NO_RE = re.compile(r"^\d{1,5}$")
 CHINATAX_HOST = "https://www.chinatax.gov.cn"
 FGK_HOST = "https://fgk.chinatax.gov.cn"
 
+# ── search5 的 label 维：检索落在哪些内容类型上 ──
+# 不发这一维等于搜全站。本机 2026-10-02 实测「小微企业」全站 4822 条，首屏十条的
+# 类型是 亚洲 / 各地动态×3 / 媒体视点×4 / 视频图解 / 视频政策解读，没有一条是文件；
+# 只发下面十个「文件类」标签时同一检索词 184 条，首屏十条全在 其他文件 / 工作通知 /
+# 财税文件 / 文字政策解读 上。名单里留着「文字政策解读」，所以收窄不会把官方解读
+# 一起挡掉（规则陈述类与并列依据那一栏要用它）。
+FILE_LABELS = ("法律,行政法规,国务院文件,税务部门规章,税务规范性文件,"
+               "财税文件,其他文件,工作通知,政策指引,文字政策解读")
+# 显式要全站时的值（命令行 --all-labels，界面 file_only=false）。
+ALL_LABELS = ""
+
+# ── 时效与效力等级两维的取值域 ──
+# 每个值都实测过"发出去真的会收窄"，基线是 增值税×FILE_LABELS = 1908 条：
+#   xxgkAging        全文有效 252 / 已修改 163 / 全文失效 9 / 全文废止 318 / 尚未生效 1
+#   xxgkEffectLevel  法律 9 / 行政法规 10 / 国务院文件 9 / 税务部门规章 30 /
+#                    税务规范性文件 681 / 财税文件 636 / 其他文件 61 / 工作通知 190
+# 域外的值不发出去，而是在 build_filters 里报错：接口对不认识的值是静默返回基线，
+# 调用方看不出区别，等于是把"筛过了"谎报成"筛不出"。
+AGING_VALUES = ("全文有效", "已修改", "全文失效", "全文废止", "尚未生效")
+EFFECT_LEVEL_VALUES = ("法律", "行政法规", "国务院文件", "税务部门规章",
+                       "税务规范性文件", "财税文件", "其他文件", "工作通知")
+
+# orderBy 的取值与实测语义。日期倒序是 1，不是别处文档写的 2：发 1 时三个检索词的
+# 成文日期序列都单调递减（增值税自 2026-09-04 起、小微企业、研发费用同）；发 2 时
+# 首屏日期在 2026-01-30 与 2026-02-10 之间来回跳，且同一类别先聚到一起，它排的是类别。
+ORDER_VALUES = {"relevance": "5", "date_desc": "1", "category": "2",
+                "date_asc": "3"}
+
+
+def label_scope_text(file_only: bool) -> str:
+    """把 file_only 翻成一句人话，供命令行回显实际生效的检索范围。"""
+    return ("文件类白名单（十类，不含新闻/视频/各地动态）" if file_only
+            else "全站（含新闻、视频、各地动态）")
+
+
+def order_text(order: str) -> str:
+    """把 order 名翻成「语义 + 上线值」，让回显能核对到接口参数。"""
+    return f"{order}（orderBy={ORDER_VALUES[order]}）"
+
 
 def build_filters(in_title: bool = False, precise: bool = False,
                   tax_type: str = "", doc_type: str = "", doc_year: str = "",
-                  doc_no: str = "", cwrq_from: str = "", cwrq_to: str = "") -> dict:
+                  doc_no: str = "", cwrq_from: str = "", cwrq_to: str = "",
+                  aging: str = "", effect_level: str = "") -> dict:
     """把可选的收窄维度拼成 search5 的过滤参数 dict。
 
     只发填了的维度，返回的 dict 直接喂给 search_chinatax(filters=…)。各项取值
-    来自本机 2026-10-01 的单发实测（见 references/commands.md 的参数表），不要凭
-    记忆改。维度本身可发，但当前没有任何一条主线代码路径调用它——它是给人手动
-    收窄用的命令行开关。
+    来自本机 2026-10-01 与 2026-10-02 的单发实测（见 references/commands.md 的参数
+    表），不要凭记忆改。哪些维度真的会被发出去分两种：范围／匹配／日期／时效
+    （aging）由网页界面那四个控件驱动（tax_server._ui_filters），效力等级与文种、
+    税种那几组目前只有命令行用得到（--effect-level / --doc-type / --tax-type）。
 
     Args:
         in_title: 仅标题匹配（wordPlace=1，默认 0 是全文）
@@ -83,13 +124,15 @@ def build_filters(in_title: bool = False, precise: bool = False,
         doc_year: 成文年份四位（docYear）
         doc_no: 文号数字（docNo）
         cwrq_from / cwrq_to: 成文日期区间，YYYY-MM-DD（cwrqStart/cwrqEnd）
+        aging: 时效，取值限 AGING_VALUES 五项（xxgkAging）
+        effect_level: 效力等级，取值限 EFFECT_LEVEL_VALUES 八项（xxgkEffectLevel）
 
     doc_type 会去掉内部空白：接口对带空格的写法是宽松误命中（实测「财政部 税务总局
     公告」配 docYear 归 0，去空格「财政部税务总局公告」才收窄到本尊），页面上印的
     是带空格的，用户很可能直接抄过来，所以这里替他去空格。
 
     Raises:
-        ValueError: 日期/年份/编号格式不合法
+        ValueError: 日期/年份/编号格式不合法，或时效/效力等级不在实测过的取值域里
     """
     out: dict = {}
     if in_title:
@@ -98,6 +141,28 @@ def build_filters(in_title: bool = False, precise: bool = False,
         out["participleRule"] = "5"
     if tax_type:
         out["xxgkSonTaxPolicy"] = tax_type.strip()
+    if aging:
+        a = aging.strip()
+        # 填了内容却 strip 成空，与"根本没填"不是一回事：那多半是复制粘贴带进来的
+        # 空白或占位符，静默当成不发这一维就等于把用户以为筛过的事实抹掉。
+        if not a:
+            raise ValueError(f"aging 只有空白字符（{aging!r}）——"
+                             "要发这一维就给 %s 之一，不要就整个不填"
+                             % "、".join(AGING_VALUES))
+        if a not in AGING_VALUES:
+            raise ValueError(f"aging 只认 {AGING_VALUES}，收到 {aging!r}——"
+                             "域外的值发出去接口静默返回基线，看不出没筛")
+        out["xxgkAging"] = a
+    if effect_level:
+        e = effect_level.strip()
+        if not e:
+            raise ValueError(f"effect_level 只有空白字符（{effect_level!r}）——"
+                             "要发这一维就给 %s 之一，不要就整个不填"
+                             % "、".join(EFFECT_LEVEL_VALUES))
+        if e not in EFFECT_LEVEL_VALUES:
+            raise ValueError(f"effect_level 只认 {EFFECT_LEVEL_VALUES}，收到 "
+                             f"{effect_level!r}")
+        out["xxgkEffectLevel"] = e
     if doc_type:
         out["docType"] = re.sub(r"\s+", "", doc_type)
     if doc_year:
@@ -129,7 +194,8 @@ def build_filters(in_title: bool = False, precise: bool = False,
 
 
 def search_chinatax(keyword: str, page: int = 1, size: int = 10,
-                    filters: Optional[dict] = None) -> dict:
+                    filters: Optional[dict] = None, file_only: bool = True,
+                    order: str = "relevance") -> dict:
     """
     检索国家税务总局站点。
 
@@ -138,6 +204,10 @@ def search_chinatax(keyword: str, page: int = 1, size: int = 10,
         page: 页码，从 1 开始（对应接口的 pageNum 从 0 开始，见下）
         size: 返回条数上限
         filters: build_filters 产出的收窄维度，直接并入请求参数；为空不发
+        file_only: 默认 True，只在这十个「文件类」标签里检索（见 FILE_LABELS 那段
+            实测）；要连新闻、视频、各地动态一起搜时传 False
+        order: 排序，取值限 ORDER_VALUES：relevance（默认）/ date_desc（最新在前的
+            成文日期倒序）/ category / date_asc
 
     页码基准：search5 的 pageNum 从 0 起算。实测同一检索词「企业重组」
     发 pageNum=0 与 pageNum=1 各回 10 条、url 交集为空，且 pageNum=0 那组
@@ -155,6 +225,8 @@ def search_chinatax(keyword: str, page: int = 1, size: int = 10,
         传了 filters 时把 filters 原样回显；filters 收窄到 0 条且非请求失败时，
         补一句 _filter_note 说明是维度拼窄了还是库里真没有。
     """
+    if order not in ORDER_VALUES:
+        raise ValueError(f"order 只认 {tuple(ORDER_VALUES)}，收到 {order!r}")
     params = {
         "siteCode": SITE_CODE,
         "searchWord": keyword,
@@ -163,9 +235,9 @@ def search_chinatax(keyword: str, page: int = 1, size: int = 10,
         # 所以发请求时要减回去。
         "pageSize": max(size, 10),
         "pageNum": max(page, 1) - 1,
-        "orderBy": "5",   # 相关度排序
+        "orderBy": ORDER_VALUES[order],
         "column": "",
-        "label": "",
+        "label": FILE_LABELS if file_only else ALL_LABELS,
     }
     params.update(filters or {})
 
@@ -302,9 +374,11 @@ def _empty_result(keyword: str, error: str = "", filters: dict = None) -> dict:
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
 def add_filter_args(parser):
-    """给命令行挂上五个收窄维度（tax_web_search 与 tax_fgk 共用一套）。
+    """给命令行挂上收窄维度与检索选项（tax_web_search 与 tax_fgk 共用一套）。
 
     取值全部转成 build_filters 的关键字参数；维度本身是可选的，不填就不发。
+    --order 与 --all-labels 不是收窄维度，是 search_chinatax 的检索选项，
+    由 search_opts_from_args 收。
     """
     g = parser.add_argument_group("收窄维度（都可选，见 references/commands.md 的参数表）")
     g.add_argument("--in-title", action="store_true",
@@ -319,16 +393,41 @@ def add_filter_args(parser):
     g.add_argument("--doc-no", default="", help="文号数字（docNo）")
     g.add_argument("--cwrq-from", default="", help="成文日期起 YYYY-MM-DD（cwrqStart）")
     g.add_argument("--cwrq-to", default="", help="成文日期止 YYYY-MM-DD（cwrqEnd）")
+    g.add_argument("--aging", default="", metavar="时效",
+                   help="时效分面，只认 %s（xxgkAging）" % "、".join(AGING_VALUES))
+    g.add_argument("--effect-level", default="", metavar="效力等级",
+                   help="效力等级分面，只认 %s（xxgkEffectLevel）"
+                        % "、".join(EFFECT_LEVEL_VALUES))
+    g.add_argument("--order", default="relevance", metavar="序",
+                   choices=sorted(ORDER_VALUES),
+                   help="排序：relevance（默认）/ date_desc（成文日期最新在前）/ "
+                        "category / date_asc；date_desc 实测是 orderBy=1，"
+                        "orderBy=2 排的是类别不是日期")
+    g.add_argument("--all-labels", action="store_true",
+                   help="关掉文件类白名单，连新闻/视频/各地动态一起搜（默认只在 "
+                        "FILE_LABELS 那十类里搜）")
     return parser
 
 
 def filters_from_args(args) -> dict:
-    """把 add_filter_args 挂上的参数收成 build_filters 的调用。"""
+    """把 add_filter_args 挂上的收窄参数收成 build_filters 的调用。"""
     return build_filters(
         in_title=args.in_title, precise=args.precise,
         tax_type=args.tax_type, doc_type=args.doc_type,
         doc_year=args.doc_year, doc_no=args.doc_no,
-        cwrq_from=args.cwrq_from, cwrq_to=args.cwrq_to)
+        cwrq_from=args.cwrq_from, cwrq_to=args.cwrq_to,
+        aging=getattr(args, "aging", ""),
+        effect_level=getattr(args, "effect_level", ""))
+
+
+def search_opts_from_args(args) -> dict:
+    """把 --order / --all-labels 收成 search_chinatax 的关键字参数。
+
+    用 getattr 兜默认值：调用方是别的脚本时（例如只挂了部分参数），缺这两项
+    就该退回默认行为，而不是 AttributeError。
+    """
+    return {"file_only": not getattr(args, "all_labels", False),
+            "order": getattr(args, "order", "relevance")}
 
 
 def main():
@@ -343,15 +442,17 @@ def main():
     args = p.parse_args()
     try:
         filters = filters_from_args(args)
+        opts = search_opts_from_args(args)
     except ValueError as e:
         p.error(str(e))
-    result = search_chinatax(args.keyword, size=args.size, filters=filters)
+    result = search_chinatax(args.keyword, size=args.size, filters=filters, **opts)
 
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
 
     print(f"🔍 chinatax.gov.cn 搜索 \"{args.keyword}\" | {result['searched_at']}")
+    print(f"   检索范围: {label_scope_text(opts['file_only'])} | 排序: {order_text(opts['order'])}")
     if result.get("filters"):
         print(f"   收窄维度: {result['filters']}")
     if result.get("_error"):

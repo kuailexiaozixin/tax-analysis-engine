@@ -63,23 +63,36 @@ UNROUTED_NOTE = ("未能归类到税种或专题：以上是按原话字面检�
                  "与本题是否相关需逐条核对")
 
 
-def _ui_filters(scope: str, exact, date_from, date_to) -> dict:
-    """把界面上的「范围/匹配/日期」三个控件翻成 search5 的收窄维度。
+def _ui_filters(scope: str, exact, date_from, date_to, aging: str = "") -> dict:
+    """把界面上的「范围/匹配/日期/时效」四个控件翻成 search5 的收窄维度。
 
     走 search5 的源（chinatax／fgk，含 NPC 分支里被自动换源到法规库的 sta 专题）
-    都调这一个，免得三控件在某一条路径上又被静默丢掉。取值与实测命中见
-    references/commands.md 的参数表。「时效」不在这里：build_filters 没有
-    xxgkAging 这一维，界面在该源下把它置灰。
+    都调这一个，免得控件在某一条路径上又被静默丢掉。取值与实测命中见
+    references/commands.md 的参数表。
+
+    aging 是「时效」控件在 search5 那一侧的取值（全文有效／已修改／全文失效／
+    全文废止／尚未生效），与 NPC 的 status 码是两套值域，前端按数据源切换：
+    NPC 发 status 码，search5 发 aging 文本。这里不替 aging 兜默认值——实测
+    增值税 × 文件类标签 1908 条里只有 252 条录了「全文有效」，五个时效值合计
+    743 条，剩下 1165 条是空栏（解读类与其他文件本来就不填）。默认收窄会把
+    没录时效的现行文件一起筛掉，所以宁可让控件留空。
 
     Raises:
-        ValueError: 日期不合法——调用方要挡成 400，不能让接口对非法值静默回基线命中。
+        ValueError: 日期不合法，或 aging 不在 search5 的五个时效值里——调用方要
+            挡成 400，不能让接口对非法值静默回基线命中。
     """
     return build_filters(
         in_title=(scope == "title"),
         precise=bool(exact),
         cwrq_from=date_from or "",
         cwrq_to=date_to or "",
+        aging=aging or "",
     )
+
+
+# 界面「排序」控件的取值 → search5 的 order 名。原先这个控件只对 NPC 那一路
+# 生效，数据源切到税务总局／法规库就被静默丢掉，与「范围/匹配/日期」是同一个缺陷。
+SORT_TO_ORDER = {"relevance": "relevance", "date": "date_desc"}
 
 _text_cache = {}
 _interp_cache = {}
@@ -405,20 +418,23 @@ def api_search():
             else:
                 result["_routed"] = UNROUTED_NOTE
     elif source in ("chinatax", "fgk"):
-        # 界面上的「范围/匹配/日期」三个控件此前只喂给 NPC 那一路，数据源切到
+        # 界面上的「范围/匹配/日期/时效/排序」控件此前只喂给 NPC 那一路，数据源切到
         # 税务总局或法规库就被静默丢掉——控件看着是全局的、实际只对 NPC 生效。
-        # 这里把它们翻成 search5 的收窄维度透传下去（见 _ui_filters）。
+        # 这里把它们翻成 search5 的收窄维度与检索选项透传下去（见 _ui_filters）。
         try:
-            ui_filters = _ui_filters(scope, data.get("exact"), date_from, date_to)
+            ui_filters = _ui_filters(scope, data.get("exact"), date_from, date_to,
+                                     data.get("aging"))
         except ValueError as e:
-            # 日期输入框正常给的是 YYYY-MM-DD；手改过的请求体给非法日期时，
+            # 日期输入框正常给的是 YYYY-MM-DD；手改过的请求体给非法日期或非法时效时，
             # 接口对非法值只会静默回基线命中，所以在这一层就报 400。
-            return jsonify({"error": f"日期参数不合法：{e}"}), 400
+            return jsonify({"error": f"筛选参数不合法：{e}"}), 400
+        ui_order = SORT_TO_ORDER.get(sort, "relevance")
         if source == "chinatax":
-            result = search_chinatax(keyword, size=size, filters=ui_filters)
+            result = search_chinatax(keyword, size=size, filters=ui_filters,
+                                     order=ui_order)
         else:
             result = search_fgk(keyword, size=size, with_body=bool(data.get("body")),
-                                filters=ui_filters)
+                                filters=ui_filters, order=ui_order)
     else:
         # 归类出税种就按本体法名查，不要拿用户原话去标题检索。原话里
         # "费用"这类通用字会把《诉讼费用交纳办法》《国家赔偿费用管理条例》
@@ -432,14 +448,16 @@ def api_search():
         # 改查总局法规库，用条目自带的 search_term 而不是原话。
         if authority == "sta":
             term = (tax_type_info or {}).get("search_term") or keyword
-            # 这条也走 search5，同样吃界面三控件——否则用户在 NPC 源下设了日期、
+            # 这条也走 search5，同样吃界面那几个控件——否则用户在 NPC 源下设了日期、
             # 命中却被自动换到法规库时，日期又会被静默丢掉（与上一条同源的空转缺陷）。
             try:
-                ui_filters = _ui_filters(scope, data.get("exact"), date_from, date_to)
+                ui_filters = _ui_filters(scope, data.get("exact"), date_from, date_to,
+                                         data.get("aging"))
             except ValueError as e:
-                return jsonify({"error": f"日期参数不合法：{e}"}), 400
+                return jsonify({"error": f"筛选参数不合法：{e}"}), 400
             result = search_fgk(term, size=size, with_body=bool(data.get("body")),
-                                filters=ui_filters)
+                                filters=ui_filters,
+                                order=SORT_TO_ORDER.get(sort, "relevance"))
             result["_routed"] = f"{tax_type_info['type']}属总局专题，已改查法规库：{term}"
         else:
             result = search_tax(

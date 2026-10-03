@@ -204,15 +204,60 @@ class TestSearchRoute(_RouteCase):
         self.assertIn("_filter_note", r.get_json()["result"])
 
     def test_sta_topic_routed_to_fgk_carries_ui_filters(self):
-        """sta 专题在 NPC 源下被自动换到法规库时，界面的日期/范围也得跟过去。
+        """sta 专题在 NPC 源下被自动换到法规库时，界面的日期/范围/排序也得跟过去。
 
         这条和 source=fgk 同源：一旦漏传，用户设的日期在换源那一刻又被静默丢掉。
         """
         with mock.patch.object(tax_server, "search_fgk", return_value={}) as m:
             self._post({"keyword": "转让定价", "date_from": "2024-01-01",
-                        "date_to": "2024-12-31"}, tax_type=STA_TAX_TYPE)
+                        "date_to": "2024-12-31", "sort": "date"}, tax_type=STA_TAX_TYPE)
         f = m.call_args.kwargs["filters"]
         self.assertTrue(f["cwrqStart"].startswith("2024-01-01"))
+        self.assertEqual("date_desc", m.call_args.kwargs["order"])
+
+    def test_bad_aging_on_chinatax_is_400_not_silent_baseline(self):
+        """「时效」在 search5 那两源走的是文本值域，域外值必须挡成 400。
+
+        用例故意发 NPC 那侧的"现行有效"：search5 认的是"全文有效"，两套值域不通用。
+        发错时接口不会报错，只会静默按未过滤回基线命中，界面照样显示一堆结果——
+        用户以为收窄了，其实一档都没筛，这是最难发现的一种空转。
+        """
+        with mock.patch.object(tax_server, "search_chinatax") as m:
+            r = self._post({"keyword": "增值税", "source": "chinatax",
+                            "aging": "现行有效"}, tax_type=None)
+        self.assertEqual(400, r.status_code)
+        m.assert_not_called()
+
+    def test_ui_aging_reaches_xxgk_aging_and_blank_sends_nothing(self):
+        """界面选「全文有效」要进到 filters.xxgkAging；没选时这一维必须不发。
+
+        不发是默认行为的关键：实测 增值税×文件类标签 1908 条里 1165 条该栏为空，
+        默认发任何一个时效值都会把那批现行文件一起筛掉（见 tax_server._ui_filters）。
+        """
+        with mock.patch.object(tax_server, "search_chinatax", return_value={}) as m:
+            self._post({"keyword": "增值税", "source": "chinatax",
+                        "aging": "全文有效"}, tax_type=None)
+        self.assertEqual("全文有效", m.call_args.kwargs["filters"]["xxgkAging"])
+        with mock.patch.object(tax_server, "search_chinatax", return_value={}) as m2:
+            self._post({"keyword": "增值税", "source": "chinatax", "aging": ""},
+                       tax_type=None)
+        self.assertNotIn("xxgkAging", m2.call_args.kwargs["filters"])
+
+    def test_sort_from_ui_reaches_order_on_both_search5_paths(self):
+        """界面排序「日期↓」必须翻成 order=date_desc（发出的是 orderBy=1）。
+
+        变异验证：把 SORT_TO_ORDER.get(...) 那两处改回不传 order，本条报红——
+        不传就是走 search_chinatax 的默认 relevance，用户点的日期↓ 又一次静默空转。
+        """
+        for source, fn in (("chinatax", "search_chinatax"), ("fgk", "search_fgk")):
+            with mock.patch.object(tax_server, fn, return_value={}) as m:
+                self._post({"keyword": "增值税", "source": source, "sort": "date"},
+                           tax_type=None)
+            self.assertEqual("date_desc", m.call_args.kwargs["order"], source)
+        with mock.patch.object(tax_server, "search_chinatax", return_value={}) as m2:
+            self._post({"keyword": "增值税", "source": "chinatax"}, tax_type=None)
+        self.assertEqual("relevance", m2.call_args.kwargs["order"],
+                         "不给排序时该留在相关度，别默认改成日期")
 
     def test_fetch_failed_flag_survives_into_payload(self):
         """上游取数失败带的 _fetch_failed 必须原样到 payload，界面才分得清失败与空。"""

@@ -92,6 +92,7 @@ answer_type / validity / flags`。
 | `tests/test_source_defects.py` | ⑩ 里每一条"由代码保证"的源缺陷是否真的还在拦；每条配反例自检 | 否 |
 | `tests/test_routing_terms.py` | 路由与检索词整形：选项剥离、点名文件定位、翻页基准、会计与立法阶段 | 否 |
 | `tests/test_frontend_province_ui.py` | 前端省份控件契约 | 否 |
+| `tests/test_frontend_aging_control.py` | 前端时效控件值域契约：五档文本与后端 `AGING_VALUES` 逐项一致、NPC 码换出的文本落在值域内、拼 option 不许出现空项、赋值只走 `setNpcStatus` | 否 |
 | `tests/test_tax_search.py` | 检索与格式化的端到端行为，含每个 `parent_law` 在库里真实存在 | 是 |
 | `tests/eval_answer.py` | **主指标**：模型照技能流程作答，答案与标准答案是否一致 | 是 |
 | `tests/eval_analysis.py` | 诊断：分析输出的四项质量 | 是 |

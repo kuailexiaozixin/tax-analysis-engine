@@ -41,20 +41,26 @@ AI 直接调用网页同款后端接口完成取数，再用自动化打开页�
 1. **取数（后端直连）**，接口与网页按钮背后调用的完全一致。字段名以本技能实测
    回显为准，直连时按下面的路径取：
    - `POST /api/search` — 搜索法规。请求体字段：`keyword` / `scope`（title|fulltext）/
-     `exact`（布尔）/ `status`（3=现行有效）/ `sort`（relevance|date）/
+     `exact`（布尔）/ `status`（3=现行有效）/ `aging`（时效文本值，只对税务总局与法规库
+     两源用）/ `sort`（relevance|date）/
      `source`（npc|chinatax|fgk|aggregated）/ `province` / `date_from` / `date_to` / `size` / `body`
      结果不在顶层：单源在 `result.results`，`source=aggregated` 在 `result.items`；
      每条的法规号字段叫 `id`，它就是后面三个接口要用的 `<bbbs_id>`。
      归类换源写在 `result._routed`，源被拦写在 `result.errors`（聚合）里。
-     `source=chinatax`／`fgk` 时，`scope`／`exact`／`date_from`／`date_to` 不再只对
-     NPC 生效：`api_search` 经 `tax_web_search.build_filters` 把它们翻成 search5 的
-     收窄维度透传下去（范围→`wordPlace`、匹配→`participleRule`、日期→
-     `cwrqStart`/`cwrqEnd`），命中的源会原样回显在 `result.filters`（实测：范围=标题
-     「增值税」收 2998、范围=全文回基线 13152）。`status`（时效）在这两个源**不下推**
-     ——`build_filters` 没有 `xxgkAging` 这一维，界面在该源下把它置灰。非法日期在
-     这一层报 400，不会静默回基线命中。归类自动换源的两条路也吃这三个控件：sta 专题
-     被改查法规库时同样经 `build_filters` 下推（否则专题题在界面上收窄无效，只在
-     命令行生效），归到税种走 `parent_law` 那条是 NPC 标题精确检索、不收这些维度。
+     `source=chinatax`／`fgk` 时，`scope`／`exact`／`date_from`／`date_to`／`aging`
+     不再只对 NPC 生效：`api_search` 经 `_ui_filters` → `tax_web_search.build_filters`
+     把它们翻成 search5 的收窄维度透传下去（范围→`wordPlace`、匹配→`participleRule`、
+     日期→`cwrqStart`/`cwrqEnd`、时效→`xxgkAging`），排序另走 `SORT_TO_ORDER`
+     （`sort=date`→`orderBy=1`），命中的维度会原样回显在 `result.filters`（2026-10-02
+     实测「增值税」×文件类白名单：基线 1908、范围=标题 908、时效=全文有效 252、
+     两栏一起收窄 146；全站基数下同两维是 13152 与 2998）。
+     时效在这一路走 `aging`（五个文本值）而不是 `status`（NPC 的时效码），界面靠
+     `syncFilterControls` 随数据源换那一栏的值域，默认「全部」——白名单里六成条目
+     该栏为空，照 NPC 的默认「现行有效」收窄会把现行文件一起筛掉。非法日期与非法
+     时效在这一层报 400，不会静默回基线命中。归类自动换源到法规库那一路也吃同一套映射：sta 专题
+     被改查法规库时同样经 `_ui_filters` 下推（否则专题题在界面上收窄无效，只在
+     命令行生效）；归到税种走 `parent_law` 那条留在 NPC 一路，`scope`／`status`／`sort`
+     照各自参数下推，只有 `exact` 被归类固定成精确检索。
      `_routed` 有两种内容：归到税种时写"按〈税种〉的本体法检索：〈法名〉"或
      "〈专题〉属总局专题，已改查法规库：〈检索词〉"；归不出税种时写
      `UNROUTED_NOTE`——这时检索词就是用户原话，NPC 按字面匹配标题（实测整句
@@ -108,15 +114,35 @@ AI 直接调用网页同款后端接口完成取数，再用自动化打开页�
 ## 第三步：网页能力总览（呈现给用户的内容）
 
 - 搜索框 + 快捷税种按钮 + 高级筛选（检索范围 标题|正文 / 匹配方式 精确|模糊 /
-  时效 现行有效|全部 / 排序 相关度|日期↓ / 数据源 NPC|多源聚合|税务总局|税务法规库 /
-  公布日期起止）。这三个控件的**按源生效范围**要说清：范围／匹配／日期在 NPC、税务总局、
-  法规库三源都下推（后两源经 `api_search` 翻成 search5 `filters`）；**时效只对 NPC 与
-  多源聚合生效**，选到税务总局／法规库时界面把它置灰并写明"该维度未接入"（`build_filters`
-  没有 `xxgkAging`），不是坏了；排序只对 NPC 与多源聚合生效（`search_chinatax`／
-  `search_fgk` 不收这个参数）。空结果按四种成因分流显示：取数失败（`_fetch_failed`）
-  单独报"取数失败…可稍后重试"排在最前，收窄到 0 条显示 `_filter_note` 那句成因，
-  翻页取空显示 `_empty_reason`，法规库翻完未筛出显示那句 `_error`；法规库深页条目
-  （`_reliability==medium`）卡面挂"仅参考"角标
+  时效 / 排序 相关度|日期↓ / 数据源 NPC|税务总局|税务法规库|多源聚合 / 公布日期起止）。
+  这些控件的**按源生效范围**要说清（`tax_server.api_search` 的四条分支各不相同）：
+  - 数据源选税务总局或法规库：范围、匹配、日期、时效、排序五项全下推。前四项经
+    `_ui_filters` → `tax_web_search.build_filters` 翻成 search5 的 `wordPlace`／
+    `participleRule`／`cwrqStart`+`cwrqEnd`／`xxgkAging`，排序经 `SORT_TO_ORDER` 换成
+    `orderBy`（日期↓→`orderBy=1`），实际用到的维度回显在 `result.filters`。日期这一路是真
+    收窄（2026-10-02 实测法规库「增值税」起 2026-01-01 → 8 条全落在 2026-01-01～2026-08-27）。
+    其余三项在同一基数下的实测值：基线 1908、范围=标题 908、时效=全文有效 252、范围＋时效
+    146（全站基数下同两维是 13152 与 2998）。
+  - 数据源选 NPC：范围与排序下推；时效发 `status`（数字时效码）；匹配／精确只在
+    `resolve_tax_type` 归不出本体法时才听界面那一栏（归得出就被改成精确检索）；
+    日期是坏的——`tax_search.search_tax` 填上 `gbrq` 后接口就不按 `searchContent` 过滤，
+    实测 `search_tax("中华人民共和国增值税法", search_type=1, date_from="2026-01-01")`
+    回 88 条、首条《民族团结进步促进法》、逐条核对没有一条含"增值税"，同词不带日期是 2 条。
+    危害方向是"带日期反而递回无关清单"，不是收窄成 0。
+  - 数据源选多源聚合：只有喂给 `search_tax` 的那几项生效（`scope`／`status`／`sort`，
+    `exact` 由归类结果决定），总局、法规库、全网、税屋、公众号四路只按检索词取回——
+    `tax_aggregator.aggregate_search` 里 `search_chinatax(keyword, size=size)` 不带
+    `filters`，函数签名里也没有日期参数，`api_search` 那两路调用也就没把 `date_from`／
+    `date_to` 传下去（实测同一个请求体带与不带 `date_from=2026-01-01` 回来的 12 条完全
+    相同，里面仍有 2019-11-27 的）。归到 sta 专题时 NPC 整源被剔掉（`sources` 排除
+    `"npc"`），那几项连落脚的地方都没有，只剩 `sort` 在跨源重排时起作用。
+  - 「时效」那一栏在换到 search5 两源时整栏换值域：选项由 `syncFilterControls` 从
+    `status` 码（现行有效／全部）换成 `AGING_S5` 五个文本值，且默认「全部」而不是
+    「现行有效」——白名单里六成条目该栏为空，照 NPC 的默认收窄会把现行文件一起筛掉。
+    归类自动换源到法规库那一路也吃同一套映射（见 `tax_server._ui_filters`）。
+  空结果按成因分流显示：取数失败（`_fetch_failed`）单独报"取数失败…可稍后重试"排在最前，
+  收窄到 0 条显示 `_filter_note` 那句成因，翻页取空显示 `_empty_reason`，
+  法规库翻完未筛出显示那句 `_error`；法规库深页条目（`_reliability==medium`）卡面挂"仅参考"角标
 - **智能引导面板（4 步向导）**：① 选身份（企业 / 个人·个体户 / 代理记账·税务师 /
   其他）→ ② 选税种 → ③ 选意图（查政策·税率 / 优惠资格 / 风险自查 / 申报流程 /
   发票问题 / 计算标准）→ ④ 补充条件 → 点"生成搜索"自动拼词并搜索。向导里**没有**
