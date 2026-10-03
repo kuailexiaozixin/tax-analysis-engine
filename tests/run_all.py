@@ -70,6 +70,8 @@ OFFLINE_GROUP = [
     ("检索词整形与路由用例（选项剥离/点名文件定位/短词降级/sta 检索词）",
      [PY, str(TESTS_DIR / "test_routing_terms.py")]),
     ("评测集规则用例", [PY, str(TESTS_DIR / "test_eval_set.py")]),
+    ("答题评测判分口径用例（输出格式轴/PROMPT 版本进指纹）",
+     [PY, str(TESTS_DIR / "test_eval_answer.py")]),
     ("文档内部契约用例（目录锚点/⑥形态清单/前向指针/归属表符号）",
      [PY, str(TESTS_DIR / "test_doc_contract.py")]),
 ]

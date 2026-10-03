@@ -9,10 +9,15 @@
 主依据选对了《契税法》，但把"转移土地承包经营权不征契税"判成了征收。
 所以本脚本把评测对象换成模型交付的那份答案本身。
 
-三项判定，逐题独立：
+四项判定，逐题独立：
   严格正确    选项集合与标准答案完全相等（多选漏一个也算错，与考试同口径）
   部分分      多选按 F1 计，用来区分"方向对但没答全"和"完全答反"
   错法分解    错选（选了标准答案外的）／漏选（少了标准答案里的）／拒答
+  输出格式    整段 JSON／正则回捞到字母／完全解析不出，三档占全部非调用失败行
+第四项与前三项正交：前三项量模型会不会做题，第四项量它有没有把答案交付成可解析
+的样子。必须单独报，因为"输出不成 JSON"在判分里落成 answer 空、进而记进拒答，
+读起来像模型自认不会，实际它可能答对了只是没按格式写。两类的修法相反：格式废品
+要修的是交付形态，主动留空才轮到改判据与前提识别。
 
 两个对照组（--arms）：
   evidence  题面＋选项＋本技能检索到的政策依据（含主依据正文条文）
@@ -256,6 +261,14 @@ PROMPT = """你在参加中国税务师职业资格考试，请作答下面这�
 只输出一个 JSON，不要任何其他文字或代码块围栏：
 {{"answer": "选项字母连写，例如 D 或 ABD；无法判断则留空", "basis": "你依据的法规或文件名称，没有则填 无", "reasoning": "80 字以内，说明每个选中项为什么对"}}"""
 
+# 改动上面 PROMPT 的任何字面（作答要求、输出格式、示例）都要把这里加一号。
+# 原因是缓存而非语义：模型回答按指纹复用，而改 prompt 时题面与依据块一个字
+# 都不变，所以不带版本号的指纹会逐题命中改 prompt 之前的回答。后果是两批跑批
+# 拿到同一份输出，对照表报零差异，读起来像改动作答要求没有效果，实际是它
+# 根本没被送到模型面前。这类失真在报告里没有任何字段能暴露，只能靠版本号
+# 挡在命中之前。
+PROMPT_VERSION = "v1"
+
 
 def ask_model(item: dict, bundle_text: str, arm: str, timeout: int,
               retries: int = 1) -> str:
@@ -387,8 +400,9 @@ def load_cache() -> dict:
     """按 (key, arm) 复用已问过的模型输出，让长跑可断点续跑。
 
     模型是外部服务、每题耗时以十秒计，重跑一遍等于把上一次的调用作废；
-    题面或依据变了会让 key 相同但内容不同，所以缓存里存题面哈希，
-    命中后再比哈希，不一致就当没跑过。
+    题面、依据或作答要求变了会让 key 相同但内容不同，所以缓存里存指纹，
+    命中后再比指纹，不一致就当没跑过。比对的是 cache_fingerprint 那四项，
+    不只题面。
     """
     cache = {}
     if CACHE_PATH.is_file():
@@ -405,8 +419,13 @@ def load_cache() -> dict:
 
 
 def cache_fingerprint(item: dict, bundle_text: str) -> str:
+    """这道题这次调用等价于什么：题面＋选项＋依据块＋作答要求版本。
+
+    四项里少任一项都会把"换了要求"读成"没换"，见 PROMPT_VERSION 的说明。
+    """
     import hashlib
     h = hashlib.sha256()
+    h.update(PROMPT_VERSION.encode("utf-8"))
     h.update(item["question"].encode("utf-8"))
     h.update(json.dumps(item["options"], sort_keys=True, ensure_ascii=False).encode())
     h.update(bundle_text.encode("utf-8"))
@@ -477,8 +496,8 @@ def bundle_text_for(arm: str, bundle: dict) -> str:
 def cached_raw(item: dict, arm: str, bundle: dict, cache: dict) -> str:
     """这次跑批这道题要不要花钱：命中缓存返回那份原始回答，否则返回空串。
 
-    指纹含题面＋选项＋依据块，改一个字都不算命中。花费预告按它来数，所以
-    这段判断只能有一份——两处各写一遍迟早会数错次数。
+    指纹含作答要求版本＋题面＋选项＋依据块，改一个字都不算命中。花费预告按它
+    来数，所以这段判断只能有一份——两处各写一遍迟早会数错次数。
     """
     hit = cache.get((item["key"], arm))
     fp = cache_fingerprint(item, bundle_text_for(arm, bundle))
@@ -517,6 +536,7 @@ def run_one(item: dict, arm: str, bundle: dict, timeout: int,
         # 失败输出不落缓存：下一次跑同一题必须真的重问，而不是把故障永久固化成答案
         with cache_lock:
             append_cache({"key": item["key"], "arm": arm, "fp": fp, "raw": raw,
+                          "prompt_v": PROMPT_VERSION,
                           "at": (bundle or {}).get("at", ""),
                           "with_body": (bundle or {}).get("with_body", False),
                           "ts": time.strftime("%Y-%m-%d %H:%M:%S")})
@@ -610,6 +630,27 @@ def agg(rows: list) -> dict:
     scored = [r for r in rows if r["score"]["gold"]]
     ok = [r for r in scored if r["score"]["exact"]]
     multi = [r for r in scored if r["score"]["multi"]]
+
+    # 输出格式是与判分正交的一根轴：判分量模型会不会做题，这根量它有没有把答案
+    # 交付成可解析的样子。判档只用 parse_choice 已经写进 model["parse"] 的结论，
+    # 不重新解析文本。
+    # 分母是被剔除调用失败之后剩下的全部行，不是 scored：格式合不合规与这道题
+    # 有没有标准答案无关，用 scored 当分母会让"无标准答案"批次白报成全合规。
+    def p(r: dict) -> str:
+        return (r.get("model") or {}).get("parse", "")
+
+    tagged = [r for r in rows if p(r)]
+    n_json = sum(1 for r in tagged if p(r) == "json")
+    n_regex = sum(1 for r in tagged if p(r) == "regex")
+    n_none = sum(1 for r in tagged if p(r) == "none")
+    # 拒答拆两档，因为两类修法相反：按 PROMPT 第 3 条主动留空，说明模型自认资料
+    # 不足，要动的是判据与前提识别；输出不成 JSON 是格式废品，parse_choice 拿不到
+    # 字母、score_one 又落成 refused，看着像模型谦退，实际它可能答对了只是没按
+    # 格式写，要动的是交付形态。混在一档里就会去改错的那一处。
+    refused_rule = sum(1 for r in scored
+                       if r["score"]["refused"] and p(r) == "json")
+    refused_unparsed = sum(1 for r in scored
+                           if r["score"]["refused"] and p(r) and p(r) != "json")
     return {
         "n": len(rows),
         "call_failed": len(failed),
@@ -623,6 +664,17 @@ def agg(rows: list) -> dict:
         if scored else None,
         "multi_f1": round(sum(r["score"]["f1"] for r in multi) / len(multi), 3)
         if multi else None,
+        "parse_json": n_json,
+        "parse_regex": n_regex,
+        "parse_none": n_none,
+        # 没有 parse 记录的批次（旧批次、只喂 score 的调用方）报 None 不报 0：
+        # 0% 合规率会被读成"模型不守格式"，而真相是这批数据里根本没这个字段。
+        "format_rate": round(n_json / len(tagged) * 100, 1) if tagged else None,
+        "parseable_rate": round((n_json + n_regex) / len(tagged) * 100, 1)
+        if tagged else None,
+        "untagged": len(rows) - len(tagged),
+        "refused_rule": refused_rule,
+        "refused_unparsed": refused_unparsed,
     }
 
 
@@ -657,12 +709,28 @@ def print_report(rows: list, args) -> None:
         print(f"  部分分(F1)   均值 {s['f1_mean']}（多选 {s['multi_f1']}）")
         print(f"  漏选未答全   {s['partial_only']} 题　含错选 {s['has_wrong']} 题"
               f"　拒答 {s['refused']} 题")
+        if s["parse_json"] + s["parse_regex"] + s["parse_none"] == 0:
+            print("  输出格式     这批没有解析档位记录（早于该指标的批次），"
+                  "不报合规率，避免把缺字段读成不守格式")
+        else:
+            print(f"  输出格式     整段 JSON {s['parse_json']}　正则回捞 {s['parse_regex']}　"
+                  f"不可解析 {s['parse_none']}　合规率 {s['format_rate']}%"
+                  f"　拿到选项 {s['parseable_rate']}%")
+            if s["untagged"]:
+                print(f"    [警告] {s['untagged']} 行没有解析档位记录，"
+                      "已从合规率分母里排除")
+            if s["refused_unparsed"]:
+                print(f"    [提醒] 拒答 {s['refused']} 题里有 {s['refused_unparsed']} 题"
+                      f"是输出不成 JSON，不是模型说不会（另有 {s['refused_rule']} 题是按"
+                      "作答要求主动留空）。前者要修的是交付格式，后者才轮到判据与前提识别")
         for field, label in (("source", "分题库"), ("validity", "分时效档"),
                              ("answer_type", "分题型")):
             print(f"\n  ── {label} ──")
             for k, v in breakdown(rs, field).items():
                 print(f"    {k:<16s} {v['exact']}/{v['scored']} = {v['rate']}%"
-                      f"　F1 {v['f1_mean']}　错选 {v['has_wrong']}　拒答 {v['refused']}")
+                      f"　F1 {v['f1_mean']}　错选 {v['has_wrong']}　拒答 {v['refused']}"
+                      + (f"　格式 {v['format_rate']}%"
+                         if v["format_rate"] is not None else ""))
 
     # 同题两组交叉表：净贡献
     pr = paired(rows)
@@ -872,7 +940,7 @@ def main():
                      "at": args.at, "with_body": args.with_body,
                      "seed": args.seed, "elapsed_s": round(time.time() - t0, 1),
                      "no_answer_jobs": skipped, "new_model_calls": n_new,
-                     "halted": halted,
+                     "halted": halted, "prompt_version": PROMPT_VERSION,
                      "pool_total": len(pool)},
             "summary": {a: agg([r for r in results if r["arm"] == a]) for a in arms},
             "by_source": {a: breakdown([r for r in results if r["arm"] == a],
