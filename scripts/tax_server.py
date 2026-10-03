@@ -400,23 +400,36 @@ def api_search():
         # 聚合同样要换源：不换就会把用户原话丢给五源，NPC 侧取回的是含通用字的
         # 无关法规，总局侧又翻不到该专题的规范性文件。sta 专题改用条目自带的
         # search_term 并剔掉 NPC，npc 专题改用 parent_law 精确检索。
-        agg_kw = keyword
-        agg_sources = None
-        if authority == "sta":
-            agg_kw = (tax_type_info or {}).get("search_term") or keyword
-            agg_sources = [s for s in DEFAULT_SOURCES if s != "npc"]
-            result = aggregate_search(agg_kw, size=size, status=status,
-                                      scope=scope, sources=agg_sources, sort=sort)
-            result["_routed"] = f"{tax_type_info['type']}属总局专题，已改查法规库：{agg_kw}"
-        else:
-            if parent_law:
-                agg_kw = parent_law
-            result = aggregate_search(agg_kw, size=size, status=status, scope=scope,
-                                      exact=bool(parent_law), sort=sort)
-            if parent_law:
-                result["_routed"] = f"按{tax_type_info['type']}的本体法检索：{parent_law}"
+        # 日期区间这一维也要交给聚合层：它原先没有这两个参数，界面上的日期控件
+        # 在这条路径上是空转的（2026-10-02 实测带与不带日期的 12 条一模一样）。
+        # 各路怎么生效见 tax_aggregator._date_scope_note，回给前端的说明在
+        # result._date_note。
+        try:
+            agg_kw = keyword
+            agg_sources = None
+            if authority == "sta":
+                agg_kw = (tax_type_info or {}).get("search_term") or keyword
+                agg_sources = [s for s in DEFAULT_SOURCES if s != "npc"]
+                result = aggregate_search(agg_kw, size=size, status=status,
+                                          scope=scope, sources=agg_sources,
+                                          sort=sort, date_from=date_from,
+                                          date_to=date_to)
+                result["_routed"] = f"{tax_type_info['type']}属总局专题，已改查法规库：{agg_kw}"
             else:
-                result["_routed"] = UNROUTED_NOTE
+                if parent_law:
+                    agg_kw = parent_law
+                result = aggregate_search(agg_kw, size=size, status=status,
+                                          scope=scope, exact=bool(parent_law),
+                                          sort=sort, date_from=date_from,
+                                          date_to=date_to)
+                if parent_law:
+                    result["_routed"] = f"按{tax_type_info['type']}的本体法检索：{parent_law}"
+                else:
+                    result["_routed"] = UNROUTED_NOTE
+        except ValueError as e:
+            # aggregate_search 里 build_filters 会校验日期；非法日期在这一层报 400，
+            # 不能让接口静默回一份没筛过的清单。
+            return jsonify({"error": f"筛选参数不合法：{e}"}), 400
     elif source in ("chinatax", "fgk"):
         # 界面上的「范围/匹配/日期/时效/排序」控件此前只喂给 NPC 那一路，数据源切到
         # 税务总局或法规库就被静默丢掉——控件看着是全局的、实际只对 NPC 生效。
@@ -460,11 +473,16 @@ def api_search():
                                 order=SORT_TO_ORDER.get(sort, "relevance"))
             result["_routed"] = f"{tax_type_info['type']}属总局专题，已改查法规库：{term}"
         else:
-            result = search_tax(
-                keyword, scope=scope, search_type=search_type,
-                status=status, date_from=date_from, date_to=date_to,
-                size=size, sort=sort,
-            )
+            try:
+                result = search_tax(
+                    keyword, scope=scope, search_type=search_type,
+                    status=status, date_from=date_from, date_to=date_to,
+                    size=size, sort=sort,
+                )
+            except ValueError as e:
+                # NPC 这一路原先不吃日期校验：非法格式发给接口是被静默忽略还是
+                # 被当成区间，从结果上看不出来。与 search5 两路同一处理，报 400。
+                return jsonify({"error": f"筛选参数不合法：{e}"}), 400
             if parent_law:
                 result["_routed"] = f"按{tax_type_info['type']}的本体法检索：{parent_law}"
             else:

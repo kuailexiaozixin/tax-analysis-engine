@@ -1,7 +1,7 @@
 ---
 name: tax-analysis-engine
 description: "税务问题分析引擎：先判定问题类型与缺失前提，再从上位法逐层向下检索到行政法规、地方口径与实务案例，多源聚合后对依据做效力位阶与时效定级，最后输出带限制条件的分析结论。适用于一切涉及税与费的问题——某个税怎么算、能不能享受优惠、该按什么税目归类、怎么办理、多久之内办、有什么风险、两个方案选哪个，以及法规原文的条款填空与选项判断、政策与案例检索。回答前一律实时联网核查，不使用训练数据中的政策记忆。"
-version: "3.17.0"
+version: "3.18.0"
 ---
 
 # 税务问题分析引擎 (Tax Analysis Engine)
@@ -372,8 +372,11 @@ repealed**；「财税文件」栏不录时效时靠**制定依据援引**补这
 网页（`frontend/index.html`，由 `scripts/tax_server.py` 托管）是同一套后端的可视化
 界面层，与命令行共用五源、同源同权威度，**不构成绕过工作流的理由**。启动方式、
 九个接口的字段路径、`_routed`/`accounting_note`/`legislative_note`/`engine_error` 等
-字段的读法、高级筛选栏的范围／匹配／日期经 `build_filters` 下推到 chinatax／fgk（含
-归类自动换源那两路，非法日期 400）、空结果按 `_fetch_failed`／`_filter_note`／
+字段的读法、高级筛选栏那几个控件在四条数据源分支上各自怎么生效（日期这一维分两种口径：
+NPC 与总局由接口自己收窄，两家收的字段不同——公布日期 vs 成文日期；360／税屋／公众号
+没有日期参数，只在本轮取回的条目窗口内补筛，成因与逐源计数写在 `_date_note`／
+`_date_filter`；chinatax／fgk 走 `build_filters`，含归类自动换源那两路；四条分支
+非法日期一律 400）、空结果按 `_fetch_failed`／`_filter_note`／
 `_empty_reason`／翻完未筛出四种成因分流显示、省份下拉只在"官方解读"页生效、付费闸门
 `paid_llm` 的两态报错，全在 `references/web_interface.md`。走网页路径不豁免 ⑦ 任何一条。
 

@@ -56,6 +56,7 @@
 `--all-labels` 能关，界面那一路恒用默认范围）；实测同一词收窄后 18 条全部取回，
 「小微企业」4822→184。清单缓存键的 `LIST_KEY_REV` 随之从 `pn0` 改成 `pn0-files`，
 非默认范围另走 `tax_fgk.scope_token` | 收窄的代价是漏掉标在「视频政策解读」「图片政策解读」上的法规库条目（实测「研发费用加计扣除」全站前 3 页 7 条），那类回的是 `media_only` 空正文；`_scan_list` 在 0 条那句 `_error` 里把范围写明，不让人把"窗口里没有"读成"库里没有"。盯它的是 `test_file_labels_is_the_default_scope`、`test_all_labels_switch_reopens_the_whole_site`、`test_scan_list_threads_scope_and_order_to_every_page`、`test_scope_and_order_have_their_own_cache_keys`、`test_zero_hit_sentence_names_the_label_scope` |
+| 界面「公布日期」那一栏在三条路径上语义不同却长得一样：多源聚合根本没下发（`tax_aggregator.aggregate_search` 的签名里没有 `date_from`/`date_to`）；NPC 只给上界时 `gbrq` 发出去是空数组，等于没收窄；NPC 精确检索（`search_type=1`）带上日期后接口丢掉检索词，只按区间回一叠与本题无关的法律清单 | 聚合分支把区间下推：NPC 缺端补界（`tax_search.DATE_CEIL`/`DATE_FLOOR`，只给上界也发真区间），税务总局经 `tax_web_search.build_filters` 的 `cwrq_from`/`cwrq_to`；360／税屋／微信公众号这一路没有日期参数，改在本轮取回的条目窗口内按条目自带日期补筛（`tax_aggregator.DATE_LOCAL_SOURCES`），逐源计数进 `_date_filter.local_window`。精确检索＋区间这一组不拒绝请求，改成取回后按「标题是否含检索词」二次核对：`total` 只报复核后的条数，接口原报条数留在 `source_total`，成因写成 `_date_note` 交界面照抄。格式校验统一走 `tax_search.check_iso_date`，四条分支（NPC 单源、聚合、chinatax、fgk）非法日期一律 400 | 2026-10-03 本机实测：只给上界「增值税」45→38 条（区间内最大 2020-08-04；修前是 45 条、首条 2025-12-25，与不带日期逐条一样）；聚合「增值税」2024-01-01—2026-12-31 从 16 条里有 4 条越界收到 9 条 0 越界；精确检索「中华人民共和国增值税法」起 2026-01-01 的 88 条复核后留 0 条（88 留在 `source_total`），同一个词不带日期是 2 条。**没带日期的条目保留而不删**，只另计 `no_date`——360 那一路压根没有日期字段，按越界处理会整源消失，再把空清单读成"该源在这个区间里没有内容"。盯它的是 `test_date_window.py` 的 `test_only_to_uses_floor`、`test_overfetch_inherits_the_range`、`test_drops_off_topic_and_notes_it`、`test_forwards_to_both_server_sources`、`test_undated_items_are_kept_and_counted`、`test_aggregated_bad_date_is_400`、`test_npc_single_source_bad_date_is_400`、`test_local_counts_are_rendered` |
 
 ## 两个值得单独说明的细节
 
@@ -131,13 +132,3 @@ SKILL.md ② 末尾指向这一节。它回答两个问题：某一格动作**�
   怎么把状态补上，这条管发出去之前别把两维拼一起。程序拦不住谁去拼这条必然为零的
   查询，而 0 条与"库里确实没有"在结果里长得一模一样。参数与分面的实测数字见
   `commands.md`「search5 的可发参数与分面字段」。
-- **「公布日期」那一栏在 NPC 单源与多源聚合两路上还做不到收窄**（2026-10-02 经
-  `/api/search` 实测新发现，两处都还没收口）。多源聚合是 `tax_server.api_search` 没把
-  `date_from`/`date_to` 交给 `tax_aggregator.aggregate_search`——该函数签名里就没有这两个
-  参数；同一个请求体带与不带 `date_from=2026-01-01` 回来的 12 条一模一样，里面仍有
-  2019-11-27 的条目。NPC 单源是接口侧的毛病：`tax_search.search_tax` 把区间填进 `gbrq`
-  之后，`searchContent` 就不起作用了——`search_tax("中华人民共和国增值税法", search_type=1,
-  date_from="2026-01-01")` 回 88 条，首条《民族团结进步促进法》，88 条里没有一条含"增值税"；
-  同一词不带日期是 2 条，检索词本身仍是好的（《中华人民共和国增值税法》与其实施条例）。
-  危害方向要说准：不是"收窄成 0"，是**带着日期反而把与检索词无关的清单递回来**，
-  而界面没有任何一句话提示这一点。税务总局／法规库两路是真收窄（`cwrqStart`/`cwrqEnd`）。

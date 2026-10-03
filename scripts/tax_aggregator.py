@@ -28,6 +28,7 @@ Usage:
 
 import argparse
 import json
+import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -37,8 +38,8 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from tax_search import search_tax
-from tax_web_search import search_chinatax
+from tax_search import search_tax, check_iso_date, DATE_FLOOR, DATE_CEIL
+from tax_web_search import search_chinatax, build_filters
 from tax_so360 import so360_search
 from tax_shui5 import search_shui5
 from tax_wechat import search_wechat
@@ -70,6 +71,77 @@ SOURCE_IMPACT = {
     "shui5": "税屋的实务解读层缺失",
     "wechat": "微信公众号的实务解读层缺失",
 }
+
+# 给说明文字用的平名（SOURCE_LABELS 带图标，抄进答案里会成噪声）。
+SOURCE_PLAIN = {
+    "npc": "NPC 法规库",
+    "chinatax": "税务总局",
+    "so360": "360 搜索",
+    "shui5": "税屋",
+    "wechat": "微信公众号",
+}
+
+# 日期区间这一维在五源里的作用方式不是一种，分界的依据是"该源有没有日期参数"：
+#   DATE_SERVER_SOURCES — 接口自己收（NPC 是 gbrq 公布日期，税务总局是 cwrq 成文
+#     日期，2026-10-03 实测「增值税」只给上界 2020-12-31 时 45→38 条、max 由
+#     2025-12-25 收到 2020-07-30，是真收窄）
+#   DATE_LOCAL_SOURCES — 三个网页源都没有日期参数，只能在取回的窗口内按条目
+#     自带日期补筛。360 那一路的解析结果里根本没有日期字段（tax_so360 的条目
+#     只有 title/url/snippet/source/site），所以它整源都会落进"无日期"那一档。
+# 把这两路混成一句"已按日期收窄"，读者会把本地补筛读成源端收窄，进而把
+# "该源这一轮 0 条"当成"该源在这个区间里没有文件"——这是要防的那一步。
+DATE_SERVER_SOURCES = ("npc", "chinatax")
+DATE_LOCAL_SOURCES = ("so360", "shui5", "wechat")
+_ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _new_date_stat() -> dict:
+    return {"got": 0, "in_range": 0, "out_of_range": 0, "no_date": 0}
+
+
+def _date_scope_note(date_from: str, date_to: str, sources: list,
+                     local_stats: dict, npc_note: str) -> str:
+    """说清日期区间这一轮对各源分别是怎么生效的，逐句都只写这一轮真发生了的事。
+
+    各源的补筛计数放 `_date_filter.local_window`（结构化，便于核对），这里只给
+    判读规则：补筛是在窗口内做的，窗口外该源有没有区间内的文件并没有查。
+    """
+    lo = date_from or "不限"
+    hi = date_to or "不限"
+    server = [SOURCE_PLAIN[s] for s in DATE_SERVER_SOURCES if s in sources]
+    local = [SOURCE_PLAIN[s] for s in DATE_LOCAL_SOURCES if s in sources]
+    parts = []
+    if server:
+        fields = []
+        if "npc" in sources:
+            fields.append("NPC 收公布日期 gbrq")
+        if "chinatax" in sources:
+            fields.append("税务总局收成文日期 cwrq")
+        both = len(fields) > 1
+        gap = ""
+        if not (date_from and date_to):
+            bits = []
+            if "npc" in sources:
+                bits.append(f"NPC 那一路按 {DATE_FLOOR}／{DATE_CEIL} 补缺的那一端")
+            if "chinatax" in sources:
+                bits.append("税务总局那一路不发缺失的那一维")
+            if bits:
+                gap = "；" + "，".join(bits)
+        parts.append(
+            "、".join(server) + "由接口自己收窄（" + "，".join(fields) +
+            ("；两个「日期」字段含义不同，同一区间在两侧圈到的条目本就不必相同"
+             if both else "") + gap + "）")
+    if local:
+        parts.append(
+            "、".join(local) + "这一路没有日期参数，是在本源本轮取回的条目窗口内"
+            "按条目自带日期补筛（各源的取回／区间内／区间外剔除／无日期保留条数"
+            "另列一行）。窗口外该源仍可能有区间内的文件，这几源"
+            "补筛到 0 条不能读成「该源在这个区间里没有内容」；条目本身没带日期的"
+            "按无法判定处理——已保留在结果里，但不算区间内条目，引用前要单独核对日期")
+    if npc_note:
+        parts.append("NPC 那一路另有情况：" + npc_note)
+    rng = f"{lo} — {hi}"
+    return f"日期区间 {rng}：" + "；".join(parts) + "。"
 
 
 def _build_gaps(sources: list, errors: dict, source_summary: dict) -> list:
@@ -162,7 +234,9 @@ def aggregate_search(keyword: str, *,
                      status: int = 3,
                      scope: str = "title",
                      exact: bool = False,
-                     sort: str = "relevance") -> dict:
+                     sort: str = "relevance",
+                     date_from: str = None,
+                     date_to: str = None) -> dict:
     """
     Concurrently search multiple data sources and return deduplicated, ranked results.
 
@@ -177,9 +251,26 @@ def aggregate_search(keyword: str, *,
         sort: "relevance"（默认）按权威度分层；"date" 时跨源按公布日期降序，
               不再按权威度分层——"只看最新"要的正是时间序，把 NPC 整源顶在
               前面会让总局 2026 年的公告排在 NPC 2024 年的法律之后。
+        date_from / date_to: YYYY-MM-DD 日期区间，任一端可缺。生效方式分三路，
+              见 _date_scope_note：npc 与 chinatax 由接口自己收（公布日期／
+              成文日期，含义不同），so360、shui5、wechat 没有日期参数，只能
+              在本源取回的 size 条窗口内按条目日期补筛，计数写
+              `_date_filter.local_window`，判读规则写 `_date_note`。没带日期的
+              条目留在结果里并计入 no_date，不静默丢。
+
+    Raises:
+        ValueError: date_from/date_to 不是补零的 YYYY-MM-DD 真实日期。
     """
     if sources is None:
         sources = list(DEFAULT_SOURCES)
+
+    date_from = check_iso_date(date_from, "date_from")
+    date_to = check_iso_date(date_to, "date_to")
+    use_date = bool(date_from or date_to)
+    # 税务总局那一路的收窄维度就是日期本身：search_chinatax 原先拿不到 filters，
+    # 界面上的日期控件在聚合这条路径上是空转的（2026-10-02 实测：带与不带日期
+    # 的 12 条结果一模一样，仍含 2019-11-27 那份）。build_filters 同时兼任校验。
+    date_filters = build_filters(cwrq_from=date_from, cwrq_to=date_to)
 
     results = {}
     errors = {}
@@ -193,10 +284,11 @@ def aggregate_search(keyword: str, *,
             futures["npc"] = pool.submit(
                 search_tax, keyword, scope=scope, status=status, size=size,
                 search_type=1 if exact else 2, sort=sort,
+                date_from=date_from, date_to=date_to,
             )
         if "chinatax" in sources:
             futures["chinatax"] = pool.submit(
-                search_chinatax, keyword, size=size
+                search_chinatax, keyword, size=size, filters=date_filters
             )
         if "so360" in sources:
             # 全网检索，再由调用方按需收窄站点；此处不带 site:
@@ -221,6 +313,7 @@ def aggregate_search(keyword: str, *,
 
     # Collect all results，按权威性排序
     all_items = []
+    local_stats = {}
     for source, data in results.items():
         if not data:
             continue
@@ -231,6 +324,7 @@ def aggregate_search(keyword: str, *,
         rank = SOURCE_RANK[source]
         source_rel = data.get("_reliability")
         source_note = data.get("_reliability_note", "")
+        local_narrow = use_date and source in DATE_LOCAL_SOURCES
         for item in data.get("results", []):
             item["_source"] = source
             item["_authority_rank"] = rank
@@ -242,6 +336,20 @@ def aggregate_search(keyword: str, *,
                 item["_reliability"] = source_rel
                 if source_note:
                     item["_reliability_note"] = source_note
+            if local_narrow:
+                st = local_stats.setdefault(source, _new_date_stat())
+                st["got"] += 1
+                d = (item.get("publish_date") or "")[:10]
+                if not _ISO_DATE_RE.match(d):
+                    # 条目没有日期不等于日期在区间外。360 那一路的解析结果
+                    # 压根没有日期字段，误按"区间外"处理会把整源删掉，再把
+                    # 空清单读成"该源没有"。
+                    st["no_date"] += 1
+                elif (date_from and d < date_from) or (date_to and d > date_to):
+                    st["out_of_range"] += 1
+                    continue
+                else:
+                    st["in_range"] += 1
             all_items.append(item)
 
     # Deduplicate across sources
@@ -262,11 +370,13 @@ def aggregate_search(keyword: str, *,
         for s in sources
     }
     gaps = _build_gaps(sources, errors, source_summary)
-    return {
+    out = {
         "keyword": keyword,
         "total_sources": len(sources),
         "total_items": len(all_items),
         "items": all_items[:size * 3],  # Cap total results
+        # source_summary 是各源"取回"的条数，不含本源窗口内的日期补筛；补筛掉
+        # 多少看 _date_filter.local_window，两个数不是一个口径，别互相核对。
         "source_summary": source_summary,
         "errors": errors,
         # 缺了哪一层、什么后果、要不要拿别的源顶 → 由程序说，不靠读者推断
@@ -274,6 +384,18 @@ def aggregate_search(keyword: str, *,
         "degraded_note": _degraded_note(sources, gaps, source_summary),
         "searched_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
+    if use_date:
+        out["_date_filter"] = {
+            "from": date_from,
+            "to": date_to,
+            "server_side": [s for s in DATE_SERVER_SOURCES if s in sources],
+            "local_window": {s: local_stats.get(s, _new_date_stat())
+                             for s in sources if s in DATE_LOCAL_SOURCES},
+        }
+        out["_date_note"] = _date_scope_note(
+            date_from, date_to, sources, local_stats,
+            (results.get("npc") or {}).get("_date_note", ""))
+    return out
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
@@ -296,19 +418,30 @@ Examples:
                    help="NPC search scope (default: title)")
     p.add_argument("--sort", choices=["relevance", "date"], default="relevance",
                    help="relevance=按权威度分层；date=跨源按公布日期降序（不再分层）")
+    p.add_argument("--from", dest="date_from", metavar="YYYY-MM-DD",
+                   help="日期区间下界。npc 按公布日期、chinatax 按成文日期由接口收窄；"
+                        "so360/shui5/wechat 没有日期参数，只在本源取回的窗口内补筛")
+    p.add_argument("--to", dest="date_to", metavar="YYYY-MM-DD",
+                   help="日期区间上界，生效方式同 --from")
     p.add_argument("--json", action="store_true")
 
     args = p.parse_args()
     sources = [s.strip() for s in args.sources.split(",") if s.strip()]
 
-    result = aggregate_search(
-        args.keyword,
-        size=args.size,
-        sources=sources,
-        status=args.status,
-        scope=args.scope,
-        sort=args.sort,
-    )
+    try:
+        result = aggregate_search(
+            args.keyword,
+            size=args.size,
+            sources=sources,
+            status=args.status,
+            scope=args.scope,
+            sort=args.sort,
+            date_from=args.date_from,
+            date_to=args.date_to,
+        )
+    except ValueError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        sys.exit(2)
 
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -318,6 +451,16 @@ Examples:
     print(f"   数据源: {', '.join(sources)}")
     for src in sources:
         print(f"   {SOURCE_LABELS.get(src, src)}: {result['source_summary'].get(src, 0)} 条")
+    if result.get("_date_note"):
+        df = result["_date_filter"]
+        # 各源取回多少上面那行已经印过，这里只补上面没有的那个口径：窗口内补筛
+        # 之后区间内/外/无日期各多少。0 条的源不补这行，免得和上面的"0 条"重复。
+        for src, st in df["local_window"].items():
+            if st["got"]:
+                print(f"     日期补筛 {SOURCE_PLAIN.get(src, src)}：取回 {st['got']} 条，"
+                      f"区间内 {st['in_range']} 条，区间外剔除 {st['out_of_range']} 条，"
+                      f"无日期保留 {st['no_date']} 条")
+        print(f"   ⚠️ {result['_date_note']}")
     if result.get("errors"):
         for src, err in result["errors"].items():
             print(f"   ⚠️ {src}: {err}")

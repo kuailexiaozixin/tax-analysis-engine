@@ -489,6 +489,19 @@ RELIABILITY_NOTES = {
               "确定条文归属请回到标题检索。",
 }
 
+# 精确检索带日期区间时接口丢掉检索词这件事的说明。写清楚"剩下几条"与
+# "接口原报几条"两个数，是因为不写的话 0 条会被读成"这个区间里没有相关法规"，
+# 而那恰恰是接口把清单换成全库的结果。
+DATE_WIDENED_NOTE = (
+    "NPC 的精确检索带上公布日期区间后会丢掉检索词，只按区间返回法律清单。"
+    "2026-10-02 本机实测的例子：「中华人民共和国增值税法」起 2026-01-01 回 88 条，"
+    "逐条核对标题含该词的是 0 条，同一个词不带日期是 2 条。"
+    "本次接口原报 {source_total} 条，按「标题是否含检索词」复核后丢掉 {dropped} 条、"
+    "留下 {kept} 条；这里的 total 是复核后的条数，原报的 {source_total} 条留在 "
+    "source_total 里。要按日期在全库收窄，请改用数据源「税务总局」或「税务法规库」，"
+    "那两路的日期是接口自己收的。"
+)
+
 _MIN_INTERVAL = 0.6          # NPC 连续请求过快会直接断连，不回 429
 _last_request_at = 0.0
 
@@ -592,6 +605,53 @@ def _request(method: str, url: str, **kwargs) -> requests.Response:
     return r
 
 
+def _norm_title(text: str) -> str:
+    """标题复核用的归一化：空白与书名号都不参与比较。"""
+    return re.sub(r"[\s《》]+", "", text or "")
+
+
+# gbrq 区间缺下界时补的这个值。本机 2026-10-03 实测「增值税」×「…2020-12-31」
+# 两个下界同为 38 条，取更早的那个不额外排除任何一条，又不会因写死 1949 而漏掉
+# 更早入库的文本。
+DATE_FLOOR = "0001-01-01"
+# gbrq 区间缺上界时补的值，沿用原有的 2099 收口。
+DATE_CEIL = "2099-12-31"
+
+
+def check_iso_date(value, name: str) -> str:
+    """把 date_from/date_to 收敛成补零的 YYYY-MM-DD，非法值报错。
+
+    接口对格式不对的日期是静默不按区间收窄，调用方看不出区别，所以在发出去
+    之前就要挡住（与 tax_web_search.build_filters 对 cwrqStart 的处理同一条理由）。
+
+    Raises:
+        ValueError: 不是补零的 YYYY-MM-DD，或不是真实日期。
+    """
+    if not value:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"{name} 要 YYYY-MM-DD 字符串，收到 {value!r}")
+    d = value.strip()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
+        raise ValueError(f"{name} 要 YYYY-MM-DD（补零）格式，收到 {value!r}")
+    try:
+        time.strptime(d, "%Y-%m-%d")
+    except ValueError:
+        raise ValueError(f"{name} 不是真实日期，收到 {value!r}")
+    return d
+
+
+def title_has_keyword(title: str, keyword: str) -> bool:
+    """检索词是否原样出现在标题里（忽略空白与书名号）。
+
+    只用来复核精确检索那一路——接口自己承诺的"精确"就是标题命中，正文检索
+    不带日期时命中的也只有《增值税法》与其实施条例两条标题（实测同 2 条），
+    所以这一眼复核不会错杀真正的正文命中。
+    """
+    kw = _norm_title(keyword)
+    return bool(kw) and kw in _norm_title(title)
+
+
 def search_tax(keyword: str, *,
                scope: str = "title",
                search_type: int = 2,
@@ -613,18 +673,31 @@ def search_tax(keyword: str, *,
         search_type: 1=exact, 2=fuzzy
         status: None=all, 3=effective, or any sxx code
         date_from: ISO date string e.g. '2024-01-01'
-        date_to: ISO date string e.g. '2026-12-31'
+        date_to: ISO date string e.g. '2026-12-31'. 与 date_from 之一即可触发
+            区间——缺 date_to 时按 DATE_CEIL 收口，只给 date_to 时按 DATE_FLOOR
+            补下界（2026-10-03 实测只给上界而不下发区间时，「增值税」回 45 条、
+            首条日期 2025-12-25，与不带日期完全一样，是空转不是筛过）。
+            精确检索带区间时接口会丢掉检索词，取回后按标题复核，复核掉条目时
+            写 `_date_note` 与 `source_total`，`total` 换成复核后的条数。
         page: page number
         size: results per page (max 100)
         sort: 'relevance' or 'date'
+
+    Raises:
+        ValueError: date_from/date_to 不是补零的 YYYY-MM-DD 真实日期。接口对
+            这类值是静默不收窄，报出来比回一份没筛过的清单好。
     """
+    date_from = check_iso_date(date_from, "date_from")
+    date_to = check_iso_date(date_to, "date_to")
     search_range = 1 if scope == "title" else 2
     sxx = [status] if status is not None else []
     gbrq = []
     if date_from and date_to:
         gbrq = [date_from, date_to]
     elif date_from:
-        gbrq = [date_from, "2099-12-31"]
+        gbrq = [date_from, DATE_CEIL]
+    elif date_to:
+        gbrq = [DATE_FLOOR, date_to]
 
     sort_param = {"order": "", "sort": ""}
     if sort == "date":
@@ -762,6 +835,22 @@ def search_tax(keyword: str, *,
         # 这里补精确检索与正文检索两条路径
         results.sort(key=lambda it: it.get("publish_date") or "", reverse=True)
 
+    # NPC 精确检索一旦带上公布日期区间就会把检索词丢掉。2026-10-02 本机实测：
+    # keyword="中华人民共和国增值税法" search_type=1 date_from="2026-01-01"
+    # 标题检索回 88 条、正文检索回 1124 条，逐条核对没有一条标题含"增值税"，
+    # 而同词不带日期是 2 条；换成短词"增值税法"配同一区间是 0 条——说明接口不是
+    # 老老实实做 AND，而是检索词在区间里命中不到时退回"该区间的法律清单"。
+    # 模糊检索不吃这一亏（带不带日期都按分词过滤），所以复核只针对精确这一路。
+    date_widened_total = 0
+    date_dropped = 0
+    if search_type == 1 and (date_from or date_to):
+        kept = [it for it in results if title_has_keyword(it.get("title", ""), keyword)]
+        date_dropped = len(results) - len(kept)
+        if date_dropped:
+            results = kept
+            date_widened_total = total
+            total = len(results)
+
     result = {
         "keyword": keyword,
         "scope": scope,
@@ -783,6 +872,12 @@ def search_tax(keyword: str, *,
     if search_type == 2 and scope == "fulltext":
         result["_reliability"] = "medium"
         result["_reliability_note"] = RELIABILITY_NOTES["medium"]
+
+    if date_dropped:
+        result["source_total"] = date_widened_total
+        result["_date_note"] = DATE_WIDENED_NOTE.format(
+            dropped=date_dropped, kept=len(results),
+            source_total=date_widened_total)
 
     _cache.set(cache_key, result)
     return result
@@ -814,8 +909,12 @@ Examples:
                    help="Status filter: 1=abolished, 2=amended, 3=effective, "
                         "4=pending. One value per run (this CLI cannot ask for "
                         "all statuses); omitted means 3.")
-    p.add_argument("--from", dest="date_from", help="Publish date from (YYYY-MM-DD)")
-    p.add_argument("--to", dest="date_to", help="Publish date to (YYYY-MM-DD)")
+    p.add_argument("--from", dest="date_from", metavar="YYYY-MM-DD",
+                   help="公布日期区间下界（gbrq）。只给这一端时上界按 2099-12-31 补")
+    p.add_argument("--to", dest="date_to", metavar="YYYY-MM-DD",
+                   help="公布日期区间上界。只给这一端时下界按 0001-01-01 补——"
+                        "不补就是空转，实测「增值税」×「止 2020-12-31」不补下界回 45 条、"
+                        "与不带日期一模一样")
     p.add_argument("--page", type=int, default=1)
     p.add_argument("--size", type=int, default=20)
     p.add_argument("--sort", choices=["relevance", "date"], default="relevance")
@@ -854,17 +953,22 @@ def main():
         parser.print_help()
         return
 
-    result = search_tax(
-        args.keyword,
-        scope=args.scope if not args.exact else "title",
-        search_type=1 if args.exact else 2,
-        status=args.status,
-        date_from=args.date_from,
-        date_to=args.date_to,
-        page=args.page,
-        size=args.size,
-        sort=args.sort,
-    )
+    try:
+        result = search_tax(
+            args.keyword,
+            scope=args.scope if not args.exact else "title",
+            search_type=1 if args.exact else 2,
+            status=args.status,
+            date_from=args.date_from,
+            date_to=args.date_to,
+            page=args.page,
+            size=args.size,
+            sort=args.sort,
+        )
+    except ValueError as e:
+        # 日期格式非法在发请求之前就报，别让它静默变成"这一维没生效"
+        print(f"❌ {e}", file=sys.stderr)
+        sys.exit(2)
 
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -878,6 +982,9 @@ def main():
     if result.get("_reliability"):
         print(f"  ⚠️ _reliability: {result['_reliability']} — "
               f"{result['_reliability_note']}")
+    if result.get("_date_note"):
+        print(f"  ⚠️ 日期区间: {result['_date_note']}")
+        print(f"     接口原报 {result['source_total']} 条，复核后 {result['total']} 条")
     print()
 
     for item in result["results"]:

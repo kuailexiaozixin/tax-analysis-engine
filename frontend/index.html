@@ -488,7 +488,7 @@ body{
   <div class="filter-group"><label>时效</label><select id="filterStatus" title=""><option value="3" selected>现行有效</option><option value="">全部</option></select></div>
   <div class="filter-group"><label>排序</label><select id="filterSort"><option value="relevance">相关度</option><option value="date">日期↓</option></select></div>
   <div class="filter-group"><label>数据源</label><select id="filterSource" onchange="syncFilterControls()"><option value="npc">NPC法规库</option><option value="aggregated">多源聚合</option><option value="chinatax">税务总局</option><option value="fgk">税务法规库</option></select></div>
-  <div class="filter-group"><label>日期</label><input type="date" id="filterDateFrom">—<input type="date" id="filterDateTo"></div>
+  <div class="filter-group"><label title="这一栏的语义按数据源不同：NPC 法规库按公布日期收窄，税务总局与法规库按成文日期收窄，360 搜索／税屋／微信公众号没有日期参数、只在取回的条目窗口内补筛（各源计数与判读规则见结果上方那句说明）">日期</label><input type="date" id="filterDateFrom">—<input type="date" id="filterDateTo"></div>
 </div>
 
 <!-- ═══ RESULTS ═══ -->
@@ -684,6 +684,19 @@ function renderResults(data){
   // 归不出税种时这句是"这批结果是按原话字面匹配出来的"——不写出来，
   // 一摞无关法条看起来就像按本题找到的依据。
   if(result?._routed){h+=`<div class="meta-bar" style="border-bottom:none"><span class="source-label" style="border-color:var(--g700);color:var(--g700);white-space:normal">🧭 ${esc(result._routed)}</span></div>`;}
+  // 日期区间这一维在五源里的生效方式不是一种（NPC/总局由接口收窄，360、税屋、
+  // 公众号只能在取回的窗口内补筛），整句由后端给（tax_search._date_note 与
+  // tax_aggregator._date_scope_note）。这里照抄：前端不自己判断哪一源真收窄过，
+  // 也不把"窗口内补筛到 0 条"渲染成"该源没有"。读的是 result 这一层——单源与
+  // 聚合两条路都把这句挂在这里。
+  if(result?._date_note){h+=`<div class="meta-bar" style="border-bottom:none"><span class="source-label" style="border-color:var(--accent);color:var(--accent);white-space:normal">📅 ${esc(result._date_note)}</span></div>`;}
+  // 上一句里"另列一行"的那一行：三个网页源的窗口内补筛计数由后端给
+  // （tax_aggregator.aggregate_search 的 _date_filter.local_window），这里照抄，
+  // 不自己数条目。got=0 的源不列，上面那行"某源 0 条"已经说过取回多少。
+  if(result?._date_filter?.local_window){const lw=result._date_filter.local_window;
+    const nm={so360:'360 搜索',shui5:'税屋',wechat:'微信公众号'};
+    const seg=Object.keys(lw).filter(k=>lw[k].got).map(k=>`${nm[k]||k}：取回 ${lw[k].got} 条，区间内 ${lw[k].in_range} 条，区间外剔除 ${lw[k].out_of_range} 条，无日期保留 ${lw[k].no_date} 条`);
+    if(seg.length)h+=`<div class="meta-bar" style="border-bottom:none"><span class="source-label" style="white-space:normal">📊 日期补筛 ${esc(seg.join('；'))}</span></div>`;}
   // 税法要件落在会计确认与计量上时，后端给整句提示（tax_analyze.accounting_note），
   // 这里照抄不自己判断：准则不在五源覆盖范围内，只能由子技能取，且不是税收依据。
   if(data.accounting_note){h+=`<div class="meta-bar" style="border-bottom:none"><span class="source-label" style="border-color:var(--g700);color:var(--g700);white-space:normal">📘 ${esc(data.accounting_note)}</span></div>`;}
