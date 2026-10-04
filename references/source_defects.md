@@ -61,6 +61,10 @@
 非默认范围另走 `tax_fgk.scope_token` | 收窄的代价是漏掉标在「视频政策解读」「图片政策解读」上的法规库条目（实测「研发费用加计扣除」全站前 3 页 7 条），那类回的是 `media_only` 空正文；`_scan_list` 在 0 条那句 `_error` 里把范围写明，不让人把"窗口里没有"读成"库里没有"。盯它的是 `test_file_labels_is_the_default_scope`、`test_all_labels_switch_reopens_the_whole_site`、`test_scan_list_threads_scope_and_order_to_every_page`、`test_scope_and_order_have_their_own_cache_keys`、`test_zero_hit_sentence_names_the_label_scope` |
 | 界面「公布日期」那一栏在三条路径上语义不同却长得一样：多源聚合根本没下发（`tax_aggregator.aggregate_search` 的签名里没有 `date_from`/`date_to`）；NPC 只给上界时 `gbrq` 发出去是空数组，等于没收窄；NPC 精确检索（`search_type=1`）带上日期后接口丢掉检索词，只按区间回一叠与本题无关的法律清单 | 聚合分支把区间下推：NPC 缺端补界（`tax_search.DATE_CEIL`/`DATE_FLOOR`，只给上界也发真区间），税务总局经 `tax_web_search.build_filters` 的 `cwrq_from`/`cwrq_to`；360／税屋／微信公众号这一路没有日期参数，改在本轮取回的条目窗口内按条目自带日期补筛（`tax_aggregator.DATE_LOCAL_SOURCES`），逐源计数进 `_date_filter.local_window`。精确检索＋区间这一组不拒绝请求，改成取回后按「标题是否含检索词」二次核对：`total` 只报复核后的条数，接口原报条数留在 `source_total`，成因写成 `_date_note` 交界面照抄。格式校验统一走 `tax_search.check_iso_date`，四条分支（NPC 单源、聚合、chinatax、fgk）非法日期一律 400 | 2026-10-03 本机实测：只给上界「增值税」45→38 条（区间内最大 2020-08-04；修前是 45 条、首条 2025-12-25，与不带日期逐条一样）；聚合「增值税」2024-01-01—2026-12-31 从 16 条里有 4 条越界收到 9 条 0 越界；精确检索「中华人民共和国增值税法」起 2026-01-01 的 88 条复核后留 0 条（88 留在 `source_total`），同一个词不带日期是 2 条。**没带日期的条目保留而不删**，只另计 `no_date`——360 那一路压根没有日期字段，按越界处理会整源消失，再把空清单读成"该源在这个区间里没有内容"。盯它的是 `test_date_window.py` 的 `test_only_to_uses_floor`、`test_overfetch_inherits_the_range`、`test_drops_off_topic_and_notes_it`、`test_forwards_to_both_server_sources`、`test_undated_items_are_kept_and_counted`、`test_aggregated_bad_date_is_400`、`test_npc_single_source_bad_date_is_400`、`test_local_counts_are_rendered` |
 
+| 法规库正文里的表格被摊平，税率档位与产品范围对不上 | `tax_fgk._table_lines` 把 `<table>` 单独切段铺成 Markdown 行，`_text_of` 按"文字段—表—文字段"的顺序拼；`colspan` 补空列、`rowspan` 把值带到它盖住的每一行、行宽不齐补到最宽、只有一行时不插分隔行 | 摊平丢的是行列对应，形态分两种：Word 粘贴的表每格包着 `<p>`，摊平成"一格一行"（c5204270 的税则表 191 个单元格、152 个 `<p>`，摊平 152 行 vs 铺表 49 行，表头四格成了 '序号'/'商品名称'/'税则号列'/'备注' 四行）；另一种是包着图片的单格表（c5211628、c5208804 各两张），摊平与铺表都回空。单元格不带 `<p>` 时才会整行首尾相接成一串字——这 8 篇里没有这种形态。**合并格留空比留错更坏**，所以 `rowspan` 的延续行填同一个文本而不是空串。真实占比：2026-10-04 本机扫两批共 75 篇详情页（检索词取自「税目税额表」「出口退税率」等），8 篇正文含 `<table>`（35 篇那批 6 篇、40 篇那批 2 篇），现行公告多为"表在附件里"（见下一行）。改版前后对账：那 8 篇里的 6 篇（c5194303、c5204270、c5204332、c5203630、c5211628、c5208804）逐篇比 `expiry_of`/`period_start_of` 与文号抽取，改前改后 0 处差异；表内摊平行共 642 行，逐行在新输出里都找得到，0 行丢失。副作用一并钉住：跨格的「自X年Y月Z日 / 至…」现在被 `" | "` 分开，不再被 `tax_evidence._EXPIRY_RANGE`（只容空白间隔）拼成一段假执行期限——这 8 篇里没有出现两端分格的表，所以那是正则层面的风险而不是已发生的缺陷。盯它的是 `test_tax_fgk.py::test_table_lines_markdown_shape`、`test_text_of_mixes_prose_and_tables_in_order`、`test_table_cell_split_does_not_fabricate_a_period` |
+| 正文是图片/视频的条目只回一句"无文字内容"，读者拿不到看原文的入口 | `tax_fgk._media_urls` 从正文容器抠 `img/video/audio/source` 的 `src`，按详情页 URL 拼成绝对地址（相对、站根 `/`、协议相对 `//`、已带协议四种写法），跳过 `data:` 占位、去重；`fetch_fgk_body` 在 `media_only` 那一路带出 `media_urls`，`search_fgk(with_body=True)` 透到条目上，命令行在"该条正文是视频/图片"下面逐行印「原文素材」 | 2026-10-04 实测：`--all-labels` 搜「研发费用加计扣除」翻 3 页取正文，5 条 `media_only` 全部带出素材地址（4 个 `.mp4`、1 个 `.jpg`），抽直链各回 HTTP 200（`video/mp4` 19712228 字节、`image/jpeg` 971707 字节）。这一栏**不进清单缓存**（它是正文层字段，缓存里只留清单）；取不到 `src` 时不带这个键，不编造地址。盯它的是 `test_media_urls_absolute_dedup_and_placeholders`、`test_media_only_body_carries_asset_urls` |
+| 随文的税率表、减免税清单常常只做成附件，正文容器里根本没有这张表 | `tax_web_search._attachments` 把接口 `appendix` 栏收成 `[{name,type,url}]`（名或链缺一项的丢掉、`appendixType` 归一成小写），`search_chinatax` 落成条目 `attachments`，`tax_fgk._scan_list` 逐条透传，命令行印「附件: 名称（链接）」 | 不接这一栏，答案只能说"正文没有表"，指不到"表在附件《X》"。实测检索「消费税 成品油」前 10 条里 6 条带附件（`.xls` 税率表、`.doc` 纳税申报表），`appendixUrl` 是绝对地址、`appendixContent` 恒为空串；附件是清单层字段，跟着清单进缓存。盯它的是 `test_search_fgk_forwards_attachments_and_media` |
+
 ## 两个值得单独说明的细节
 
 - **税屋空结果归因到 360，不是税屋自己坏了**。税屋的链接靠 360 的
@@ -137,6 +141,14 @@ SKILL.md ② 末尾指向这一节。它回答两个问题：某一格动作**�
   源不产这两个标记，把同一规则套上去会把它们真正的故障也读成"没命中"，比现在的
   假"取数失败"更难发现。收掉它要先给五个源统一标记契约，不在本轮范围。登记在此，
   不当已修。
+- **废止日期这一栏接口给不出，别指望它替正文说话**。`xxgk_abolishDate` 按
+  `xxgkAging` 取「全文废止」「已修改」「全文有效」三路各 10 条（2026-10-04 实测，
+  `orderBy=5` 成文日期倒序，检索词「增值税」），30 条里这一栏的取值只有两种：空串与
+  字符串 `"null"`——后者与 `xxgk_aging` 没填时同一个写法，经 `tax_web_search.aging_of`
+  那套空值归一（`_AGING_BLANKS`）后仍是空。**一个真实日期都没给出过**，判"哪一天被废止"
+  只能读正文或走现行/废止版配对（`tax_fgk.fetch_associations`）。登记在此，不当已修：
+  接它进输出要先在本机取得出一个真日期，否则接进去的永远是空值；也不要因为条目里没有
+  废止日期就写成"该库漏录了废止时间"——按现状这一栏根本没有录入。
 - **会计口径缺口靠词表认，认不到就没有第二道防线**。`tax_analyze.ACCOUNTING_SIGNALS`
   只收多字短语，词表外的说法不会报出来；子技能也不在 ④ 的聚合与 ⑧ 的定级里，
   `docNo` 与条文版次不一致这件事程序判不了，只能按硬规矩引"准则名＋条款号"。

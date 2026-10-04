@@ -11,11 +11,13 @@
   tax_fgk.requests.get     → 详情页 HTML（正文层）
 被测代码的翻页、去重、正文切分、缓存判断全部照常执行。
 
-覆盖四件事：
+覆盖五件事：
   1. max_pages 是硬上限，且够 size 就提前收尾
   2. 文字正文取得出；视频/图片条目必须明确报错，不能返回空正文当成功
   3. 缓存里**绝不能**出现正文
   4. 命中缓存要有标记，且命中时不再打网络、缓存不被正文污染
+  5. 正文提取保留表格结构（合并格、跨格不拼假期限）、图片型条目带回素材地址、
+     清单层附件字段透到条目上
 
 所有缓存用例都把缓存目录指到临时目录，**不碰 ~/.cache/tax-analysis-engine**。
 """
@@ -34,6 +36,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import tax_fgk  # noqa: E402
+import tax_web_search  # noqa: E402  清单层行构造（attachments）在这边，字段转发过去
 from tax_fgk import (  # noqa: E402
     CACHE_TTL, MAX_PAGES, PAGE_SIZE, fetch_fgk_body, search_fgk,
 )
@@ -467,6 +470,225 @@ def test_cli_cache_tag():
     return True
 
 
+# ── 正文提取：表格结构、素材地址、附件 ──────────────────────────────────────
+#
+# 这一组用例对应 2026-10-04 的三处实测：
+#   · 正文里有 <table> 的页面不普遍但存在：两批共 75 篇详情页里 8 篇含表
+#     （「税目税额表」等词那批 35 篇里 6 篇、另一批 40 篇里 2 篇），带表的多是
+#     税则/税目税额类公告；现行公告的表常常只在附件里（「消费税 成品油」首屏
+#     10 条里 6 条带附件、appendixContent 全空）——"表铺成可读的行"和
+#     "附件直链落地"两条都要有，缺一条就有一半的表读不到；
+#   · 摊平写法丢行列对应：Word 粘贴的表每格包 <p>，摊平成"一格一行"，只能靠
+#     数行号配对；没有 <p> 的表整行各格首尾相接成一串字；
+#   · 图片/视频型正文原先只回一句"无文字内容"，人拿不到去看原文的入口。
+
+def test_table_lines_markdown_shape():
+    """一张表铺成 Markdown 行：colspan 补空列、rowspan 带到延续行、宽度补齐。
+
+    每条断言各钉一种合并格。合并格处理错的后果不是报错而是**读错位**：
+    少补一列会让后面每一列整体左移，"13%"挂到下一档税率头上。
+    """
+    # ① colspan 横向合并：占两列，第二列补空，不能把后面的列顶左移
+    got = tax_fgk._table_lines(
+        "<table><tr><td colspan=\"2\">合计</td><td>3</td></tr></table>")
+    assert got == ["| 合计 |  | 3 |"], got
+
+    # ② 只有一行时不插 Markdown 分隔行——插了会被当成表头，下面没有数据行
+    got = tax_fgk._table_lines("<table><tr><td>甲</td><td>乙</td></tr></table>")
+    assert got == ["| 甲 | 乙 |"], got
+
+    # ③ rowspan 纵向合并：延续行填**同一个文本**而不是空串。合并格的语义是
+    #    "这几行都算这个值"，留空会让读者以为那几行没有这一列。
+    got = tax_fgk._table_lines(
+        "<table><tr><td rowspan=\"2\">成品油</td><td>1.2元/升</td></tr>"
+        "<tr><td>1.52元/升</td></tr></table>")
+    assert got == ["| 成品油 | 1.2元/升 |",
+                   "| --- | --- |",
+                   "| 成品油 | 1.52元/升 |"], got
+
+    # ④ 各行单元格数不齐（页面里很常见）：短的行补空列到最宽，否则 Markdown
+    #    渲染时列数不一致，整张表塌成纯文本
+    got = tax_fgk._table_lines(
+        "<table><tr><td>a</td><td>b</td><td>c</td></tr><tr><td>d</td></tr></table>")
+    assert got == ["| a | b | c |", "| --- | --- | --- |", "| d |  |  |"], got
+
+    # ⑤ 空表与"有行但全空"的表都回空列表——正文里留一串孤零零的分隔行是噪声
+    assert tax_fgk._table_lines("<table></table>") == []
+    assert tax_fgk._table_lines("<table><tr><td> </td><td></td></tr></table>") == []
+    assert tax_fgk._table_lines("<div>根本没有表</div>") == []
+    print("  [PASS] 合并格 colspan/rowspan、参差补列、单行不插分隔、空表回空")
+
+
+def test_text_of_mixes_prose_and_tables_in_order():
+    """表格段与文字段按原文顺序拼，没有表的页面一个字节都不该变。
+
+    ②是等价性检查：改版把原 _text_of 的函数体搬进 _plain_text，文字路径若
+    顺带动了（比如把 </td> 也当换行），全线正文都会跟着变形。
+    """
+    # ① 表前表后的段落都保留，且顺序与页面一致
+    got = tax_fgk._text_of(
+        "<p>前段</p><table><tr><td>a</td><td>b</td></tr></table><p>后段</p>")
+    assert got == "前段\n| a | b |\n后段", repr(got)
+
+    # ② 无表路径与改版前逐字符一致（段落分行、空段丢弃、脚本剥离）
+    assert tax_fgk._text_of("<p>甲</p><p>乙</p>") == "甲\n乙"
+    assert tax_fgk._text_of("<p>甲</p><p></p><p>乙</p>") == "甲\n乙"
+    assert tax_fgk._text_of("<script>var t='| 假 | 表 |';</script><p>甲</p>") == "甲"
+    assert tax_fgk._text_of("<p>甲　乙</p>") == "甲 乙"   # 全角空格归一
+
+    # ③ 单元格内多段 <p> 压成同一格，不能换行——换行会把一行表拆成两行表
+    got = tax_fgk._text_of("<table><tr><td><p>A</p><p>B</p></td><td>c</td></tr></table>")
+    assert got == "| A B | c |", repr(got)
+    print("  [PASS] 表与段落按序拼接；无表路径逐字符未变；格内多段压成一格")
+
+
+def test_table_cell_split_does_not_fabricate_a_period():
+    """跨格的"自X年Y月Z日 / 至…"不能被拼成一段执行期限。
+
+    这是表格改版的副作用检查，两个方向都要钉住：
+      · 拼在一起（旧的摊平写法）会被 _EXPIRY_RANGE 读成一个区间——表头里
+        "自"与"至"分列两格的文件会凭空多出期限；
+      · 拆开后（现在的 " | "）读不出区间，但**同一格内**写全的区间必须照常
+        读得出，否则这条用例改成什么都还是绿的。
+    """
+    import tax_evidence as EV
+
+    split = ("<table><tr><td>自2023年1月1日</td>"
+             "<td>至2027年12月31日</td></tr></table>")
+    item = {"content": tax_fgk._text_of(split)}
+    assert " | " in item["content"], item["content"]
+    assert EV.period_start_of(item) == "", item["content"]
+    assert EV.expiry_of(item) == "", item["content"]
+
+    # 反面对照：同样两个字面量拼在一起确实会抽出一段区间（说明上面那次为空
+    # 是分隔符起的作用，不是抽取逻辑坏掉了）
+    glued = {"content": "自2023年1月1日至2027年12月31日"}
+    assert EV.period_start_of(glued) == "2023-01-01", glued
+    assert EV.expiry_of(glued) == "2027-12-31", glued
+
+    # 同一格内写全的区间（表格里真这么写）仍要读得出
+    one_cell = {"content": tax_fgk._text_of(
+        "<table><tr><td>享受免征</td>"
+        "<td>自2023年1月1日至2027年12月31日</td></tr></table>")}
+    assert EV.period_start_of(one_cell) == "2023-01-01", one_cell
+    assert EV.expiry_of(one_cell) == "2027-12-31", one_cell
+    print("  [PASS] 跨格区间不拼成假期限；格内区间与裸文本仍照常被抽出")
+
+
+def test_media_urls_absolute_dedup_and_placeholders():
+    """素材地址要拼成点得开的绝对链接：相对、站根、协议相对、data: 四种写法。
+
+    详情页里的图片多数是相对地址，直接印出来点开是 404；以 / 开头的是站根
+    相对，拼在详情页目录后面会多一层路径——这两种是最容易"看起来有链接、
+    其实全打不开"的形态。
+    """
+    page = "http://fgk.chinatax.gov.cn/zcfgk/c102416/c5207148/content.html"
+    got = tax_fgk._media_urls(
+        "<img src=\"images/a.png\">"
+        "<img src=\"/zcfgk/pic/b.png\">"
+        "<video src=\"https://x.test/v.mp4\"></video>"
+        "<source src=\"//cdn.test/m.mp4\">"
+        "<img src=\"data:image/png;base64,AAAA\">"
+        "<img src=\"images/a.png\">",
+        page)
+    assert got == [
+        "http://fgk.chinatax.gov.cn/zcfgk/c102416/c5207148/images/a.png",
+        "http://fgk.chinatax.gov.cn/zcfgk/pic/b.png",
+        "https://x.test/v.mp4",
+        "http://cdn.test/m.mp4",
+    ], got
+    assert not tax_fgk._media_urls("<p>有文字</p>", page), "无素材应回空列表"
+    print(f"  [PASS] {len(got)} 个地址：相对/站根/协议相对/绝对四种写法都拼对，"
+          "data: 跳过、重复去重")
+
+
+def test_media_only_body_carries_asset_urls():
+    """图片/视频型正文：报错之外必须把素材地址带回来，文字型不带这个键。
+
+    只回"正文为视频/图片"等于把人挡在外面——这一类的全部内容就在那张图里，
+    给了地址读者至少能自己看一眼原文再决定信不信。
+    """
+    page = "http://fgk.chinatax.gov.cn/zcfgk/c100023/c5210001/content.html"
+    html = _detail_html('<img src="images/p1.png"><img src="images/p2.png">',
+                        note="税法小课堂")
+    with _patched(**{"requests.get": lambda url, **kw: _Resp(html)}):
+        r = fetch_fgk_body(page)
+    assert r.get("_error") and "视频" in r["_error"], r
+    assert r.get("media_urls") == [
+        "http://fgk.chinatax.gov.cn/zcfgk/c100023/c5210001/images/p1.png",
+        "http://fgk.chinatax.gov.cn/zcfgk/c100023/c5210001/images/p2.png"], r
+    assert not r.get("content"), "图片型条目不该给出正文"
+    print(f"  [PASS] 图片型正文带回 {len(r['media_urls'])} 个素材地址且仍报 _error")
+
+    # 容器里只有 video 标签但一个 src 都没有（地址写在 JS 里）：不能凭空造地址
+    html_empty = _detail_html('<video class="v"></video>')
+    with _patched(**{"requests.get": lambda url, **kw: _Resp(html_empty)}):
+        r2 = fetch_fgk_body(page)
+    assert r2.get("_error") and "media_urls" not in r2, r2
+    print("  [PASS] 取不到 src 时不带 media_urls 键（不编造地址）")
+
+    # 文字型条目不沾这个键
+    html_text = _detail_html("<p>第一条 正文。</p><img src=\"images/logo.png\">")
+    with _patched(**{"requests.get": lambda url, **kw: _Resp(html_text)}):
+        r3 = fetch_fgk_body(page)
+    assert not r3.get("_error") and "media_urls" not in r3, r3
+    assert "第一条" in r3["content"] and "logo" not in r3["content"], r3
+    print("  [PASS] 文字型条目不带 media_urls，正文里也不混进图片地址")
+
+
+def test_search_fgk_forwards_attachments_and_media():
+    """清单层的 attachments 与正文层的 media_urls 都要出现在返回条目里。
+
+    两头各自丢一次都看不出来：接口回了附件、上层没接，条数照常、只有字段少了；
+    反过来 media_urls 来自正文层，绝不能跟着清单一起落进缓存——落盘的那张图
+    换一份正文就没人管了。
+    """
+    raw = [{"appendixName": "成品油消费税税目税率表.xls", "appendixType": "XLS",
+            "appendixUrl": "http://fgk.chinatax.gov.cn/zcfgk/c102416/c5203976/"
+                           "5203976/files/成品油消费税税目税率表.xls"},
+           {"appendixName": "只有名字没有链接的附件", "appendixUrl": ""},
+           {"appendixName": "", "appendixUrl": "http://x.test/anon.pdf"},
+           "不是字典的一栏", None]
+    got = tax_web_search._attachments(raw)
+    assert len(got) == 1, f"名或链缺一项的就丢掉，实际 {got}"
+    assert got[0]["type"] == "xls", f"type 要归一成小写：{got[0]}"
+    assert tax_web_search._attachments(None) == []
+    print(f"  [PASS] 附件归一：{len(raw)} 条原始项留 1 条（缺名/缺链/脏项丢弃）")
+
+    with_att = _fgk_item(1, 0)
+    with_att["attachments"] = got
+    video = _fgk_item(1, 1)
+
+    def fake(keyword, page=1, size=PAGE_SIZE, filters=None, **opts):
+        return {"total": 2, "results": [dict(with_att), dict(video)]}
+
+    def fake_get(url, **kw):
+        if url == video["url"]:
+            return _Resp(_detail_html('<img src="images/taxrate.png">'))
+        return _Resp(_detail_html("<p>第一条。</p>"))
+
+    with _temp_cache() as cache_dir:
+        with _patched(search_chinatax=fake, **{"requests.get": fake_get}):
+            r = search_fgk("测试词", size=2, with_body=True)
+
+        by_url = {e["url"]: e for e in r["results"]}
+        assert by_url[with_att["url"]]["attachments"] == got, by_url[with_att["url"]]
+        assert by_url[video["url"]].get("media_urls") == [
+            "http://fgk.chinatax.gov.cn/zcfgk/c102416/c50101/images/taxrate.png"
+        ], by_url[video["url"]]
+        assert "attachments" not in by_url[video["url"]], "没附件的条目不该造空列表"
+
+        files = list(cache_dir.glob("*.json"))
+        assert len(files) == 1, f"应只落一份清单缓存，实际 {len(files)} 个"
+        raw_cache = files[0].read_text(encoding="utf-8")
+        assert "taxrate.png" not in raw_cache, "media_urls 是正文层字段，不该进缓存"
+        assert "第一条" not in raw_cache, "缓存里出现了正文"
+        assert "成品油消费税税目税率表.xls" in raw_cache, \
+            "附件是清单层字段，缓存里应留着"
+        print("  [PASS] attachments 进缓存、media_urls 与正文都不进缓存")
+    return True
+
+
 # ── 收窄维度（filters） ──────────────────────────────────────────────────────
 
 def test_scan_list_threads_filters_to_every_page():
@@ -773,6 +995,12 @@ def main():
         ("缓存不含正文", test_cache_excludes_body),
         ("缓存命中标记与不污染", test_cache_hit_marker),
         ("CLI 缓存标记", test_cli_cache_tag),
+        ("表格铺成 Markdown 行", test_table_lines_markdown_shape),
+        ("表与段落按序拼接、无表路径不变", test_text_of_mixes_prose_and_tables_in_order),
+        ("跨格不拼假执行期限", test_table_cell_split_does_not_fabricate_a_period),
+        ("素材地址四种写法", test_media_urls_absolute_dedup_and_placeholders),
+        ("图片型正文带回素材地址", test_media_only_body_carries_asset_urls),
+        ("附件与素材地址透到条目", test_search_fgk_forwards_attachments_and_media),
         ("filters 逐页下推", test_scan_list_threads_filters_to_every_page),
         ("filters 分键缓存", test_search_fgk_caches_each_filter_set_apart),
         ("带维度 0 条报拼窄", test_filters_produce_too_narrow_instead_of_libraries_empty),

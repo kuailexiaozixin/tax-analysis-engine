@@ -437,26 +437,38 @@ def test_challenge_page_detection():
 
 
 def test_fgk_paging():
-    """总局检索接口把 pageSize 卡在 10 条，法规库条目散在靠后的屏上。
+    """总局检索接口每页固定 10 条，要 11 条就必须翻到第二屏。
 
-    只读第 1 页会把"库里没有"错报成"确实没有"：宽词（「转让定价」命中上百条）
-    第 1 屏十条里法规库条目常是 0 条，实体文件落在第 3、4、6 屏；窄词
-    （「特别纳税调整实施办法」）第 1 屏就有 5 条。占比随检索词宽窄变，所以
-    用例只断言"至少翻了 2 页"和"取到实体文件"，不写死屏号与条数。
+    这条只断言"翻页这件事真发生了"，不断言"第 1 屏里法规库条目是几条"。
+    后者不是不变量：2026-10-04 线上「转让定价」命中 18 条且第一屏 10 条全是
+    法规库条目，size=3 在第一屏就取满了，旧写法那句"应至少翻 2 页"因此报红
+    ——引擎行为没错，是断言把某一天的索引形态当成了恒定的东西。索引构成、
+    标签白名单（⑩ #103）、检索词宽窄任何一个变了，它都会假报警。
 
-    翻页基准是 0 起算（见 tax_web_search.search_chinatax）。基准用错时失效很
-    隐蔽：按 1 起算等于每次少读首屏，拿到的仍是结构正常的清单，条数、翻页
-    数都不报错，只是目标文件永远取不到。
+    改成由算术保证：一页最多回 10 条，取 11 条时 pages_scanned 必然 ≥2；
+    翻页循环坏掉（只读首屏）时这一条就会退成 1 页 10 条，照样报红。
+
+    翻页基准（search5 的 pageNum 从 0 起算，见 tax_web_search.search_chinatax）
+    由离线用例 test_routing_terms 钉住——那里打桩看真实发出去的参数，比在这里
+    比对两屏内容稳定。
     """
-    print("\n[Test] fgk paging reaches documents past page 1")
-    from tax_fgk import search_fgk
-    r = search_fgk("转让定价", size=3)
-    assert r["pages_scanned"] >= 2, f"应至少翻 2 页，实际 {r['pages_scanned']}"
-    assert r["total"] > 0, f"翻页后应取到法规文件，_error={r.get('_error')}"
+    print("\n[Test] fgk paging: 取超过单页条数时必须续翻")
+    from tax_fgk import PAGE_SIZE, MAX_PAGES, search_fgk
+
+    keyword = "增值税"
+    r = search_fgk(keyword, size=PAGE_SIZE + 1, max_pages=MAX_PAGES, adaptive=False)
+    assert not r.get("_error"), f"取数失败：{r['_error']}"
+    assert r["pages_scanned"] >= 2, \
+        f"要 {PAGE_SIZE + 1} 条却只翻了 {r['pages_scanned']} 页（一页最多 {PAGE_SIZE} 条）"
+    assert r["total"] == PAGE_SIZE + 1, f"应取满 {PAGE_SIZE + 1} 条，实际 {r['total']}"
+    urls = [x["url"] for x in r["results"]]
+    assert len(set(urls)) == len(urls), "翻页取回的同一条重复出现（去重失效）"
     titles = [x["title"] for x in r["results"]]
-    assert any("特别纳税调整" in t or "转让定价" in t for t in titles), \
-        f"取到的应含转让定价实体文件，实际 {titles}"
-    print(f"  [PASS] 翻 {r['pages_scanned']} 页取到 {r['total']} 条法规文件")
+    assert all(keyword in t for t in titles), f"标题应与检索词相关，实际 {titles[:3]}"
+    pages = sorted({x.get("page") for x in r["results"]})
+    assert pages == [1, 2], f"11 条应来自第 1、2 两屏，实际来自 {pages}"
+    print(f"  [PASS] 取 {r['total']} 条翻了 {r['pages_scanned']} 页（来自第 {pages} 屏），"
+          f"URL 无重复")
     return r
 
 

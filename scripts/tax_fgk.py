@@ -146,16 +146,124 @@ _ARC_END_RE = re.compile(
 _META_RE = re.compile(r'<meta\s+name="([^"]+)"\s+content="([^"]*)"', re.I)
 _TAG_RE = re.compile(r"<[^>]+>")
 _PARA_RE = re.compile(r"</(?:p|div|li|tr)\s*>|<br\s*/?>", re.I)
+# 表格单独处理：摊平写法丢的是行列对应——Word 粘贴来的表每格包着 <p>，摊平成
+# "一格一行"（c5194303 的表头摊平成 序号/产品种类/产品范围/征收标准 四行）；
+# 没有 <p> 的表整行各格首尾相接成一串字。所以先按表切段。
+_TABLE_RE = re.compile(r"(?is)<table\b[^>]*>.*?</table>")
+_ROW_RE = re.compile(r"(?is)<tr[^>]*>(.*?)</tr>")
+_CELL_RE = re.compile(r"(?is)<(t[hd])([^>]*)>(.*?)</\1>")
+_SPAN_RE = re.compile(r"(?i)\b(colspan|rowspan)\s*=\s*[\"']?(\d+)")
+
+
+def _span_of(attrs: str, name: str) -> int:
+    """取单元格上的 colspan/rowspan，没有或不是正整数就按 1 算。"""
+    for key, value in _SPAN_RE.findall(attrs):
+        if key.lower() == name:
+            return max(1, int(value))
+    return 1
+
+
+def _table_lines(html: str) -> list:
+    """一张 HTML 表铺成 Markdown 行，colspan 补空列、rowspan 把值带到它盖住的每一行。
+
+    rowspan 的延续行填的是同一个文本而不是空串：合并格的意思是"这几行都算这个值"，
+    留空会让读者以为那几行没有这一列。同一个值重复出现不影响下游判据——执行期限
+    与文号都是按去重后的集合计数，重复值不新增一段期限。
+    """
+    carry = {}          # 列号 -> [还剩几行, 文本]
+    lines = []
+    for row in _ROW_RE.findall(html):
+        cells = _CELL_RE.findall(row)
+        line, col, idx = [], 0, 0
+        while idx < len(cells) or any(v[0] > 0 for v in carry.values()):
+            pending = carry.get(col)
+            if pending and pending[0] > 0:
+                line.append(pending[1])
+                pending[0] -= 1
+                col += 1
+                continue
+            if idx >= len(cells):
+                break
+            _tag, attrs, inner = cells[idx]
+            idx += 1
+            text = _plain_text(inner).replace("\n", " ").strip()
+            text = re.sub(r"\s+", " ", text)
+            for k in range(_span_of(attrs, "colspan")):
+                line.append(text if k == 0 else "")
+                over = _span_of(attrs, "rowspan")
+                if over > 1:
+                    carry[col] = [over - 1, text]
+                col += 1
+        lines.append(line)
+    lines = [ln for ln in lines if any(x for x in ln)]
+    if not lines:
+        return []
+    width = max(len(ln) for ln in lines)
+    lines = [ln + [""] * (width - len(ln)) for ln in lines]
+    out = ["| " + " | ".join(ln) + " |" for ln in lines]
+    if len(out) > 1:
+        out.insert(1, "| " + " | ".join(["---"] * width) + " |")
+    return out
 
 
 def _text_of(fragment: str) -> str:
     fragment = re.sub(r"(?is)<(script|style)\b.*?</\1>", "", fragment)
+    parts, pos = [], 0
+    for match in _TABLE_RE.finditer(fragment):
+        head = fragment[pos:match.start()]
+        if head.strip():
+            parts.append(_plain_text(head))
+        parts.extend(_table_lines(match.group(0)))
+        pos = match.end()
+    tail = fragment[pos:]
+    if tail.strip():
+        parts.append(_plain_text(tail))
+    return "\n".join(x for x in parts if x)
+
+
+def _plain_text(fragment: str) -> str:
     fragment = _PARA_RE.sub("\n", fragment)
     fragment = _TAG_RE.sub("", fragment)
     fragment = htmllib.unescape(fragment)
     fragment = fragment.replace(" ", " ").replace("　", " ")
     lines = [ln.strip() for ln in fragment.splitlines()]
     return "\n".join(ln for ln in lines if ln)
+
+
+_MEDIA_SRC_RE = re.compile(
+    r"(?is)<(?:img|video|audio|source)\b[^>]*\bsrc=[\"']([^\"']+)[\"']")
+
+
+def _media_urls(fragment: str, page_url: str) -> list:
+    """列出正文容器里的图片/视频地址。
+
+    没有文字可引时，读者要的是"那去看原文的那张图"，只回一句"正文是图片"等于
+    把人挡在外面。页面里的图片多用相对地址（形如「<文章id>/images/x.png」），
+    拼在详情页所在目录后面才是可点开的链接。
+    """
+    base = page_url.rsplit("/", 1)[0]
+    root = base.split("//", 1)[-1].split("/", 1)[0]
+    scheme = base.split("//", 1)[0] if "//" in base else ""
+    out, seen = [], set()
+    for src in _MEDIA_SRC_RE.findall(fragment):
+        src = src.strip()
+        if not src or src.startswith("data:"):
+            continue
+        if src.startswith("//"):
+            # 协议相对写法 //host/path，沿用详情页的协议；落到下面 "/" 分支会
+            # 把 host 当成详情页目录下的第一段路径，拼出一个不存在的域名。
+            full = f"{scheme}{src}"
+        elif src.startswith("http"):
+            full = src
+        elif src.startswith("/"):
+            # 以 / 开头是站根相对地址，拼在详情页目录后面会多出一层路径
+            full = f"{scheme}//{root}{src}"
+        else:
+            full = f"{base}/{src}"
+        if full not in seen:
+            seen.add(full)
+            out.append(full)
+    return out
 
 
 def fetch_fgk_body(url: str) -> dict:
@@ -206,6 +314,9 @@ def fetch_fgk_body(url: str) -> dict:
     # 税法小课堂等栏目的正文是视频/图片，容器取得到但没有文字
     if not body and re.search(r"<(video|img|audio)\b", raw_body, re.I):
         out["_error"] = "该条正文为视频/图片，无文字内容"
+        media = _media_urls(raw_body, url)
+        if media:
+            out["media_urls"] = media
         return out
 
     out["content"] = "\n".join(x for x in (_text_of(note), body) if x)
@@ -395,6 +506,8 @@ def _scan_list(keyword: str, size: int, max_pages: int,
             for k in ("status", "status_from", "effect_level", "publish_date"):
                 if item.get(k):
                     entry[k] = item[k]
+            if item.get("attachments"):
+                entry["attachments"] = item["attachments"]
             if entry.get("effect_level"):
                 entry["category"] = entry["effect_level"]
             if page > FGK_SHALLOW_PAGES:
@@ -529,6 +642,8 @@ def search_fgk(keyword: str, size: int = 10, with_body: bool = False,
                 # 上层见到 media_only 就知道不该去引条文，也不必重试。
                 if "视频/图片" in body["_error"]:
                     entry["media_only"] = True
+                if body.get("media_urls"):
+                    entry["media_urls"] = body["media_urls"]
     return result
 
 
@@ -611,12 +726,16 @@ def main():
         if item.get("publisher"):
             print(f"     发文机关: {item['publisher']}")
         print(f"     {item['url']}")
+        for att in item.get("attachments") or []:
+            print(f"     附件: {att['name']}（{att['url']}）")
         if item.get("body"):
             print(f"     正文 {len(item['body'])} 字:")
             for ln in item["body"].splitlines():
                 print(f"       {ln}")
         if item.get("media_only"):
             print("     🎬 该条正文是视频/图片，没有文字可引（不是取失败，重试也无用）")
+            for src in item.get("media_urls") or []:
+                print(f"       原文素材: {src}")
         elif item.get("body_error"):
             print(f"     ⚠️ {item['body_error']}")
         assoc = item.get("associations")

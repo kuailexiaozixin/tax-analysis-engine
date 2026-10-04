@@ -295,6 +295,9 @@ def search_chinatax(keyword: str, page: int = 1, size: int = 10,
         cwrq = (it.get("cwrq") or "")[:10]
         if cwrq:
             row["publish_date"] = cwrq
+        atts = _attachments(it.get("appendix"))
+        if atts:
+            row["attachments"] = atts
         results.append(row)
 
     out = {
@@ -336,6 +339,28 @@ def search_chinatax(keyword: str, page: int = 1, size: int = 10,
 def _clean(fragment: str) -> str:
     """去高亮标签、解实体、压空白。检索结果标题里带 <span> 标记命中词。"""
     return re.sub(r"\s+", " ", unescape(_TAG_RE.sub("", fragment))).strip()
+
+
+def _attachments(raw) -> list:
+    """把接口 appendix 栏的附件收成 [{name,type,url}]。
+
+    随文的税率表、减免税清单常常只做成附件（2026-10-04 实测「消费税 成品油」
+    首屏 10 条里 6 条带附件，其中一个就叫「成品油消费税纳税申报表.doc」），
+    正文容器里没有这张表。不接这一栏，答案只能说"正文没有表"，指不到
+    "表在附件《X》"这一层。名字或链接缺一项的丢掉——只给个文件名读者点不开，
+    等于没给。
+    """
+    out = []
+    for item in raw or []:
+        if not isinstance(item, dict):
+            continue
+        name = _clean(item.get("appendixName") or "")
+        url = (item.get("appendixUrl") or "").strip()
+        if name and url:
+            out.append({"name": name,
+                        "type": (item.get("appendixType") or "").strip().lower(),
+                        "url": url})
+    return out
 
 
 # 时效录入项里出现的"这一栏没填"写法。接口对没录时效的条目回的是字符串
