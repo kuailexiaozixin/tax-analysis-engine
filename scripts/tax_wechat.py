@@ -64,7 +64,7 @@ READ_INTERVAL = 2.0
 # 搜狗对高频请求敏感：一加压就跳 /antispider/，而且链接还原要靠检索那一次的
 # 会话 cookie，两个进程各查一次等于各持一份会话互相搅。所以跟 NPC 用同一套闸
 # （实现在 tax_http.SerialGate，锁文件分开）。
-# 原先"并发加压会触发反爬"只是文档里的一句提醒，全靠人记；进了闸就不必记了。
+# "并发加压会触发反爬"光写在文档里全靠人记；进了闸就不必记了。
 _SOGOU_LOCK_PATH = Path(tempfile.gettempdir()) / "tax-analysis-engine-sogou.lock"
 _SOGOU_LOCK_TIMEOUT = float(os.getenv("TAX_SOGOU_LOCK_TIMEOUT", "180"))
 sogou_gate = tax_http.SerialGate(path=_SOGOU_LOCK_PATH, timeout=_SOGOU_LOCK_TIMEOUT)

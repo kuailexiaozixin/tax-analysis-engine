@@ -211,7 +211,7 @@ class TestBuildAndQuery(unittest.TestCase):
 
 
 class TestLocateFallback(unittest.TestCase):
-    """locate() 的多入口回退：栏目页失败退首页，全失败才抛错（#81）。"""
+    """locate() 的多入口回退：栏目页失败退首页，全失败才抛错。"""
 
     ANCHOR_HTML = ('<a href="/zhengce/减免税政策代码目录（2026年9月3日）.xlsx">'
                    '减免税政策代码目录</a>')

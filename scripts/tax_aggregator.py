@@ -13,7 +13,7 @@ Data source priority (按权威性排序):
 法规原文，输出里以 _authority_rank 排在后面。
 
 税屋当前只能取链接、正文取不到（阿里云 WAF 不认可算出的 cookie，详见
-tax_shui5 模块说明），它在这轮里仍然有用——检索本身稳定，能告诉你"这个话题
+tax_shui5 模块说明），它在检索这一步仍然有用——检索本身稳定，能告诉你"这个话题
 税屋上有几篇实务文章"，正文再另找渠道。
 
 AnySearch 已移除：本机不存在其 CLI（~/.claude/skills/anysearch/scripts 下
@@ -61,9 +61,9 @@ SOURCE_LABELS = {
     "wechat": "💬 微信公众号(实务解读)",
 }
 
-# 每个源挂掉时"缺的到底是哪一层"。原先这件事写在文档里，要读的人自己把
-# "某源 0 条"翻译成"哪一层没了、能不能拿别的源顶"。现在由程序说清楚：
-# 缺哪层、什么后果、以及不要用其他源顶替。
+# 每个源挂掉时"缺的到底是哪一层"，由程序说清楚：缺哪层、什么后果、以及不要用
+# 其他源顶替。这件事只写在文档里就不算收口——读的人得自己把"某源 0 条"翻译成
+# "哪一层没了、能不能拿别的源顶"。
 SOURCE_IMPACT = {
     "npc": "全国性法律法规层（法律/行政法规/司法解释）缺失，没有别的源能覆盖它",
     "chinatax": "总局公告、部门规章与官方解读层缺失",
@@ -181,8 +181,8 @@ def _build_gaps(sources: list, errors: dict, source_summary: dict) -> list:
 def _degraded_note(sources: list, gaps: list, source_summary: dict) -> str:
     """把缺口拼成一句可以直接抄进答案的话；没有缺口时给空串。
 
-    这段话是给"答案里必须明说该层缺失"这条要求用的：原先要读文档的人自己
-    组织措辞，现在程序给成句，照抄即可，也不必自己判断哪层算缺。
+    这段话是给"答案里必须明说该层缺失"这条要求用的：程序给成句，照抄即可，
+    不必读的人自己组织措辞、也不必自己判断哪层算缺。
     """
     if not gaps:
         return ""
@@ -267,8 +267,8 @@ def aggregate_search(keyword: str, *,
     date_from = check_iso_date(date_from, "date_from")
     date_to = check_iso_date(date_to, "date_to")
     use_date = bool(date_from or date_to)
-    # 税务总局那一路的收窄维度就是日期本身：search_chinatax 原先拿不到 filters，
-    # 界面上的日期控件在聚合这条路径上是空转的（2026-10-02 实测：带与不带日期
+    # 税务总局那一路的收窄维度就是日期本身：filters 传不进 search_chinatax，
+    # 界面上的日期控件在聚合这条路径上就是空转（2026-10-02 实测：带与不带日期
     # 的 12 条结果一模一样，仍含 2019-11-27 那份）。build_filters 同时兼任校验。
     date_filters = build_filters(cwrq_from=date_from, cwrq_to=date_to)
 
@@ -472,7 +472,7 @@ Examples:
     if flagged:
         # 按每条自带的提醒原文分组，不按档位分组：同一个 medium 在 NPC 正文检索
         # 和总局法规库深页说的是两件不同的事，按档位配一句固定话就有一句是假的。
-        # 原先这里按档位写死"不得作为权威依据引用"，那是用禁令代替核对——读者既
+        # 按档位写死一句"不得作为权威依据引用"是用禁令代替核对——读者既
         # 不知道存疑在哪一处，也不知道要核对什么。
         by_note = {}
         for i in flagged:

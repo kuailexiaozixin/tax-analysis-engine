@@ -35,7 +35,7 @@ description: |
 
 ## 工作流
 
-脚本在本目录 `preference.py`，四条命令。索引落 `preference_index.json`（随技能分发不含，
+脚本在本目录 `preference.py`，三条子命令（`sync` / `query` / `list-types`）。索引落 `preference_index.json`（随技能分发不含，
 用前 `sync` 一次）。同步的版本 diff、下载守卫、内容 SHA1 复用母技能 `scripts/tax_sync.py`。
 
 ```bash

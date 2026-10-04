@@ -5,7 +5,7 @@ ListSynchronizer 的分页抓取靠 fetch_page 回调，测试直接注入一个
 fetch_page（从表里按页返回行、报 total），不打网络。tax_gov_list 的规范化靠
 伪造 getFileListByCodeId 的响应体。缓存目录指到临时目录，不碰仓库 data/sync。
 
-钉住 #75 的验收标准：
+这一组用例盯住的验收标准：
   1. crawl 按 total 停止，多页拼全、不重复不遗漏
   2. --check 只探第一页拿 total，不爬全、不构建
   3. total 变更在 --check 下报"发现总数变更"
@@ -175,7 +175,7 @@ class TestListSynchronizer(unittest.TestCase):
 
 
 class TestSeedCitedCache(unittest.TestCase):
-    """清单索引 → 文号缓存的离线预热（#1 落地：把 A 的链接缓存积累做成我们的批量种入）。"""
+    """清单索引 → 文号缓存的离线预热：批量种入，让 locate_cited_document 离线命中。"""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -260,7 +260,7 @@ class TestMissingCited(unittest.TestCase):
 
 
 class TestBuildIndexCoverage(unittest.TestCase):
-    """build_index 建库覆盖率自检：缺文号/时效性的行要计进索引（缺陷2 的对称自检）。"""
+    """build_index 建库覆盖率自检：缺文号与缺时效性的行都要计进索引，两个计数同一口径。"""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -482,7 +482,7 @@ class TestChannelPages(unittest.TestCase):
         self.assertEqual("", other["栏目页"], "未登记的栏目不该拼出一个 URL")
 
     def test_stats_says_the_old_index_has_no_page_instead_of_a_blank(self):
-        """改版前建的索引没有 `栏目页` 这一格：要写明"重跑 sync 即带出"，不印空串。"""
+        """索引里缺 `栏目页` 这一格时：要写明缺了、补齐动作是重跑 sync，不印空串。"""
         idx = GL.build_index([_row("A", "http://t/A")], channel="法律")
         del idx["栏目页"]
         GL.INDEX_PATH.write_text(json.dumps(idx, ensure_ascii=False), encoding="utf-8")
@@ -490,7 +490,7 @@ class TestChannelPages(unittest.TestCase):
         with contextlib.redirect_stdout(buf):
             GL.stats()
         out = buf.getvalue()
-        self.assertIn("旧索引未录", out)
+        self.assertIn("重跑 sync", out)
         self.assertNotIn("栏目页：\n", out, "印成空串会被读成这一栏没有官方页")
 
 

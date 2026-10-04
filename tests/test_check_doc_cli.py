@@ -4,9 +4,9 @@
 为什么需要：那条"孤立参数片段"规则在文档**改对之后永远是绿的**——没有构造样例，
 就无法证明它还在工作，将来它悄悄失效也没人知道。
 
-实例：SKILL.md 曾写着"总局条目取正文用 `--source fgk --body`"，而 `--source` 属
-tax_formatter.py、`--body` 属 tax_fgk.py，这条组合在任何脚本上都跑不通。规则加上后
-当场报出，修完转绿。这里把"报得出"和"不误报"两边都钉住，避免改动规则时把能力改丢。
+规则要抓的是这一类写法："总局条目取正文用 `--source fgk --body`"——`--source` 属
+tax_formatter.py、`--body` 属 tax_fgk.py，这条组合在任何脚本上都跑不通。
+这里把"报得出"和"不误报"两边都钉住，避免改动规则时把能力改丢。
 
 与 test_http_layer.py 里 `test_scanner_can_see_aliased_imports` 是同一种自检。
 

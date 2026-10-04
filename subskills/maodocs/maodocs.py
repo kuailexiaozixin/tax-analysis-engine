@@ -163,7 +163,7 @@ def fetch(target: str) -> dict:
     # WAF 挑战位检测：与税屋不同，这里预期恒为 False，留着是给同步时报警——
     # 一旦站方将来上了前置防护，本工具要能在正文缺失时说清是拦截不是空页。
     if "arg1" in page and "renderData" in page:
-        return {"url": url, "_error": "出现 WAF 挑战页（该站此前无前置防护）"}
+        return {"url": url, "_error": "出现 WAF 挑战页（这一向不设前置防护，取到这一页说明是被拦而非空页）"}
 
     # 正文区间：从标题容器之后到 vp-page-meta（发文信息/字数）之前。
     # 先按 class 属性名定位，再把起点顶到那个 '>' 之后，避免把

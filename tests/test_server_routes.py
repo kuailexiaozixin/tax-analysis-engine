@@ -167,7 +167,7 @@ class TestSearchRoute(_RouteCase):
     def test_chinatax_maps_ui_filters_into_the_request(self):
         """界面选了 精确＋范围＋日期，chinatax 这路必须把它们带进 filters。
 
-        以前这三个控件只喂给 NPC，数据源切到总局就被静默丢掉。日期补成带时间戳
+        这三个控件只喂给 NPC 时，数据源切到总局就被静默丢掉。日期补成带时间戳
         的 cwrq 是 build_filters 内部的事，这里只验维度到了调用方。
         变异验证：把 api_search 里的 filters= 去掉，这一条立刻报红。
         """

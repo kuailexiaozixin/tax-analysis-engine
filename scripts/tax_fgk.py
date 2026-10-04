@@ -275,8 +275,8 @@ def fetch_fgk_body(url: str) -> dict:
     """
     out = {"url": url}
     try:
-        # verify 显式传 True：本模块原先走的是 requests 的默认校验（tax_detail
-        # 与 tax_search 用的则是默认关闭的 VERIFY_SSL），这一处保持原行为。
+        # verify 显式传 True：这一路用 requests 的默认校验（tax_detail
+        # 与 tax_search 用的则是默认关闭的 VERIFY_SSL），这里不跟着关。
         r = tax_http.get(url, headers=HEADERS, timeout=25, verify=True)
     except requests.RequestException as e:
         out["_error"] = f"请求失败：{tax_http.short_reason(e)}"

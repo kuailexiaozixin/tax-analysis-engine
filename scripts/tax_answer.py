@@ -147,7 +147,7 @@ def build_plan(question: str) -> dict:
 def _retarget_for_legislation(rounds: list) -> None:
     """题面问的是草案或征求意见稿时，把轮次目标改成"取修订基线"，再补一轮立法取证。
 
-    这一条是实测逼出来的：同一份《税收征管法》修订草案的提问，原先的轮次写法是
+    这一条是实测逼出来的：同一份《税收征管法》修订草案的提问，轮次若写成
     "取本体法现行条文""确认有无更新或配套文件"，跑完取回的是 2015 年修正的现行
     文本，看起来答完了，实际一句草案内容都没碰——搜索策略按"规定是什么"排，
     而题面问的是"正在审的那份文本改了什么"。立法过程件不在五个税收源里
@@ -218,8 +218,8 @@ def _wechat_round(term: str, size: int) -> tuple[list, str]:
 def _rows_and_error(r: dict) -> tuple[list, str]:
     """把源返回拆成 (条目, 失败说明)，两种"没有"必须分开带出去。
 
-    原先这几个轮次函数写成 `rows if not r.get("_error") else []`：源挂了和被
-    判空都变成长度 0 的列表，错误文本就地丢掉。后果是主依据会静默降级——实测
+    轮次函数若写成 `rows if not r.get("_error") else []`，源挂了和被
+    判空就都变成长度 0 的列表，错误文本就地丢掉。后果是主依据会静默降级——实测
     点名《税收征管法》那一趟，NPC 没回来时法律那一档的现行有效依据不见了，
     顶上【主依据】的是部门规章《个体工商户建账管理暂行办法》，输出里一个字都
     看不
@@ -544,8 +544,8 @@ def check_practice_citations(rows: list, at: str = "", lookup=None,
 
     为什么要这一层：税屋与公众号那一路是法条落到实践的地方，它的价值恰恰在于
     告诉纳税人"口径怎么执行"；价值对应的是责任——这条口径得追到一份现行有效的
-    法定文件上。原先的做法是给这一层打 10 分、标成"只能参考"，那是用降权代替
-    核对，读者既看不出哪条有文件托着、也看不出哪条是悬空的。现在逐条核对，
+    法定文件上。给这一层配一个低分、标成"只能参考"是用降权代替
+    核对，读者既看不出哪条有文件托着、也看不出哪条是悬空的。这里逐条核对，
     `outcome` 有九种取值，各配一句下一步动作（句子在 `tax_evidence.OFFICIAL_CAVEAT`）：
     在库且现行有效（effective）、在库但已废止（repealed）、在库但尚未生效
     （pending）、在库但时效判不出来（unknown）、库里查不到同一份
@@ -846,9 +846,9 @@ def compose(plan: dict) -> dict:
         return e.get("title", "") == ptitle
 
     rest = [e for e in ev if not _is_primary(e)]
-    # 按角色分栏，不按分数分栏。原先是 `score >= 50` 一刀切成"依据/参考"两堆，
+    # 按角色分栏，不按分数分栏。用 `score >= 50` 一刀切成"依据/参考"两堆，
     # 结果是税屋与公众号的文章（层级 10 或 25）永远进不了前一种：一道题的口径
-    # 往往就写在那一层里，把整栏压进"只能参考"等于把最有用的东西锁起来。
+    # 往往就写在那一层里，把整栏压进"只能参考"等于把最有用的东西挡在答案外。
     statutory = [e for e in rest if e.get("role") in ("direct", "superior")]
     practice = [e for e in rest if e.get("role") == "practice"]
     to_verify = [e for e in rest if e.get("role") == "unmatched"]
@@ -993,7 +993,7 @@ def _print_rows(rows: list, title: str, limit: int, blurb: str = ""):
     """按角色打印一栏材料，每条带上它自己的提醒。
 
     提醒逐条打印而不是只印一个角标，是因为"这一条存疑"必须说清疑在哪一处、
-    要核对什么，读者才能动手核对；原先界面上那个"仅参考"小圆点做不到这点。
+    要核对什么，读者才能动手核对；界面上一个"仅参考"小圆点做不到这点。
     """
     if not rows:
         return

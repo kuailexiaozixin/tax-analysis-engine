@@ -63,7 +63,7 @@ class CacheManager:
         return ns is None or ns == self.namespace
 
     def _claim(self, path: Path, data: dict) -> None:
-        """给 `_ns` 引入前写下的老条目补上归属，让它从"无主"转正。
+        """给没有 `_ns` 字段的条目补上归属，让它从"无主"转正。
 
         只补这一个字段，**不动 `_cached_at` 也不动 payload**，所以 TTL 不会被
         重置、内容不会被改写。失败静默：缓存目录只读时也不该让读操作失败。
@@ -162,10 +162,10 @@ class CacheManager:
     def clear(self) -> int:
         """清掉**本命名空间**的条目，返回删除条数。
 
-        无 `_ns` 的老条目（本字段引入前写下的）一并清掉：它们的归属无法判定，
-        留着只会让 stats() 数不干净。**不动**其它命名空间的条目——以前这里
-        删的是目录里所有 `*.json`，于是 `tax_search --cache-clear` 会把
-        detail 的详情缓存一起删掉，属于越界。
+        无 `_ns` 的老条目（更早写下的缓存文件）一并清掉：它们的归属无法判定，
+        留着只会让 stats() 数不干净。**不动**其它命名空间的条目——清的范围是
+        本命名空间，`tax_search --cache-clear` 删不到 detail 的详情缓存；按目录
+        清 `*.json` 就是越界。
         """
         removed = 0
         for f, data in list(self._entries()):

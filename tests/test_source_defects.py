@@ -10,8 +10,8 @@
   5. `_reliability: medium` 说的是这条的召回方式，要落成一句具体提醒
   6. `_reliability: low` 同样只提醒核对，不折算成分数、不从挑选里剔除
 
-"靠人记住"等于没有约束：第 5、6 条原先只在输出里印一行，定级层压根不读它，
-于是标了 low 的条目照样能被挑成主依据、还打出"可作依据引用（法律）"。现在六条
+"靠人记住"等于没有约束：第 5、6 条若只在输出里印一行、定级层不读它，标了 low
+的条目照样能被挑成主依据、还打出"可作依据引用（法律）"。六条
 都落进代码，这里逐条钉住，并附带自检（确认规则不是永远绿的）。
 """
 
@@ -59,7 +59,7 @@ def _fgk_hit(n: int, page_tag: str) -> list:
 
 # ── ③ fgk 深页条目必须带页码与可靠性标记 ───────────────────────────────────
 class TestFgkDeepPageMarker(unittest.TestCase):
-    """翻得越深越松，深页条目只可用于定位。以前这件事靠人记页码。"""
+    """翻得越深越松，深页条目只可用于定位。这件事不落进代码就靠人记页码。"""
 
     def _scan(self, pages):
         """pages: {页码: 该页法规库条目数}"""
@@ -259,9 +259,9 @@ class TestFrontendShowsSourceMetadata(unittest.TestCase):
 class TestReliabilityBecomesAReminder(unittest.TestCase):
     """来源标记要说清"疑在哪一处、要核对什么"，不许再用降权代替核对。
 
-    2026-10-03 重写：这一组原先断言"标了 low 就把分清零、整组不许挑主依据"。
-    用户明确指出那是在限制材料的作用——读者只看到一个小标签，既不知道为什么，
-    也无从下手。现在同样的来源信息改写成逐条提醒，材料照常参与分层。
+    断言的是提醒，不是否决。"标了 low 就把分清零、整组不许挑主依据"是在限制材料
+    的作用——读者只看到一个小标签，既不知道为什么，
+    也无从下手。同样的来源信息写成逐条提醒，材料照常参与分层。
     """
 
     LAW = "中华人民共和国企业所得税法"
@@ -276,7 +276,7 @@ class TestReliabilityBecomesAReminder(unittest.TestCase):
         """同是 medium，三条来源各说各的原因，提醒必须用来源自己那句。
 
         `medium` 在本仓库有三个出处：NPC 正文检索按全文分词命中、总局法规库第 2
-        页起排序变松、立法过程件不在五个源的收录范围内。定级层原先按档位配一句
+        页起排序变松、立法过程件不在五个源的收录范围内。定级层若按档位配一句
         固定话（"这一条来自清单靠后的页位"），三处里只有法规库那处对得上，另两处
         给的是假提醒——全文检索和站内检索没有"页位"这件事。
 
@@ -319,7 +319,7 @@ class TestReliabilityBecomesAReminder(unittest.TestCase):
         """标了 low 的《企业所得税法》不再被整组剔除，也不再因此让位。
 
         变异自检：把 `_reliability` 塞回 `_order_key`（例如 low 时 tier 取 0），
-        这一条与下一条都会报红——那正是本次撤掉的做法。
+        这一条与下一条都会报红——那正是本文件不许回来的做法。
         """
         g = E.pick_primary([
             E.grade({"title": self.LAW, "_reliability": "low",
@@ -366,7 +366,7 @@ class TestReliabilityBecomesAReminder(unittest.TestCase):
 class TestAggregatorCarriesTheReminder(unittest.TestCase):
     """整源标记按定义就是"这一窗条目共同的取回方式"，逐条带上不算冤枉。
 
-    它原先只在源自己的输出里印一次，聚合后丢失——聚合清单上看不出这些条目来自
+    它只在源自己的输出里印一次、不带进聚合的话，聚合清单上看不出这些条目来自
     全文检索，定级层与界面都收不到这句提醒。
 
     变异自检：把 `tax_aggregator` 里 `item["_reliability_note"] = source_note`
@@ -607,9 +607,9 @@ class TestGradingReadsFgkMetadata(unittest.TestCase):
 class TestNormativeIsABasisNotReference(unittest.TestCase):
     """总局公告是本题的直接规定，不该被任何一根"参考"线挡在依据之外。
 
-    2026-10-03 重写：这个类原先断言的是"分数够不够 50 那条线"，而那根线正是
-    本次撤掉的合成判据。改成断言角色——规范性文件在与本题对得上、且没废止时
-    就是"本题的直接规定"，并且挑得主依据，压过层级更高的法律。
+    断言的是角色，不是"分数够不够 50 那条线"——那根线是把能不能引和该不该让位
+    乘成一个分数的合成判据，两根轴各判各的才分得开。规范性文件在与本题对得上、
+    且没废止时就是"本题的直接规定"，并且挑得主依据，压过层级更高的法律。
     """
 
     ANN = "国家税务总局关于企业重组业务所得税处理有关征管问题的公告"
@@ -704,7 +704,7 @@ class TestNormativeIsABasisNotReference(unittest.TestCase):
 
 
 class TestConstitutionIsNotTheHeadline(unittest.TestCase):
-    """宪法位阶最高，但不能顶当主依据——旧公式给它 100×1.0 的全场最高分。"""
+    """宪法位阶最高，但不能顶当主依据——位阶×时效的乘法会给它 100×1.0 的全场最高分。"""
 
     def test_flagged_and_yielded_to_the_law(self):
         c = E.grade({"title": "中华人民共和国宪法", "category": "宪法"},
@@ -733,7 +733,7 @@ class TestConstitutionIsNotTheHeadline(unittest.TestCase):
 
 
 class TestNoSynthesisedCitationScore(unittest.TestCase):
-    """可引用性那个合成分数整个撤掉了：留一个字段名就会被下游重新拿去排队。"""
+    """不设可引用性合成分数：留一个字段名就会被下游重新拿去排队。"""
 
     def test_grade_exposes_the_axes_not_a_product(self):
         g = E.grade({"title": "中华人民共和国企业所得税法", "status": "全文有效"},
@@ -912,8 +912,8 @@ class TestRoundFailureIsNotSilent(unittest.TestCase):
         """立法过程实位取回的条目带 `legislative_process`，定级层据此不挑它当主依据。
 
         人大网站的草案与审议公告是"找到文本的线索"，本身不是已公布的规定。
-        这一条拒绝的理由是"它不是已公布的条文"这个事实，不是降权：2026-10-03
-        撤掉可引用性分数之后，`_reliability: medium` 只负责附带一句提醒，
+        这一条拒绝的理由是"它不是已公布的条文"这个事实，不是降权：
+        `_reliability: medium` 只负责附带一句提醒，
         真正把这一层挡在头条之外的是 `legislative_process` 这个标记。
         """
         page = {"results": [{"title": "法律草案审议 中国人大网",
@@ -1062,7 +1062,7 @@ class TestTupleReturnContract(unittest.TestCase):
 
 
 class TestPracticeCitationCheck(unittest.TestCase):
-    """#111：实务材料的口径要追到一份现行有效的法定文件上，逐条核对。
+    """实务材料的口径要追到一份现行有效的法定文件上，逐条核对。
 
     这一层替代的是"给税屋/公众号打 10 分、标成只能参考"：降权既不告诉读者哪条
     口径有文件托着，也不告诉读者哪条悬空。现在按文号回官方库查存在与时效。

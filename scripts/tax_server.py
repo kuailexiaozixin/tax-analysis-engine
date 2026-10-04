@@ -90,8 +90,8 @@ def _ui_filters(scope: str, exact, date_from, date_to, aging: str = "") -> dict:
     )
 
 
-# 界面「排序」控件的取值 → search5 的 order 名。原先这个控件只对 NPC 那一路
-# 生效，数据源切到税务总局／法规库就被静默丢掉，与「范围/匹配/日期」是同一个缺陷。
+# 界面「排序」控件的取值 → search5 的 order 名。这个控件只对 NPC 那一路
+# 生效时，数据源切到税务总局／法规库就被静默丢掉，与「范围/匹配/日期」是同一个缺陷。
 SORT_TO_ORDER = {"relevance": "relevance", "date": "date_desc"}
 
 _text_cache = {}
@@ -352,7 +352,7 @@ def _download_and_extract(bbbs_id: str) -> list[str]:
         return _text_cache[bbbs_id]
 
     # 取下载地址与取文件都走 tax_detail 的同一套节流 + 串行闸：
-    # 原先这两步各自裸调 tax_http，闸外发请求，网页端连点几次就能和检索撞车。
+    # 这两步各自裸调 tax_http 就是闸外发请求，网页端连点几次能和检索撞车。
     try:
         content = download_bytes(bbbs_id, "docx")
     except Exception:
@@ -400,8 +400,8 @@ def api_search():
         # 聚合同样要换源：不换就会把用户原话丢给五源，NPC 侧取回的是含通用字的
         # 无关法规，总局侧又翻不到该专题的规范性文件。sta 专题改用条目自带的
         # search_term 并剔掉 NPC，npc 专题改用 parent_law 精确检索。
-        # 日期区间这一维也要交给聚合层：它原先没有这两个参数，界面上的日期控件
-        # 在这条路径上是空转的（2026-10-02 实测带与不带日期的 12 条一模一样）。
+        # 日期区间这一维也要交给聚合层：聚合层不吃这两个参数时，界面上的日期控件
+        # 在这条路径上就是空转（2026-10-02 实测带与不带日期的 12 条一模一样）。
         # 各路怎么生效见 tax_aggregator._date_scope_note，回给前端的说明在
         # result._date_note。
         try:
@@ -431,7 +431,7 @@ def api_search():
             # 不能让接口静默回一份没筛过的清单。
             return jsonify({"error": f"筛选参数不合法：{e}"}), 400
     elif source in ("chinatax", "fgk"):
-        # 界面上的「范围/匹配/日期/时效/排序」控件此前只喂给 NPC 那一路，数据源切到
+        # 界面「范围/匹配/日期/时效/排序」控件只喂给 NPC 那一路时，数据源切到
         # 税务总局或法规库就被静默丢掉——控件看着是全局的、实际只对 NPC 生效。
         # 这里把它们翻成 search5 的收窄维度与检索选项透传下去（见 _ui_filters）。
         try:
@@ -480,7 +480,7 @@ def api_search():
                     size=size, sort=sort,
                 )
             except ValueError as e:
-                # NPC 这一路原先不吃日期校验：非法格式发给接口是被静默忽略还是
+                # NPC 这一路不吃日期校验时，非法格式发给接口是被静默忽略还是
                 # 被当成区间，从结果上看不出来。与 search5 两路同一处理，报 400。
                 return jsonify({"error": f"筛选参数不合法：{e}"}), 400
             if parent_law:
@@ -560,9 +560,10 @@ def api_text(bbbs_id):
 def api_ai_interpret(bbbs_id):
     """AI 解读——本接口会花钱，花的是使用者自己账号里的额度，所以先过付费闸门。
 
-    旧写法在这里自己去 npm 全局目录找一个写死的命令名并直接发起调用：谁打开
-    网页点一下"AI 解读"就开始计费，界面上一个字都不提。现在闸门关着就返 503，
-    错误文案里写清楚开哪两个环境变量；闸门开了但上游没钱也返 503，不重试。
+    通道由 `tax_llm.channel()` 决定：闸门关着就返 503，错误文案里写清楚要开哪两个
+    环境变量；闸门开了但上游没钱也返 503，不重试。若绕过 `tax_llm.channel()` 直接
+    去 npm 全局目录找一个写死的命令名发起调用，谁打开网页点一下"AI 解读"就开始
+    计费，界面上一个字都不提。
     """
     keyword = request.args.get("keyword", "")
     cmd, why = tax_llm.channel()

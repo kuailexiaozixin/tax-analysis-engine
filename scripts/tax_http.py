@@ -3,7 +3,7 @@
 
 为什么要有这一层
 ----------------
-同一件事（发一个 GET）原先在三个模块里各写一遍：
+同一件事（发一个 GET）如果在三个模块里各写一遍：
 
     tax_detail.py   _request / get_download_url / download_file   3 处
     tax_fgk.py      fetch_fgk_body                                1 处
@@ -15,7 +15,7 @@
 
 verify 为什么是必填参数
 -----------------------
-这三个模块原本的 SSL 策略并不一致：
+这三个模块的 SSL 策略并不一致：
 
     tax_fgk.py     走 requests 的默认值 verify=True
     tax_detail.py  走 VERIFY_SSL（默认 False）
@@ -80,7 +80,7 @@ class SerialGate:
         在进程内排队；
       - 跨进程的文件锁 —— 用 msvcrt（Windows）或 fcntl（类 Unix），不引依赖。
 
-    两者都不可用时退化成不加锁，只影响强度，不会比以前更差。
+    两者都不可用时退化成不加锁——保护强度降了，但不引入新的故障。
     """
 
     #: 超时提示里替换成调用方自己的站点名，好让报错说清是哪个站在等

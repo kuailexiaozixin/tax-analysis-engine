@@ -193,7 +193,7 @@ def test_clear_is_namespace_local():
 
 
 def test_legacy_entry_claimed_on_read():
-    """_ns 引入前写下的老条目，在被读到时就地转正，且 TTL 不被重置。"""
+    """没有 _ns 字段的老条目，在被读到时就地转正，且 TTL 不被重置。"""
     with tempfile.TemporaryDirectory() as td:
         d = Path(td)
         cm = CacheManager(enabled=True, namespace="detail")

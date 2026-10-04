@@ -74,8 +74,8 @@ PAGE_SIZE = 100
 # 七栏出现的取值合起来正好是 tax_web_search.AGING_VALUES 那五种，tax_evidence
 # .judge_validity 逐条不落 unknown——加新栏前按这条核，取值域没登记就不收。
 # 恒空的是这两栏，仍收进清单，靠发文字号/效力等级用（整栏翻到底，0 条真值）：
-#   财税文件 1532 条全空、其他文件 488 条全空。注意旧注释曾把"其他文件"记成
-#   "填得满"，本轮量过是错的；"财税文件"整栏不填这件事与 references/source_defects.md
+#   财税文件 1532 条全空、其他文件 488 条全空。别把"其他文件"当成填得满的一栏，
+#   整栏翻到底 0 条真值；"财税文件"整栏不填这件事与 references/source_defects.md
 #   里 corroborate_validity_from_target 那条是同一件事的两侧。
 # 空栏里混着占位写法：财税文件抽样 150 条（第 1/3/5 页）是 138 空串 + 12 条字符串
 # "null"。字面 "null" 由 normalize_item 走 aging_of 归成空串，否则 stats 的时效性
@@ -289,8 +289,9 @@ def stats(as_json=False):
     _a = "—" if cov["时效性缺失"] is None else cov["时效性缺失"]
     print(f"栏目 {idx.get('栏目')} | 版本 {idx.get('版本日期')} | 条目 {idx.get('条目数')}"
           f" | 文号缺 {_d} / 时效性缺 {_a}")
-    # 旧索引没有这一格（建库时还没录栏目页），不带过就印"—"提示重跑 sync。
-    print(f"  栏目页：{idx.get('栏目页') or '—（旧索引未录，重跑 sync 即带出）'}")
+    # 索引里没有这一格时（建库那一路没把它录上）印一句缺，不留空串——空串会被读成
+    # "这一栏没有官方页"。补齐的动作就是重跑 sync。
+    print(f"  栏目页：{idx.get('栏目页') or '—（这份索引没带栏目页，重跑 sync 即补齐）'}")
     for k, v in c.most_common():
         print(f"  {v:>5}  {k}")
 

@@ -151,7 +151,7 @@ def test_search_with_cache():
     print("\n[Test] Cache: two sequential searches")
     import tax_search
     # 缓存的类名是 tax_cache.CacheManager，tax_search 只是把它转手导入；
-    # 早先这里写的是已被删掉的 _CacheManager，用例直接 ImportError 挂掉。
+    # 这里按调用方实际 import 的名字取，名字漂了用例会直接 ImportError 挂掉。
     from tax_search import CacheManager
 
     # Clear any residual cache first
@@ -441,9 +441,9 @@ def test_fgk_paging():
 
     这条只断言"翻页这件事真发生了"，不断言"第 1 屏里法规库条目是几条"。
     后者不是不变量：2026-10-04 线上「转让定价」命中 18 条且第一屏 10 条全是
-    法规库条目，size=3 在第一屏就取满了，旧写法那句"应至少翻 2 页"因此报红
-    ——引擎行为没错，是断言把某一天的索引形态当成了恒定的东西。索引构成、
-    标签白名单（⑩ #103）、检索词宽窄任何一个变了，它都会假报警。
+    法规库条目，size=3 在第一屏就取满了——按"应至少翻 2 页"写断言就会报红，
+    引擎行为没错，是断言把某一天的索引形态当成了恒定的东西。索引构成、
+    标签白名单（⑩）、检索词宽窄任何一个变了，它都会假报警。
 
     改成由算术保证：一页最多回 10 条，取 11 条时 pages_scanned 必然 ≥2；
     翻页循环坏掉（只读首屏）时这一条就会退成 1 页 10 条，照样报红。
@@ -515,7 +515,7 @@ def test_npc_reliability_marker():
 def test_npc_fulltext_relevance():
     """正文检索加 sort=score 后必须按相关度返回，而不是按发文时间。
 
-    这是本次修复的核心断言：加 sort 之前，"增值税" 首条是 1986 年的
+    这条断言盯的是排序：不带 sort 时，"增值税" 首条是 1986 年的
     《外交特权与豁免条例》，因为默认按发文时间排。
     """
     print("\n[Test] NPC fulltext relevance ordering")
@@ -740,7 +740,7 @@ def test_model_choice_parsing():
     got = X.parse_choice('{"reasoning":"先看这条"} {"answer":"B","basis":"","reasoning":""}')
     assert got["answer"] == "B", got
     # 调用失败必须判成调用失败，不进分母：CLI 的英文告警里有散大写元音字母，
-    # 早先的兜底解析把它们拼成了选项，blind 组正确率从满格假降到两成。
+    # 兜底解析把它们拼成选项时，缺作答会被当成作答，正确率就成了假数。
     got = X.parse_choice('{"_error": "调用失败（重试 3 次）：\\"deepseek\\" is not a model'
                          ' this version of Claude Code recognizes"}')
     assert got["parse"] == X.CALL_FAILED and got["answer"] == "", got

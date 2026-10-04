@@ -76,7 +76,7 @@ python scripts/tax_search.py "<关键词>" --status 1 --size 20
   `2024-1-1`、`2024-13-01`、`20240101` 都直接报错退出（CLI 退 2，`/api/search` 报 400），
   不会静默当成"这一维没填"再回一份基线命中。
 - 只给一端就按 `DATE_CEIL`（缺上界）／`DATE_FLOOR`（缺下界，`0001-01-01`）补另一界。
-  只给上界原先是空转：2026-10-03 实测「增值税」`--to 2020-12-31` 与不带日期都是
+  只给上界不补下界就是空转：2026-10-03 实测「增值税」`--to 2020-12-31` 与不带日期都是
   45 条、首条 2025-12-25，补界后 38 条、区间内最大 2020-08-04。下界取 `0001-01-01`
   而不是 1949-10-01 是量过的：两个下界同为 38 条，取更早的不额外排除任何一条。
 - **精确检索（`--exact`）带上日期时，接口会丢掉检索词**，只按区间回一叠法律清单
@@ -344,7 +344,7 @@ rowspan 的"产品种类"被带到它盖住的每一行：
 - 关联文件与关联解读要走 `POST /queryManuscriptAssociation`，表单参数 `id=` 详情页的
   `articleId`。实测 HTTP 200，返回里分 `policyDocument`、`policyInterpretation`、
   `policyGuidance`、`policyQA` 几组；静态详情页 HTML 里这几组是空的，正文中的
-  `<a href>` 只能给出零星线索。**2026-10-01 已接入**：`tax_fgk.fetch_associations` 走
+  `<a href>` 只能给出零星线索，所以关联走接口：`tax_fgk.fetch_associations` 走
   这个接口，`article_id_from_url` 从 URL 末段取 id（法律类页面 meta 可能没 articleId），
   命令行用 `tax_fgk.py … --assoc` 逐条现拉（关联里的政策文件也带时效，与正文一样不缓存）。
   两个域名不能混：POST 只在 www 域返回 200（同一 id 打 fgk 域回 404，实测），返回的
@@ -373,7 +373,7 @@ python scripts/tax_web_search.py "增值税" --cwrq-from 2024-01-01 --cwrq-to 20
 python scripts/tax_web_search.py "增值税" --aging 全文有效          # 1908 → 252
 python scripts/tax_web_search.py "增值税" --effect-level 财税文件   # 1908 → 636
 
-# 换排序：date_desc 是 orderBy=1（成文日期最新在前），别按外部资料写的 2 发
+# 换排序：date_desc 发的是 orderBy=1（成文日期最新在前；orderBy=2 排的是类别不是日期）
 python scripts/tax_web_search.py "增值税" --order date_desc --size 8
 
 # 要连新闻、视频、各地动态一起搜时才关白名单（小微企业 184 → 4822）
@@ -489,8 +489,8 @@ print(json.dumps(A.search_terms('<用户原话>'),ensure_ascii=False,indent=2))"
 
 总局清单的缓存键里带一个翻页基准版本号（`tax_fgk.LIST_KEY_REV`）。改翻页基准、
 改每页条数、改默认检索范围这类会影响"清单里装的是哪一屏"的代码时，把它一起改，
-改前留存的清单就不会在改后被当成新结果复用（2026-10-02 默认范围由全站改成
-文件类标签，就是照这条把 `pn0` 改成 `pn0-files`）。
+改动前留存的清单就不会在改动后被当成新结果复用。当前键值是 `pn0-files`，对应
+默认检索范围为文件类标签那十类；检索范围换回全站、每页条数或翻页基准一变，键值就要另起一个。
 
 ```bash
 # NPC 法规库检索 —— 清单缓存，默认关，TTL 5 分钟
@@ -525,8 +525,7 @@ python scripts/tax_detail.py --info <bbbs_id> --no-cache   # 本次强制现拉
 
 三个脚本的缓存都由 `scripts/tax_cache.py` 提供（唯一实现）。同一个目录下靠条目里的
 `_ns` 字段分命名空间（`search` / `fgk` / `detail`），所以各自的 `--cache-stats`、
-`--cache-clear` 只作用于自己那一份——以前 `tax_search --cache-clear` 会把详情缓存
-一起删掉，属于越界。
+`--cache-clear` 只作用于自己那一份，删不到详情缓存那一格；跨命名空间清理算越界缺陷。
 
 ## 命令一览
 

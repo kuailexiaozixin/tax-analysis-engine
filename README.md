@@ -497,7 +497,7 @@ tax-analysis-engine/
 │       └── szse.py                 # categories/build/query/fetch；标准库直连为主，业务规则通道复用 scripts/tax_browser，不调模型
 │   └── tax-preference/
 │       ├── SKILL.md                # 减免税政策代码目录（查询式：sync 建索引后离线 query，是税收依据本体、进 ⑧ 定级）
-│       ├── NOTE.md                 # 一次 sync 实测、双栏日期填充率、getFileListByCodeId 发现（未接入）、复用关系
+│       ├── NOTE.md                 # 目录 xlsx 与清单源的实测读数：同步指纹、双栏日期填充率、七栏条数与时效取值、取不到的字段
 │       └── preference.py           # sync/query/list-types；locate 多入口回退、query 标注缓存官方链接；同步复用 scripts/tax_sync.py，plain HTTP、不调模型
 ├── references/                     # tax_categories · search_strategies · tax_risk_framework
 ├── tests/

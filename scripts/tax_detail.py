@@ -50,11 +50,11 @@ SXX_MAP = {1: "已废止", 2: "已修改", 3: "现行有效", 4: "尚未生效"}
 
 
 # ── 详情元数据缓存：交给共享实现，1h TTL，默认开 ───────────────────────────
-# 缓存的唯一实现在 tax_cache.py（这里曾内联过一份 _DetailCache，与它重复）。
+# 缓存的实现只在 tax_cache.py 那一份，这里不另建一份。
 # 默认开是有意的差异：详情接口比检索慢，且元数据变动频率低。
 # 键带 "detail" 前缀，与 search / fgk 两个命名空间的键天然不撞；
-# namespace 只用来划定 clear() / stats() 的作用范围——以前 --cache-clear 删的是
-# 目录里所有 *.json，清检索缓存会把这里一起清掉，属于越界。
+# namespace 只用来划定 clear() / stats() 的作用范围：清检索缓存不会带走这里的详情
+# 缓存，按目录清 *.json 才是越界。
 DETAIL_CACHE_TTL = 3600
 _detail_cache = CacheManager(enabled=True, namespace="detail")
 
@@ -190,7 +190,7 @@ def get_download_url(bbbs_id: str, fmt: str = "docx") -> Optional[str]:
     """Get a signed download URL for a law document.
 
     走 _request，不直接 tax_http.get：这个端点就在 flk.npc.gov.cn 上，与检索、
-    详情接口同一套限流。原先它绕过了节流与串行闸，是闸外的一条缝——两个进程
+    详情接口同一套限流。绕过节流与串行闸就是闸外的一条缝——两个进程
     各拿一个下载地址都会打进同一个站。
     """
     url = f"{BASE_URL}/law-search/download/pc?format={fmt}&bbbs={bbbs_id}"

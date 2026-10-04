@@ -7,8 +7,8 @@
      的法律清单"（实测「中华人民共和国增值税法」起 2026-01-01 回 88 条、0 条
      含该词，同词不带日期是 2 条）。危害方向是"带日期反而递回无关清单"，
      所以修法是取回后按标题复核并把复核结果写进 _date_note。
-  2. 聚合层：aggregate_search 原先没有 date_from/date_to，界面日期控件在这条
-     路径上被静默丢掉（带与不带日期的 12 条一模一样）。现在三个网页源没有
+  2. 聚合层：aggregate_search 不吃 date_from/date_to 时，界面日期控件在这条
+     路径上被静默丢掉（带与不带日期的 12 条一模一样）。三个网页源没有
      日期参数，只能在取回的窗口内补筛——补筛不是源端收窄，这个区别必须由
      _date_filter 的计数与 _date_note 的判读规则说清楚。
 
@@ -133,7 +133,7 @@ class TestNpcDateAssembly(unittest.TestCase):
         self.assertEqual(["2024-01-01", tax_search.DATE_CEIL], payloads[0]["gbrq"])
 
     def test_only_to_uses_floor(self):
-        """只给上界原先是空转：gbrq 留空，回的和不带日期一模一样（实测 45 条）。"""
+        """只给上界不补下界是空转：gbrq 留空，回的和不带日期一模一样（实测 45 条）。"""
         _, payloads = _npc(_rows(["《中华人民共和国土地增值税暂行条例》"]),
                            search_type=1, keyword=KW, date_to="2020-12-31")
         self.assertEqual([tax_search.DATE_FLOOR, "2020-12-31"], payloads[0]["gbrq"])

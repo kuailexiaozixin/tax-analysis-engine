@@ -540,9 +540,9 @@ function toggleFilters(){
 
 /* 「时效」这一控件在两条链路上量的是同一根轴（这份文件现在还作不作数），但值域
    不通用：NPC 库用数字码（3=现行有效），search5（税务总局／法规库）用文本
-   （全文有效 等五项，取值域见 tax_web_search.AGING_VALUES）。原先在 search5 那
-   两源把它置灰，是因为后端 build_filters 还没收 xxgkAging；2026-10-02 接入后
-   置灰的理由已不成立，改成整栏换值域。
+   （全文有效 等五项，取值域见 tax_web_search.AGING_VALUES）。search5 那两源不收
+   xxgkAging 时才该把它置灰；后端 build_filters 收这一维之后置灰的理由不成立，
+   所以整栏换成 search5 的值域。
    换值域时的默认值不同是实测决定的：NPC 那侧默认「现行有效」，而 search5 侧
    增值税×文件类标签 1908 条里只有 743 条录了时效，默认收窄会把 1165 条没录
    时效的现行文件一起筛掉，所以那两源默认退回「全部」。 */
@@ -584,7 +584,7 @@ async function loadQuickTax(){
 function pickTax(kw){document.getElementById('searchInput').value=kw;document.getElementById('searchInput').focus();}
 
 /* ═══════════ PROVINCES ═══════════ */
-// 省份清单只有这一处（原先 loadProvinces 与 getProvinceName 各存一份，改一处漏一处）。
+// 省份清单只有这一处：多处各存一份就会改一处漏一处，两份清单迟早对不上。
 // value 是省税务局的子域名，服务端直接拼 {value}.chinatax.gov.cn（见 tax_server.search_interpretations）。
 const PROVINCES=[{name:'全国',subdomain:''},{name:'北京',subdomain:'beijing'},{name:'上海',subdomain:'shanghai'},{name:'天津',subdomain:'tianjin'},{name:'重庆',subdomain:'chongqing'},{name:'广东',subdomain:'guangdong'},{name:'深圳',subdomain:'shenzhen'},{name:'浙江',subdomain:'zhejiang'},{name:'江苏',subdomain:'jiangsu'},{name:'山东',subdomain:'shandong'},{name:'四川',subdomain:'sichuan'},{name:'湖北',subdomain:'hubei'},{name:'湖南',subdomain:'hunan'},{name:'河南',subdomain:'henan'},{name:'河北',subdomain:'hebei'},{name:'福建',subdomain:'fujian'},{name:'厦门',subdomain:'xiamen'},{name:'安徽',subdomain:'anhui'},{name:'辽宁',subdomain:'liaoning'},{name:'大连',subdomain:'dalian'},{name:'吉林',subdomain:'jilin'},{name:'黑龙江',subdomain:'heilongjiang'},{name:'江西',subdomain:'jiangxi'},{name:'山西',subdomain:'shanxi'},{name:'陕西',subdomain:'shaanxi'},{name:'甘肃',subdomain:'gansu'},{name:'青海',subdomain:'qinghai'},{name:'云南',subdomain:'yunnan'},{name:'贵州',subdomain:'guizhou'},{name:'广西',subdomain:'guangxi'},{name:'海南',subdomain:'hainan'},{name:'内蒙古',subdomain:'neimenggu'},{name:'宁夏',subdomain:'ningxia'},{name:'新疆',subdomain:'xinjiang'},{name:'西藏',subdomain:'xizang'},{name:'青岛',subdomain:'qingdao'},{name:'宁波',subdomain:'ningbo'}];
 function fillProvinces(el,keep){
@@ -593,7 +593,7 @@ function fillProvinces(el,keep){
   if(keep&&PROVINCES.some(p=>p.subdomain===keep))el.value=keep;
 }
 // "官方解读"实际去哪些站点检索：必须与 tax_server.search_interpretations 的默认 sources 一致，
-// 否则页面上写的站点就不是真正被查的站点（这是原先省份下拉最大的问题：查的是全国站，界面却显示省名）。
+// 否则页面上写的站点就不是真正被查的站点（典型错位：查的是全国站，界面却显示省名）。
 function interpSites(prov){
   if(prov)return [`${prov}.chinatax.gov.cn`,'chinatax.gov.cn','www.gov.cn'];
   return ['chinatax.gov.cn','fgk.chinatax.gov.cn','mof.gov.cn','www.gov.cn'];

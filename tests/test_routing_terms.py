@@ -177,7 +177,7 @@ def test_route_by_tax_type_not_cross_topic():
 
 
 def test_alias_table_pins_accepted_and_rejected_words():
-    """别名表两类要钉住：本轮收进来的词必须归对，量过后没收的词不许回来。
+    """别名表两类要钉住：收进来的词必须归对，量过后没收的词不许回来。
 
     没收的理由不是"没测"，是实测会抢题（见 tax_search 里那段注释）：排序按别名
     长度定胜负，跨税种通用的长词会把整题从真正所属的税种抢走，所以它们要一直
@@ -337,8 +337,8 @@ def test_aging_and_doc_number_come_from_the_source():
 def test_search5_filters_reach_the_query_string_and_are_echoed():
     """五组收窄维度必须真的进到发出去的 query 里。
 
-    对应的坑：这批参数原先只在文档里记着，一个都没接进命令行。接了之后这条用例
-    是唯一的把关——如果哪天 params.update 那行被删掉，发出的 query 里没有这些键，
+    对应的坑：这批参数只记在文档里、没接进命令行时，发出去的 query 并不带它们。
+    接进命令行之后这条用例是唯一的把关——如果哪天 params.update 那行被删掉，发出的 query 里没有这些键，
     本用例就会红，而不是静默地按未过滤去检索。
     """
     saved = W.requests.get
@@ -652,7 +652,7 @@ def test_legislative_stage_flags_draft_wording():
 def test_legislative_stage_is_silent_for_promulgated_texts():
     """问已公布文本时不带这一栏，否则每条答案都凭空多一段"你这是草案"。
 
-    最后一例是本轮实测过的原题变体：点名 2026 年第 13 号公告问的是已公布的文件。
+    最后一例是原题变体：点名 2026 年第 13 号公告问的是已公布的文件。
     """
     for q in ("增值税的征税范围有哪些",
               "中华人民共和国增值税法什么时候施行",
