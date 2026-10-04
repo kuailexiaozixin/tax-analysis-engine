@@ -9,9 +9,13 @@ Five intent types × two-source search strategy. Always search FIRST, answer SEC
 
 **先看 `authority` 再决定查哪一源**。`resolve_tax_type()` 的返回值里带 `authority`：
 `"npc"` 就按 `parent_law` 查 NPC；`"sta"` 说明这个专题（转让定价、税收协定、
-非居民企业、税务行政处罚等共 11 项）在 NPC 库里检索无效——搜"反避税"返回 0 条，
+非居民企业、税务行政处罚等 12 项）在 NPC 库里检索无效——搜"反避税"返回 0 条，
 搜"转让定价"返回 10 条全是土地和矿产资源转让条例。见到 `"sta"` 就直接走
 `tax_fgk.py`，不要浪费一轮 NPC 检索再发现结果全是无关法规。
+`"overseas"`（全球最低税/支柱二）两个库都不查：法规库在文件类标签下按"支柱二"取到 0 条，
+NPC 按本体法取回的是标题里含"企业"的无关法律，要查的是关掉文件类标签的总局全站层
+（`python scripts/tax_web_search.py "支柱二" --all-labels`），并把该专题的 `note` 带进答案。
+三项的条数随 `TAX_TYPE_KEYWORDS` 变，SKILL.md ⑨ 给了数它的命令。
 
 ---
 

@@ -42,6 +42,7 @@ import tax_search as T
 import tax_shui5 as S5
 import tax_so360 as S360
 import tax_terms as TT
+import tax_web_search as W
 import tax_wechat as WX
 
 # 文号→官方链接缓存的路径覆盖（None 走默认 ~/.cache/.../cited_links.json）。
@@ -141,6 +142,8 @@ def build_plan(question: str) -> dict:
     if a.get("legislative_stage"):
         _retarget_for_legislation(tpl)
     a["rounds"] = tpl
+    # overseas 专题那句限制住在专题项上，plan 带出去给命令行、服务端与模型共用
+    a["overseas_note"] = (T.resolve_tax_type(question) or {}).get("note", "")
     return a
 
 
@@ -168,14 +171,55 @@ def _retarget_for_legislation(rounds: list) -> None:
     })
 
 
+def _overseas_rounds(rounds: list, info: dict) -> None:
+    """把 overseas 专题（支柱二与全球最低税）的第 1 轮改到全站层，再补一轮境内相邻专题。
+
+    两条都不沿用现有模板，各对应一处实测的空转：
+      · 沿用 sta：第 1 轮走法规库的文件类标签，「支柱二」「全球最低税」「GloBE」
+        各 0 条，整轮取回空清单。
+      · 沿用 npc：按原话去 NPC 标题检索，"支柱二对跨国企业有什么影响"取回的是
+        《企业破产法》《合伙企业法》《中小企业促进法》——命中靠的是"企业"两个字，
+        这些无关法律会占住【主依据】那一栏。
+    全站层取回的是境外辖区的立法进展，境内这一侧的规定不在那里，所以按专题项上
+    的 `adjacent` 补一轮法规库，用的是那个相邻专题自己实测过的检索词。
+    """
+    first = rounds[0]
+    first["sources"] = ["whole_site", "shui5"]
+    first["call"] = ("search_chinatax(专题检索词, size=8, file_only=False) + "
+                     "search_shui5(同一词)")
+    first["goal"] = (f"{first['goal']}（这一类在中国官方法规库里没有对应文件，"
+                     "本轮取的是税务总局网站全站层的境外辖区动态与实务解读）")
+    adjacent = info.get("adjacent") or ""
+    term = T.adjacent_search_term(info)
+    if len(rounds) > 1 and rounds[1].get("sources") == ["fgk"]:
+        # 模板把这一轮写成"确认有无更新或配套文件"，对这一类专题它实际承担的是
+        # 另一件事：境内法规库到底有没有就这件事发的文件。这一轮用专题检索词
+        # （`search_terms` 的 fgk 一路），实测 0 条命中——那个 0 是答案的一部分，
+        # 所以把轮次目标写明白，免得界面只留一句"取数失败"让人以为再补取能有东西。
+        rounds[1]["goal"] = (f"查境内法规库有没有就「{info.get('search_term') or ''}」"
+                             f"这一件事发的文件")
+    if term:
+        rounds.append({
+            "round": len(rounds) + 1,
+            "goal": f"境内这一侧的相邻专题「{adjacent}」现行怎么规定",
+            "sources": ["fgk"],
+            "call": f"search_fgk({term}, size=8)",
+            "term_key": "adjacent_fgk",
+        })
+
+
 def _reroute_first_round(rounds: list, question: str) -> None:
     """第 1 轮按专题的 authority 换源。
 
     模板把第 1 轮都写成 npc，但 sta 专题（转让定价、税收优惠等）在 NPC 库里
     检索无效——搜"转让定价"命中 10 条全是土地和矿产资源转让条例。这类题第 1 轮
     就该查总局法规库，否则取回的全是无关法规，还要多花一轮才发现。
+    overseas 专题（支柱二与全球最低税）走的是另一条，见 `_overseas_rounds`。
     """
     info = T.resolve_tax_type(question) or {}
+    if info.get("authority") == "overseas":
+        _overseas_rounds(rounds, info)
+        return
     if info.get("authority") != "sta":
         return
     first = rounds[0]
@@ -202,6 +246,24 @@ def _npc_round(term: str, size: int) -> tuple[list, str]:
 
 def _fgk_round(term: str, size: int) -> tuple[list, str]:
     rows, err = _rows_and_error(FGK.search_fgk(term, size=size))
+    return rows, err
+
+
+def _whole_site_round(term: str, size: int) -> tuple[list, str]:
+    """税务总局站的全站层：关掉文件类标签，取动态、新闻与解读编译。
+
+    只有 authority="overseas" 的专题走这里（判据见 `_overseas_rounds`）。取回的
+    每一条都不是文件类条目，所以逐条带一句具体提醒：它记录的是境外辖区立了什么法、
+    哪个年度生效，拿去答"在中国要怎么缴"就是错位。这一句和"来源提示可能偏题"那句
+    兜底提醒说的不是同一件事，所以写成条目自己的 `_reliability_note`。
+    """
+    rows, err = _rows_and_error(W.search_chinatax(term, size=size,
+                                                  file_only=False))
+    for row in rows:
+        row["_reliability"] = "medium"
+        row["_reliability_note"] = (
+            "税务总局网站全站层（文件类标签之外）的动态或解读页：它说明的是境外辖区"
+            "的立法进展，不是中国境内的征税依据——要落到具体辖区名与生效年度才能用")
     return rows, err
 
 
@@ -256,6 +318,7 @@ def _legis_round(term: str, size: int) -> tuple[list, str]:
 
 
 _FETCHERS = {"npc": _npc_round, "fgk": _fgk_round,
+             "whole_site": _whole_site_round,
              "shui5": _shui5_round, "wechat": _wechat_round,
              "legis": _legis_round}
 
@@ -271,6 +334,8 @@ def search_terms(question: str) -> dict:
     Returns:
         {"npc": 本体法名或原话, "fgk": 专题检索词, "shui5": 短词,
         "wechat": 短词, "legis": 立法过程检索词（题面没点立法阶段则为空）,
+        "whole_site": overseas 专题在全站层用的检索词,
+        "adjacent_fgk": overseas 专题补查那一轮用的检索词,
         "topic": 识别到的专题名, "parent_law": 本体法}
     """
     info = T.resolve_tax_type(question) or {}
@@ -286,9 +351,13 @@ def search_terms(question: str) -> dict:
         short = alias
     # 用户点名了某份文件时，法规库那一轮要找的是这一份文件本身，
     # 不是它所属税种的本体法——本体法留给 npc 那一轮当上位法依据。
+    # overseas 专题的法规库那一轮也用专题检索词：它问的是"境内文件类标签下到底
+    # 有没有这一件事的文件"，用原话整句去查只会因字面匹配不到而 0 条，那个 0
+    # 说明不了任何事（实测"支柱二对跨国企业有什么影响"在法规库 0 条命中）。
     cited = TT.cited_documents(question)
     fgk_term = TT.core_of_title(cited[0]["title"]) if cited else (
-        sta_term if info.get("authority") == "sta" else parent or short)
+        sta_term if info.get("authority") in ("sta", "overseas")
+        else parent or short)
     if cited and (not alias or len(short) > len(cited[0]["core"])):
         short = cited[0]["core"][:6]
 
@@ -304,6 +373,9 @@ def search_terms(question: str) -> dict:
         "shui5": short,
         "wechat": short,
         "legis": legis_term,
+        # overseas 专题的两格：全站层用专题自己的检索词，补查那轮用相邻专题的
+        "whole_site": sta_term,
+        "adjacent_fgk": T.adjacent_search_term(info),
         "topic": topic,
         "parent_law": parent,
         "authority": info.get("authority", "npc"),
@@ -741,8 +813,11 @@ def gather(question: str, at: str = "", read_body: bool = True,
                 continue
             if err:
                 # 取数失败和被判空是两件事，这里必须留名：下游 rounds_done 的
-                # found=0 只有配上这一条才不读成"库里没有"（见 ⑤）
-                errors.append(f"第{rnd['round']}轮 {src} 取数失败：{err}")
+                # found=0 只有配上这一条才不读成"库里没有"（见 ⑤）。本轮目标要
+                # 一起带出去：答案是按轮次分段渲染的，读者看不到轮次表，只看这
+                # 一句时分不清坏掉的是哪一趟、这一趟本来要去取什么。
+                errors.append(f"第{rnd['round']}轮 {src} 取数失败：{err}"
+                              f"（本轮目标：{rnd['goal']}）")
                 failed_this_round.append(src)
 
             for row in rows:
@@ -915,6 +990,9 @@ def compose(plan: dict) -> dict:
         # 题面点名的是草案/征求意见稿时，本轮取回的同名文本是现行有效版本，
         # 不是草案内容。这句话命令行与服务端共用，不在两处各说各话。
         "legislative_note": A.legislative_note(plan.get("legislative_stage", [])),
+        # 题面归到 overseas 专题（支柱二与全球最低税）时，这一句划清境内依据的
+        # 边界：本轮取回的是境外辖区的立法动态，不是中国的征收依据。
+        "overseas_note": plan.get("overseas_note", ""),
         "probes": plan.get("probes", []),
         # 取数失败的轮次：这一栏非空时，上面各层列出的条数不能读成"库里只有这些"
         "fetch_errors": plan.get("errors", []),
@@ -954,6 +1032,7 @@ def _print_plan(plan: dict):
         print(f"  建议先问：{pr['probe']}")
     _print_accounting_gap(plan.get("accounting_gap", []))
     _print_legislative_note(A.legislative_note(plan.get("legislative_stage", [])))
+    _print_overseas_note(plan.get("overseas_note", ""))
 
 
 def _print_legislative_note(note: str):
@@ -961,6 +1040,13 @@ def _print_legislative_note(note: str):
     if not note:
         return
     print(f"\n立法阶段限制：{note}")
+
+
+def _print_overseas_note(note: str):
+    """问的是支柱二那一类境外辖区规则时，这一句同样原样进答案。"""
+    if not note:
+        return
+    print(f"\n境外辖区规则限制：{note}")
 
 
 def _print_accounting_gap(gap: list):
@@ -1048,6 +1134,7 @@ def _print_answer(a: dict):
         print(f"\n【适用边界】\n  · {a['rule_note']}")
     _print_accounting_gap(a.get("accounting_gap", []))
     _print_legislative_note(a.get("legislative_note", ""))
+    _print_overseas_note(a.get("overseas_note", ""))
     if a["probes"]:
         print(f"\n【建议先向用户确认】")
         for pr in a["probes"]:

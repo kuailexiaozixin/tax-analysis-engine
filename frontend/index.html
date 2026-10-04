@@ -704,6 +704,9 @@ function renderResults(data){
   // 点名的是草案/征求意见稿时，这一栏列出的同名文件是现行有效版本、不是草案内容。
   // 整句由后端给（tax_analyze.legislative_note），这里照抄，不在前端判断库的收录范围。
   if(data.legislative_note){h+=`<div class="meta-bar" style="border-bottom:none"><span class="source-label" style="border-color:var(--accent);color:var(--accent);white-space:normal">收录范围 ${esc(data.legislative_note)}</span></div>`;}
+  // 规则主体在境外辖区的专题（支柱二），取回的是境外立法动态而不是境内征税依据。
+  // 整句住在专题项上（tax_search.TAX_TYPE_KEYWORDS 的 note），这里照抄。
+  if(data.overseas_note){h+=`<div class="meta-bar" style="border-bottom:none"><span class="source-label" style="border-color:var(--accent);color:var(--accent);white-space:normal">🌐 ${esc(data.overseas_note)}</span></div>`;}
   // 空清单的成因有四种，分流顺序按"越靠近真相越先看"：
   //   _fetch_failed —— 上游真的没取到数据（_error 是整形过的失败原因），不能读成"库里没有"
   //   _filter_note  —— 叠加收窄维度后 0 条，分不清"拼窄"还是"没有"

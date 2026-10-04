@@ -415,6 +415,19 @@ def api_search():
                                           sort=sort, date_from=date_from,
                                           date_to=date_to)
                 result["_routed"] = f"{tax_type_info['type']}属总局专题，已改查法规库：{agg_kw}"
+            elif authority == "overseas":
+                # 界面默认走聚合，这一路不接就和单源那一路同样的空转：税务总局在
+                # 聚合层仍按文件类标签检索，支柱二三个检索词各 0 条，取回的全是
+                # 其余三源的泛泛文章，界面显示的"没查到"其实是筛错了层。
+                agg_kw = (tax_type_info or {}).get("search_term") or keyword
+                agg_sources = [s for s in DEFAULT_SOURCES if s != "npc"]
+                result = aggregate_search(agg_kw, size=size, status=status,
+                                          scope=scope, sources=agg_sources,
+                                          sort=sort, date_from=date_from,
+                                          date_to=date_to, file_only=False)
+                result["_routed"] = (
+                    f"{tax_type_info['type']}的规则主体在境外辖区，已改查税务总局全站层"
+                    f"（文件类标签之外）：{agg_kw}")
             else:
                 if parent_law:
                     agg_kw = parent_law
@@ -442,7 +455,19 @@ def api_search():
             # 接口对非法值只会静默回基线命中，所以在这一层就报 400。
             return jsonify({"error": f"筛选参数不合法：{e}"}), 400
         ui_order = SORT_TO_ORDER.get(sort, "relevance")
-        if source == "chinatax":
+        if authority == "overseas":
+            # 界面把数据源点到税务总局或法规库时也要换层：这两路都在文件类标签
+            # 里检索，而这一类在中国官方法规库里没有对应文件（实测见专题项的
+            # note）。不换就是回一份空清单，读起来像"这件事没有文件"。换层的原因
+            # 写进 _routed，与 sta 那一路把 NPC 换成法规库同形。
+            term = (tax_type_info or {}).get("search_term") or keyword
+            result = search_chinatax(term, size=size, filters=ui_filters,
+                                     file_only=False, order=ui_order)
+            where = "法规库" if source == "fgk" else "税务总局的文件类标签"
+            result["_routed"] = (
+                f"{tax_type_info['type']}的规则主体在境外辖区，{where}里没有对应文件，"
+                f"已改查税务总局全站层（文件类标签之外）：{term}")
+        elif source == "chinatax":
             result = search_chinatax(keyword, size=size, filters=ui_filters,
                                      order=ui_order)
         else:
@@ -472,6 +497,24 @@ def api_search():
                                 filters=ui_filters,
                                 order=SORT_TO_ORDER.get(sort, "relevance"))
             result["_routed"] = f"{tax_type_info['type']}属总局专题，已改查法规库：{term}"
+        elif authority == "overseas":
+            # 支柱二与全球最低税这一类不按 sta 那一路查：文件类标签下三个检索词
+            # 各 0 条（实测见 `tax_search.OVERSEAS_REGIME_NOTE`），整轮是空跑；
+            # 按 NPC 那一路查"支柱二对跨国企业有什么影响"，顶回来的是《企业破产法》
+            # 《合伙企业法》——靠"企业"两个字命中的无关法律会占住主依据那一栏。
+            # 这一路关掉文件类标签，取全站层。
+            term = (tax_type_info or {}).get("search_term") or keyword
+            try:
+                ui_filters = _ui_filters(scope, data.get("exact"), date_from, date_to,
+                                         data.get("aging"))
+            except ValueError as e:
+                return jsonify({"error": f"筛选参数不合法：{e}"}), 400
+            result = search_chinatax(term, size=size, filters=ui_filters,
+                                     file_only=False,
+                                     order=SORT_TO_ORDER.get(sort, "relevance"))
+            result["_routed"] = (
+                f"{tax_type_info['type']}的规则主体在境外辖区，已改查税务总局全站层"
+                f"（文件类标签之外）：{term}")
         else:
             try:
                 result = search_tax(
@@ -496,6 +539,10 @@ def api_search():
     # 点名的是草案/征求意见稿时同样只照抄：库里收的都是已公布文本，界面这一栏
     # 列出的同名文件是它的现行有效版本，不是草案内容（判据见 legislative_stage）。
     stage_note = legislative_note(legislative_stage(raw_keyword))
+    # 境外辖区专题那句限制住在专题项上（tax_search.TAX_TYPE_KEYWORDS 的 note），
+    # 前端只照抄：判据是"文件类标签下 0 条、全站层取回的是别国立法"，不让界面
+    # 自己区分哪一类算境外规则。
+    overseas_note = (tax_type_info or {}).get("note", "")
 
     return jsonify({
         "keyword": keyword,
@@ -508,6 +555,7 @@ def api_search():
         "authority": (tax_type_info or {}).get("authority", "npc"),
         "accounting_note": gap_note,
         "legislative_note": stage_note,
+        "overseas_note": overseas_note,
         "result": result,
     })
 

@@ -12,6 +12,11 @@
   authority="sta"  查税务总局法规库，判前 N 条里有没有标题含核心词的条目。
                    转让定价、税收协定、税务行政处罚这类专题在人大库里没有
                    对应法律，硬查只会得出"检索不到"的错误结论。
+  authority="overseas"
+                   查税务总局网站全站层（关掉文件类标签），判前 N 条里有没有
+                   标题点到这件事的境外立法动态。支柱二这一类在人大库和文件类
+                   标签下都是 0 条，按那两路探会把"这一类本就没有境内文件"
+                   写成检索缺陷。
 
 探针按专题键缓存，一题一探针改成一键一探针：评测集的题面反复命中同几个
 专题，不缓存的话 1003 题要打两千多次请求，人大接口在这个量级必现限流。
@@ -45,6 +50,7 @@ for _s in (sys.stdout, sys.stderr):
 
 import tax_search as T
 import tax_fgk as FGK
+import tax_web_search as W
 
 # 题面常见表述 → TAX_TYPE_KEYWORDS 里的键。
 #
@@ -78,6 +84,11 @@ SURFACE_FORMS = [
     ("关税", ["关税"]),
     ("税收协定", ["税收协定", "双重征税", "双重居民", "国际税收", "税收居民身份",
                   "税收条约", "协定待遇", "缔结关于"]),
+    # 支柱二排在建定税收居民身份/常设机构判例的键之前：它的表面词都是专有说法，
+    # 不会遮蔽别的键；反过来"BEPS"这个笼统词住在"反避税"里，放在它后面就会被
+    # 先遮蔽掉，"BEPS 2.0 支柱二"这类题面就提不出本键。
+    ("全球最低税", ["支柱二", "全球最低税", "GloBE", "BEPS2.0", "BEPS 2.0",
+                    "低税利润规则", "收入纳入规则", "补足税", "并行方案"]),
     ("非居民企业", ["非居民企业", "非居民", "源泉扣缴", "预提所得税", "支付所得"]),
     ("常设机构", ["常设机构", "营业场所", "固定场所"]),
     ("受控外国企业", ["受控外国企业", "外国企业股息", "视同股息分配"]),
@@ -158,6 +169,19 @@ def probe(key: str, topn: int, pause: float) -> dict:
             # 会把"找到过"误判成"没找到"，反避税的依据就排在第 4 位。
             items = FGK.search_fgk(term, size=STA_FETCH).get("results", [])
             core = STA_CORE_TERM.get(key, [key])
+            c["rank"] = next((i for i, it in enumerate(items)
+                              if any(t in (it.get("title") or "") for t in core)), -1)
+            c["n"] = len(items)
+            c["titles"] = [it.get("title", "") for it in items]
+        elif authority == "overseas":
+            # 探针跟着路由走：路由把这一类送到全站层，探针就送同一个点。照 sta
+            # 那一路查文件类标签会永远 0 条，报告里写成的却是"这个专题检索不到
+            # 依据"，而这一类的境内依据本来就没有——线上要答的是境外辖区的动态。
+            term = info.get("search_term") or key
+            c["term"] = term
+            items = W.search_chinatax(term, size=STA_FETCH,
+                                      file_only=False).get("results", [])
+            core = [term, "支柱二", "全球最低税", "GloBE"]
             c["rank"] = next((i for i, it in enumerate(items)
                               if any(t in (it.get("title") or "") for t in core)), -1)
             c["n"] = len(items)

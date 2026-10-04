@@ -69,6 +69,8 @@ OFFLINE_GROUP = [
      [PY, str(TESTS_DIR / "test_source_defects.py")]),
     ("检索词整形与路由用例（选项剥离/点名文件定位/短词降级/sta 检索词）",
      [PY, str(TESTS_DIR / "test_routing_terms.py")]),
+    ("境外辖区专题用例（overseas 归类/轮次换层/服务端三路与探针分派）",
+     [PY, str(TESTS_DIR / "test_overseas_topics.py")]),
     ("评测集规则用例", [PY, str(TESTS_DIR / "test_eval_set.py")]),
     ("答题评测判分口径用例（输出格式轴/PROMPT 版本进指纹）",
      [PY, str(TESTS_DIR / "test_eval_answer.py")]),

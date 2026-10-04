@@ -497,6 +497,38 @@ def test_sta_topics_reachable():
     return len(sta)
 
 
+def test_overseas_topics_reachable():
+    """所有 authority="overseas" 的专题，全站层那一路要取得到条目。
+
+    这一类的依据不在中国官方法规库里，所以判据和 sta 那一路不同：不判"取到法规
+    文件"，只判"关掉文件类标签后取得到东西"。取空了说明专题项的 search_term 与
+    网站措辞脱节，或者这一类已经不再只有境外立法（境内真发了文件就要重判 authority）。
+    条目自带的那句限制也在这里一起判：路由与那句话是一套的，少了句子，取回的
+    境外动态就会被当成境内征税依据引。
+    """
+    print("\n[Test] overseas topics reachable via whole-site layer")
+    from tax_web_search import search_chinatax
+    overseas = {k: v for k, v in TAX_TYPE_KEYWORDS.items()
+                if v.get("authority") == "overseas"}
+    assert overseas, "⑨ 的映射表里没有 overseas 项，这条用例就失去了对象"
+    bad = []
+    for key, info in overseas.items():
+        term = info.get("search_term")
+        if not term:
+            bad.append(f"{key}: 缺 search_term")
+            continue
+        if not info.get("note"):
+            bad.append(f"{key}: 缺 note，路由到了全站层却不带那句境外限制")
+        if not (TAX_TYPE_KEYWORDS.get(info.get("adjacent") or "") or {}).get("search_term"):
+            bad.append(f"{key}: adjacent 指向的专题查不到检索词")
+        r = search_chinatax(term, size=3, file_only=False)
+        if r["total"] == 0:
+            bad.append(f"{key}: 全站层按「{term}」取不到条目")
+    assert not bad, "以下 overseas 专题取不到依据：\n  " + "\n  ".join(bad)
+    print(f"  [PASS] {len(overseas)}/{len(overseas)} 个 overseas 专题均取到全站层条目")
+    return len(overseas)
+
+
 def test_npc_reliability_marker():
     """模糊全文检索标 medium（已排序但可能偏题），精确检索不标。"""
     print("\n[Test] NPC reliability marker")
@@ -1247,6 +1279,7 @@ def main():
         ("Challenge Page Detection", test_challenge_page_detection),
         ("fgk Paging", test_fgk_paging),
         ("sta Topics Reachable", test_sta_topics_reachable),
+        ("overseas Topics Reachable", test_overseas_topics_reachable),
         ("NPC Fulltext Relevance", test_npc_fulltext_relevance),
         ("NPC Title Ranking", test_npc_title_ranking),
         ("parent_law Authenticity", test_parent_law_authenticity),

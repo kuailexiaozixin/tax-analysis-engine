@@ -39,7 +39,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from tax_search import search_tax, check_iso_date, DATE_FLOOR, DATE_CEIL
-from tax_web_search import search_chinatax, build_filters
+from tax_web_search import search_chinatax, build_filters, label_scope_text
 from tax_so360 import so360_search
 from tax_shui5 import search_shui5
 from tax_wechat import search_wechat
@@ -236,7 +236,8 @@ def aggregate_search(keyword: str, *,
                      exact: bool = False,
                      sort: str = "relevance",
                      date_from: str = None,
-                     date_to: str = None) -> dict:
+                     date_to: str = None,
+                     file_only: bool = True) -> dict:
     """
     Concurrently search multiple data sources and return deduplicated, ranked results.
 
@@ -257,6 +258,10 @@ def aggregate_search(keyword: str, *,
               在本源取回的 size 条窗口内按条目日期补筛，计数写
               `_date_filter.local_window`，判读规则写 `_date_note`。没带日期的
               条目留在结果里并计入 no_date，不静默丢。
+        file_only: 只落在税务总局那一路（search_chinatax 的同名参数），默认 True
+              把这一路限定在十个文件类标签内。规则主体在境外辖区的专题（支柱二、
+              全球最低税）文件类标签下实测 0 条，要传 False 连动态与境外立法编译
+              一起取；其余四源没有这个维度，不受影响。
 
     Raises:
         ValueError: date_from/date_to 不是补零的 YYYY-MM-DD 真实日期。
@@ -267,9 +272,10 @@ def aggregate_search(keyword: str, *,
     date_from = check_iso_date(date_from, "date_from")
     date_to = check_iso_date(date_to, "date_to")
     use_date = bool(date_from or date_to)
-    # 税务总局那一路的收窄维度就是日期本身：filters 传不进 search_chinatax，
-    # 界面上的日期控件在聚合这条路径上就是空转（2026-10-02 实测：带与不带日期
-    # 的 12 条结果一模一样，仍含 2019-11-27 那份）。build_filters 同时兼任校验。
+    # 税务总局那一路收的收窄维度就是 build_filters 产出的日期区间（它没有 NPC
+    # 那种 status/scope 参数）；这一层不往下传，界面上的日期控件在聚合这条路径
+    # 上就是空转（2026-10-02 实测：带与不带日期的 12 条结果一模一样，仍含
+    # 2019-11-27 那份）。build_filters 同时兼任校验。
     date_filters = build_filters(cwrq_from=date_from, cwrq_to=date_to)
 
     results = {}
@@ -288,7 +294,8 @@ def aggregate_search(keyword: str, *,
             )
         if "chinatax" in sources:
             futures["chinatax"] = pool.submit(
-                search_chinatax, keyword, size=size, filters=date_filters
+                search_chinatax, keyword, size=size, filters=date_filters,
+                file_only=file_only
             )
         if "so360" in sources:
             # 全网检索，再由调用方按需收窄站点；此处不带 site:
@@ -427,6 +434,9 @@ Examples:
                         "so360/shui5/wechat 没有日期参数，只在本源取回的窗口内补筛")
     p.add_argument("--to", dest="date_to", metavar="YYYY-MM-DD",
                    help="日期区间上界，生效方式同 --from")
+    p.add_argument("--all-labels", action="store_true",
+                   help="税务总局那一路关掉文件类标签，连新闻、视频、各地动态一起搜。"
+                        "规则主体在境外辖区的专题（支柱二）要用它，否则这一路 0 条")
     p.add_argument("--json", action="store_true")
 
     args = p.parse_args()
@@ -442,6 +452,7 @@ Examples:
             sort=args.sort,
             date_from=args.date_from,
             date_to=args.date_to,
+            file_only=not args.all_labels,
         )
     except ValueError as e:
         print(f"❌ {e}", file=sys.stderr)
@@ -453,6 +464,10 @@ Examples:
 
     print(f"🔍 多源搜索 \"{args.keyword}\" | {result['searched_at']}")
     print(f"   数据源: {', '.join(sources)}")
+    if "chinatax" in sources:
+        # 0 条有两种来处：该源这一层真没有，和搜错了层。不印出层名，这两种在
+        # 屏幕上长得一模一样。
+        print(f"   税务总局检索范围: {label_scope_text(not args.all_labels)}")
     for src in sources:
         print(f"   {SOURCE_LABELS.get(src, src)}: {result['source_summary'].get(src, 0)} 条")
     if result.get("_date_note"):
