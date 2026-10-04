@@ -20,6 +20,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = ROOT / "scripts"
@@ -290,6 +291,153 @@ class TestBuildIndexCoverage(unittest.TestCase):
         idx = GL.build_index(rows, channel="税务规范性文件")
         self.assertEqual(0, idx["发文字号缺失"])
         self.assertEqual(0, idx["时效性缺失"])
+
+    def test_placeholder_aging_counts_as_missing(self):
+        """字符串 "null" 要归成空并计入缺失。
+
+        2026-10-04 实测「财税文件」栏第 1/3/5 页共 150 条：138 条空串、12 条
+        写成 "null"。少这一步就把这 12 条当"官方标了时效性"，缺失计数随之少报，
+        stats 的分布里还会多出一档叫 null 的取值。
+        """
+        def raw(aging):
+            return {"title": "T", "url": "http://t/1", "channelName": "财税文件",
+                    "domainMetaList": [{"resultList": [
+                        {"key": "aging", "value": aging, "name": "时效性"}]}]}
+        for placeholder in ("null", "NULL", "", "-"):
+            self.assertEqual("", GL.normalize_item(raw(placeholder))["时效性"],
+                             f"占位串 {placeholder!r} 没归成空")
+        self.assertEqual("全文有效", GL.normalize_item(raw("全文有效"))["时效性"])
+        rows = [_row("A", "http://t/A", aging=""), _row("B", "http://t/B", aging="全文有效")]
+        idx = GL.build_index(rows, channel="财税文件")
+        self.assertEqual(1, idx["时效性缺失"])
+
+
+class TestChannelRegistry(unittest.TestCase):
+    """栏目登记表：加一栏要同时过这三道，缺一栏就会静默取空或判成 unknown。
+
+    钉住 2026-10-04 收「国务院文件」「税务部门规章」两栏时的验收，以及把
+    「其他」改名为接口自报的「其他文件」这件事。
+    """
+
+    def test_channel_ids_are_distinct_hex32(self):
+        # 抄错一位、两栏粘成同一个 id，都在这里报红——那种错表现为整栏取空，
+        # 而 sync 只说"0 条"，不会指向 id。
+        for name, cid in GL.CHANNELS.items():
+            self.assertRegex(cid, r"^[0-9a-f]{32}$", f"{name} 的 channelId 形态不对")
+        self.assertEqual(len(GL.CHANNELS), len(set(GL.CHANNELS.values())),
+                         "两栏共用了同一个 channelId")
+        self.assertIn(GL.DEFAULT_CHANNEL, GL.CHANNELS)
+
+    def test_channel_keys_are_the_api_own_names_and_facet_names(self):
+        """键名 == 接口 channelName == 检索面效力等级名，三处只记一个词。
+
+        --channel 走 CHANNELS.get(name, name)，名字对不上时它会把中文栏名当
+        channelId 发出去；--aging/界面筛选那一路用的是 EFFECT_LEVEL_VALUES。
+        """
+        from tax_web_search import EFFECT_LEVEL_VALUES
+        for name in GL.CHANNELS:
+            self.assertIn(name, EFFECT_LEVEL_VALUES,
+                          f"栏目「{name}」与检索面效力等级名不同名，两套词会各说各话")
+
+    def test_measured_aging_values_all_judge_known(self):
+        """七栏实测出现的五种时效性逐个过 judge_validity，一个都不落 unknown。
+
+        取值分布是 2026-10-04 本机逐栏翻到底量的整栏数（不是抽样）：
+        规范性文件 1925 = 808/745/347/23/2（五种全出现），规章 86 = 46/18/22，
+        法律 75 = 69/3/2/1，行政法规 65 = 43/21/1，国务院文件 35 = 33/1/1；
+        财税文件 1532 与其他文件 488 整栏不填。原始分布见 CHANNELS 注释。
+        """
+        from tax_evidence import judge_validity
+        from tax_web_search import AGING_VALUES
+        expected = {"全文有效": "effective", "已修改": "effective",
+                    "全文废止": "repealed", "全文失效": "repealed",
+                    "尚未生效": "pending"}
+        self.assertEqual(set(expected), set(AGING_VALUES),
+                         "清单实测取值与检索面取值域已经漂移")
+        for aging, want in expected.items():
+            got = judge_validity({"status": aging})["validity"]
+            self.assertEqual(want, got, f"「{aging}」判成 {got}，期望 {want}")
+
+
+class TestChannelSwitch(unittest.TestCase):
+    """切栏目一定要把索引换过去，不能被"集合未变"留在上一栏。
+
+    索引只有一份（INDEX_PATH 单文件），而 ListSynchronizer 按栏位各自存快照：
+    2026-10-04 实测先 sync --channel 税务部门规章、再 sync --channel 行政法规，
+    后者报"无更新（集合未变）"跳过构建，磁盘上仍是规章栏 86 条，而 stats 读的
+    就是这一份。所以 sync 先看索引落在哪一栏，与请求不符就转 force。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._saved = GL.DATA_ROOT, GL.INDEX_PATH
+        root = Path(self._tmp.name)
+        GL.DATA_ROOT = root
+        GL.INDEX_PATH = root / "gov_list_index.json"
+
+    def tearDown(self):
+        GL.DATA_ROOT, GL.INDEX_PATH = self._saved
+        self._tmp.cleanup()
+
+    def _run_sync(self, index_channel, want_channel):
+        """磁盘上放着 index_channel 的索引，请求 want_channel，返回传给同步器的 force。"""
+        GL.build_index([_row("占位", "http://t/1")], channel=index_channel)
+        seen = {}
+
+        class _Syn:
+            source = "chinatax-list"
+
+            def sync(self, check_only=False, force=False):
+                seen["force"] = force
+                return {"成功": True, "动作": "无更新（集合未变）",
+                        "本地条目数": 1, "条目数": 1}
+
+        with mock.patch.object(GL, "_synchronizer", return_value=_Syn()):
+            GL.sync(channel=want_channel)
+        return seen.get("force")
+
+    def test_stale_index_from_other_channel_forces_rebuild(self):
+        self.assertTrue(self._run_sync("税务规范性文件", "行政法规"),
+                        "索引还落在别的栏目，却没转成 force——stats 会读错栏")
+
+    def test_same_channel_does_not_force(self):
+        self.assertFalse(self._run_sync("行政法规", "行政法规"),
+                        "同一栏目本可靠快照跳过重建，不该白白重爬")
+
+
+class TestLookupFilterDomain(unittest.TestCase):
+    """离线 lookup 的 --aging 是精确等值比对，域外值与"库里没有"必须分开。
+
+    写成 "有效" 或带空格的 "全文 有效" 时，筛出来是 0 条，而 0 条读起来像
+    "这一栏没有现行有效的文件"。与检索面 build_filters 同一口径：域外值在取数前报错。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._saved = GL.DATA_ROOT, GL.INDEX_PATH
+        root = Path(self._tmp.name)
+        GL.DATA_ROOT = root
+        GL.INDEX_PATH = root / "gov_list_index.json"
+        GL.build_index([_row("增值税公告", "http://t/A", aging="全文有效"),
+                        _row("废止的", "http://t/B", aging="全文废止")],
+                       channel="税务规范性文件")
+
+    def tearDown(self):
+        GL.DATA_ROOT, GL.INDEX_PATH = self._saved
+        self._tmp.cleanup()
+
+    def test_out_of_domain_aging_is_rejected_before_filtering(self):
+        with self.assertRaises(SystemExit) as ctx:
+            GL.lookup(["增值税"], aging="有效")
+        msg = str(ctx.exception)
+        self.assertIn("取值域外", msg)
+        for v in GL.AGING_VALUES:
+            self.assertIn(v, msg, f"报错没把取值域列出来：{msg}")
+
+    def test_in_domain_aging_with_no_hit_is_not_an_error(self):
+        """域内值筛空是正常结果，不该报错——否则"库里没有"被说成用法错。"""
+        self.assertEqual([], GL.lookup([], aging="尚未生效"))
+        self.assertEqual(1, len(GL.lookup([], aging="全文废止")))
 
 
 if __name__ == "__main__":

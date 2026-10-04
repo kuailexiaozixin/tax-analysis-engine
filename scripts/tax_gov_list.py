@@ -8,7 +8,10 @@ www.chinatax.gov.cn/getFileListByCodeId，按 channelId 分栏目、分页返回
 成文日期、税费类型）。无需 cookie、无需 UA、实测 20 次连发不限流、不调模型。
 
 它补的是检索源给不了的东西：**一个栏目下全部现行文件的封闭清单**，
-每条自带官方"时效性"分类状态（全文有效/全文废止/已修改/部分失效/尚未生效）。
+每条自带官方"时效性"分类状态。七栏实测出现的取值只有 全文有效／已修改／
+全文废止／全文失效／尚未生效 五种（逐栏分布数字见 CHANNELS 注释），与
+tax_web_search.AGING_VALUES 逐项相同，也都在 tax_evidence.judge_validity
+认得的范围内——加新栏前先按这条核，取值域没登记就不收。
 这份分类状态正是 scripts/tax_evidence.py 的 judge_validity 要的输入，
 官方 url 又是 scripts/tax_cited.py 的文号→官方链接缓存要的落点。
 
@@ -17,8 +20,9 @@ www.chinatax.gov.cn/getFileListByCodeId，按 channelId 分栏目、分页返回
 时效性翻转（同一 url、内容没换）也会被检出、触发重建。重建时 build_index 会
 自检元数据覆盖率，把「发文字号缺失 / 时效性缺失 N 条」落进索引并在 sync 回显——
 官方元数据键（writtentext/aging）改版导致整列变空，在写入侧就报出，不必等检索
-召回下滑才察觉。注意时效性缺失对"财税文件"栏目是常态（官方本就不填），只如实
-记录、不报警；文号栏缺失才作改版预警。
+召回下滑才察觉。注意时效性缺失对"财税文件""其他文件"两栏是常态（官方本就不填，
+2026-10-04 整栏翻到底：1532 条与 488 条 0 条真值），只如实记录、不报警；
+文号栏缺失才作改版预警。
 
 用法：
     python tax_gov_list.py sync                 # 抓全指定栏目并重建索引
@@ -43,6 +47,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import tax_http  # noqa: E402
+from tax_web_search import AGING_VALUES, aging_of  # noqa: E402  时效性的取值域与占位串空值口径都只有一套
 
 API = "https://www.chinatax.gov.cn/getFileListByCodeId"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -50,14 +55,41 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 TIMEOUT = 30
 PAGE_SIZE = 100
 
-# 栏目 channelId（实测 total 见注释；时效性只有"税务规范性文件/法律/行政法规/其他"
-# 这几栏填得满，"财税文件"那一栏时效性恒空——但仍收进清单，靠发文字号/效力等级用）。
+# 栏目 channelId 与整栏条数（total 为 2026-10-04 本机逐栏取到底的实数）。
+# 键名一律取接口自己报的 channelName（也等于该栏每条的 效力等级），与
+# tax_web_search.EFFECT_LEVEL_VALUES 逐个同名——CLI 的 --channel、检索面的
+# effect_level、索引行里的 channel 字段就只需要记一个名字。
+#
+# 时效性填得满的是这五栏：税务规范性文件/法律/行政法规/国务院文件/税务部门规章。
+# 2026-10-04 本机逐栏翻到底的整栏分布（条数 = total，未抽样）：
+#   税务规范性文件 1925 = 全文有效 808／全文废止 745／已修改 347／全文失效 23／尚未生效 2
+#   税务部门规章 86 = 46／18（已修改）／22（全文废止）
+#   法律 75 = 69／3（全文废止）／2（已修改）／1（全文失效）
+#   行政法规 65 = 43／21（全文废止）／1（已修改）
+#   国务院文件 35 = 33／1（全文失效）／1（已修改）
+# 七栏出现的取值合起来正好是 tax_web_search.AGING_VALUES 那五种，tax_evidence
+# .judge_validity 逐条不落 unknown——加新栏前按这条核，取值域没登记就不收。
+# 恒空的是这两栏，仍收进清单，靠发文字号/效力等级用（整栏翻到底，0 条真值）：
+#   财税文件 1532 条全空、其他文件 488 条全空。注意旧注释曾把"其他文件"记成
+#   "填得满"，本轮量过是错的；"财税文件"整栏不填这件事与 references/source_defects.md
+#   里 corroborate_validity_from_target 那条是同一件事的两侧。
+# 空栏里混着占位写法：财税文件抽样 150 条（第 1/3/5 页）是 138 空串 + 12 条字符串
+# "null"。字面 "null" 由 normalize_item 走 aging_of 归成空串，否则 stats 的时效性
+# 分布多出一档 "null"、build_index 的「时效性缺失」也会少报。
+#
+# 两栏故意不收录，各自有账：
+#   工作通知 c102424（total=813）：抽 25 条时效性 0/25 全空。栏目枚举这条路要的是
+#   "整栏现行文件的横截面"，不填时效性就枚举不出可引用的那批，只剩一堆内部工作事项
+#   与文库版本通知；按词命中已由 search5 的 FILE_LABELS（含"工作通知"）覆盖。
+#   政策解读 c100015：解读件不是可援引依据，走 search5 的"文字政策解读"标签。
 CHANNELS = {
-    "税务规范性文件": "470b437b304f434396500a1e2edc7f28",   # c100012, total≈1924, 时效性填充
-    "财税文件": "2cb303fdee614232b79552d52bb057d6",          # c102416, total≈1532, 时效性恒空
-    "其他": "4c1a5be62f6d44d48f386f630dcebbc5",              # c100013, ≈488
-    "法律": "d34fa7ad03f84f4caed12f5c2beae099",              # c100009, ≈75
-    "行政法规": "e1cd1569d1ea4a25a11041248925a081",          # c100010, ≈65
+    "税务规范性文件": "470b437b304f434396500a1e2edc7f28",  # c100012, total=1925, 时效性填充
+    "财税文件": "2cb303fdee614232b79552d52bb057d6",         # c102416, total=1532, 时效性恒空
+    "其他文件": "4c1a5be62f6d44d48f386f630dcebbc5",         # c100013, total=488, 时效性恒空
+    "法律": "d34fa7ad03f84f4caed12f5c2beae099",             # c100009, total=75, 时效性填充
+    "行政法规": "e1cd1569d1ea4a25a11041248925a081",         # c100010, total=65, 时效性填充
+    "国务院文件": "fa1726b47078490fa0a4522194185e8d",       # c102440, total=35, 时效性填充
+    "税务部门规章": "0ac34e96afbb4be28844f18eef412421",     # c100011, total=86, 时效性填充
 }
 DEFAULT_CHANNEL = "税务规范性文件"
 
@@ -96,6 +128,10 @@ def normalize_item(item: dict) -> dict:
     }
     for cn, key in META_KEY_FIELDS.items():
         rec[cn] = meta.get(key, "")
+    # 财税文件栏实测有 12/150 条把时效性写成字符串 "null"。不归一就会当成
+    # "有标注"：stats 的分布多出一档 "null"，build_index 的「时效性缺失」少报，
+    # 而这一栏本来就该记成"官方没填"。空值口径复用检索面的 aging_of，不另立一套。
+    rec["时效性"] = aging_of(rec["时效性"])
     return rec
 
 
@@ -188,6 +224,10 @@ def _match(rec, words):
 
 def lookup(words, aging=None, channel=None, limit=20, as_json=False):
     idx = _load_index()
+    # 时效性是精确等值比对，取值域外（"有效"、"全文 有效"）不是"这一栏没有这种状态"，
+    # 而是这个词根本不在这五种里。与检索面 build_filters 同一口径：域外值在动手筛之前就报。
+    if aging and aging not in AGING_VALUES:
+        raise SystemExit(f"[取值域外] --aging 只认 {'、'.join(AGING_VALUES)}，收到的是 {aging!r}")
     pool = idx["记录"]
     if aging:
         pool = [r for r in pool if aging == (r.get("时效性") or "")]
@@ -245,6 +285,19 @@ def _synchronizer(channel=DEFAULT_CHANNEL):
 def sync(check=False, force=False, as_json=False, channel=DEFAULT_CHANNEL):
     import tax_sync
     syn = _synchronizer(channel)
+    # 索引只有一份，落在哪一栏由上一次真正重建它的请求决定。切栏时若那一栏的
+    # 集合恰好没变，ListSynchronizer 会走"无更新"分支跳过构建，磁盘上留的还是
+    # 别的栏目那份——stats/lookup 读到的不是刚请求的那栏，而 sync 的回显只看
+    # 条目数，看不出串了栏。索引栏目与本次请求不一致就当 force 处理。
+    # （2026-10-04 实测：先 sync --channel 税务部门规章，再 sync --channel 行政法规
+    #   报"集合未变"，索引里仍是 税务部门规章 86 条。）
+    if not check and not force and INDEX_PATH.exists():
+        try:
+            on_disk = json.loads(INDEX_PATH.read_text(encoding="utf-8")).get("栏目")
+        except (OSError, ValueError):
+            on_disk = None
+        if on_disk != channel:
+            force = True
     try:
         res = syn.sync(check_only=check, force=force)
     except Exception as e:
