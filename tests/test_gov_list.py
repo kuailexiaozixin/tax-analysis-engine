@@ -15,6 +15,8 @@ fetch_page（从表里按页返回行、报 total），不打网络。tax_gov_li
   7. 爬不满 total（fetch_page 每页都给行但 total 虚高）→ max_pages 截断报错
 """
 
+import contextlib
+import io
 import json
 import sys
 import tempfile
@@ -438,6 +440,58 @@ class TestLookupFilterDomain(unittest.TestCase):
         """域内值筛空是正常结果，不该报错——否则"库里没有"被说成用法错。"""
         self.assertEqual([], GL.lookup([], aging="尚未生效"))
         self.assertEqual(1, len(GL.lookup([], aging="全文废止")))
+
+
+class TestChannelPages(unittest.TestCase):
+    """栏目页映射：路径必须是数据，不能是模板拼接。
+
+    2026-10-04 本机逐个 GET：六栏在 `<c码>/listflfg.html`，唯独「税务部门规章」
+    在 `c100011/list.html`；按统一模板拼出来的 `c100011/listflfg.html` 回 404。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._saved = GL.DATA_ROOT, GL.INDEX_PATH
+        root = Path(self._tmp.name)
+        GL.DATA_ROOT = root
+        GL.INDEX_PATH = root / "gov_list_index.json"
+
+    def tearDown(self):
+        GL.DATA_ROOT, GL.INDEX_PATH = self._saved
+        self._tmp.cleanup()
+
+    def test_every_channel_has_exactly_one_page(self):
+        self.assertEqual(set(GL.CHANNELS), set(GL.CHANNEL_PAGES),
+                         "栏目与栏目页两登记表漏了一栏，stats 会印空")
+        for name, url in GL.CHANNEL_PAGES.items():
+            self.assertTrue(url.startswith("https://fgk.chinatax.gov.cn/zcfgk/"),
+                            f"{name} 的栏目页不在政策法规库域下：{url}")
+
+    def test_page_names_are_not_a_uniform_template(self):
+        """规章那条的页面名与其余六栏不同——把它"统一化"就会指到 404 页。"""
+        self.assertTrue(GL.CHANNEL_PAGES["税务部门规章"].endswith("/c100011/list.html"))
+        for name, url in GL.CHANNEL_PAGES.items():
+            if name != "税务部门规章":
+                self.assertTrue(url.endswith("/listflfg.html"), f"{name} 的页面名被改错了")
+
+    def test_build_index_records_the_page_and_survives_unknown_channel(self):
+        idx = GL.build_index([_row("A", "http://t/A")], channel="法律")
+        self.assertEqual("https://fgk.chinatax.gov.cn/zcfgk/c100009/listflfg.html",
+                         idx["栏目页"])
+        other = GL.build_index([_row("B", "http://t/B")], channel="没登记过的栏目")
+        self.assertEqual("", other["栏目页"], "未登记的栏目不该拼出一个 URL")
+
+    def test_stats_says_the_old_index_has_no_page_instead_of_a_blank(self):
+        """改版前建的索引没有 `栏目页` 这一格：要写明"重跑 sync 即带出"，不印空串。"""
+        idx = GL.build_index([_row("A", "http://t/A")], channel="法律")
+        del idx["栏目页"]
+        GL.INDEX_PATH.write_text(json.dumps(idx, ensure_ascii=False), encoding="utf-8")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            GL.stats()
+        out = buf.getvalue()
+        self.assertIn("旧索引未录", out)
+        self.assertNotIn("栏目页：\n", out, "印成空串会被读成这一栏没有官方页")
 
 
 if __name__ == "__main__":

@@ -15,6 +15,10 @@ tax_web_search.AGING_VALUES 逐项相同，也都在 tax_evidence.judge_validity
 这份分类状态正是 scripts/tax_evidence.py 的 judge_validity 要的输入，
 官方 url 又是 scripts/tax_cited.py 的文号→官方链接缓存要的落点。
 
+它不在 scripts/tax_aggregator.py 的五源聚合里（`DEFAULT_SOURCES` 没有这一路）：
+检索源回答"跟这个词相关的文件"，这一路回答"这一栏全部的文件"，两者不互相顶替。
+索引顶部另带该栏的官方栏目页直链（`CHANNEL_PAGES`，`stats` 印出来给读者自查条数）。
+
 同步复用 scripts/tax_sync.py 的 ListSynchronizer（分页爬全 → 集合 SHA1 diff
 → 变了才重建索引）。集合 SHA1 覆盖 url+时效性+发文字号+title，所以某文件
 时效性翻转（同一 url、内容没换）也会被检出、触发重建。重建时 build_index 会
@@ -92,6 +96,22 @@ CHANNELS = {
     "税务部门规章": "0ac34e96afbb4be28844f18eef412421",     # c100011, total=86, 时效性填充
 }
 DEFAULT_CHANNEL = "税务规范性文件"
+
+# 栏目的可浏览页（政策法规库站点的栏目首页，读者自己核"这一栏都有什么"的入口）。
+# 一页一条，路径写全而不是按模板拼——页面名并不统一：只有「税务部门规章」是
+# list.html，其余六栏是 listflfg.html。2026-10-04 本机逐个 GET：七页全 200，
+# 而按统一模板拼出来的 c100011/listflfg.html 回 404，所以这张表必须是数据不能是推导。
+# 静态 HTML 里栏目名由 JS 渲染，页面自身只把该栏的 c 码写在导航与脚本里，
+# 每张卡片的正文链接也落在同一个 c 码目录下。
+CHANNEL_PAGES = {
+    "税务规范性文件": "https://fgk.chinatax.gov.cn/zcfgk/c100012/listflfg.html",
+    "财税文件": "https://fgk.chinatax.gov.cn/zcfgk/c102416/listflfg.html",
+    "其他文件": "https://fgk.chinatax.gov.cn/zcfgk/c100013/listflfg.html",
+    "法律": "https://fgk.chinatax.gov.cn/zcfgk/c100009/listflfg.html",
+    "行政法规": "https://fgk.chinatax.gov.cn/zcfgk/c100010/listflfg.html",
+    "国务院文件": "https://fgk.chinatax.gov.cn/zcfgk/c102440/listflfg.html",
+    "税务部门规章": "https://fgk.chinatax.gov.cn/zcfgk/c100011/list.html",
+}
 
 # 政策文件元数据：按稳定的 key 取（resultList 内顺序不固定，且 name 也可能改）。
 META_KEY_FIELDS = {
@@ -195,6 +215,7 @@ def build_index(rows: list, *, channel: str = DEFAULT_CHANNEL) -> dict:
     index = {
         "栏目": channel,
         "channelId": CHANNELS.get(channel, ""),
+        "栏目页": CHANNEL_PAGES.get(channel, ""),
         "版本日期": version,
         "构建时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "条目数": n_total,
@@ -260,6 +281,7 @@ def stats(as_json=False):
     if as_json:
         print(json.dumps({"栏目": idx.get("栏目"), "版本": idx.get("版本日期"),
                           "条目数": idx.get("条目数"), "覆盖率": cov,
+                          "栏目页": idx.get("栏目页", ""),
                           "时效性分布": dict(c)},
                          ensure_ascii=False, indent=1))
         return
@@ -267,6 +289,8 @@ def stats(as_json=False):
     _a = "—" if cov["时效性缺失"] is None else cov["时效性缺失"]
     print(f"栏目 {idx.get('栏目')} | 版本 {idx.get('版本日期')} | 条目 {idx.get('条目数')}"
           f" | 文号缺 {_d} / 时效性缺 {_a}")
+    # 旧索引没有这一格（建库时还没录栏目页），不带过就印"—"提示重跑 sync。
+    print(f"  栏目页：{idx.get('栏目页') or '—（旧索引未录，重跑 sync 即带出）'}")
     for k, v in c.most_common():
         print(f"  {v:>5}  {k}")
 
