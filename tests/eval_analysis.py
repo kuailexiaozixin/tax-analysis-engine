@@ -46,6 +46,7 @@ for _s in (sys.stdout, sys.stderr):
         pass
 
 import tax_analyze as A            # noqa: E402
+import tax_coverage as CV           # noqa: E402
 import tax_evidence as E            # noqa: E402
 import tax_answer as AN             # noqa: E402
 
@@ -153,40 +154,45 @@ def score_primary(item: dict, labels: dict) -> dict:
 
 
 def score_sufficient(item: dict, labels: dict) -> dict:
-    """依据是否足以支撑该类型的结论。
+    """依据是否足以支撑该类型的结论——"该有哪些"由注册表说，不由这里数。
 
-    逐类定义"够"，并且要认 authority 这一层：authority="sta" 的专题
-    （国际税收、税收优惠、税收立法权等）本来就没有本体法，NPC 库里也
-    查不到它们的依据，硬要求"必须有本体法"会把正确实现判成不合格。
-    它们要以"检索词取得到依据"为够的标准。
+    这一格以前写着一串 if：option_judge 要本体法、entitlement/liability/risk/
+    treatment 要本体法、sta 专题看 fgk 检索词。那份清单与 ① 表格的「必需依据」、
+    ② 的四根轴是同一件事的三个副本，改一处不会通知另外两处。现在必备项取自
+    `data/evidence_requirements.json`（`tax_coverage.assess` 逐项判状态），
+    这里只保留**离线判得动的那一根可达性判据**：计划有没有为该题装配出打得到
+    依据层的检索词。ok 的口径与旧版一致，所以历史分数可比；变的是清单的出处。
+
+    离线手里没有检回的依据，所以依据要件一律记「待核」而不是「缺」——这两件事
+    必须分开：待核是"这一轮还没检"，缺是"检了一圈没有这类材料"。要拿依据项打分，
+    得走 eval_answer 那条有 `evidence_bundle` 的路，把清单原样喂进
+    `tax_coverage.assess(evidence=...)`。
     """
     plan = AN.build_plan(item["question"])
     t = plan["type"]["type"]
     terms = AN.search_terms(item["question"])
-    parent = terms.get("parent_law", "")
-    authority = terms.get("authority", "")
-
     if not terms.get("topic"):
         return {"ok": None,
                 "note": f"题目不属于任何已登记税种/专题，"
                         f"检索词将直接用原话（{item['question'][:26]}…）"}
 
-    if authority == "sta":
-        # 总局专题：本体法为空是设计如此，够不够看有没有可用的专题检索词
-        ok = bool(terms.get("fgk"))
-        need = f"总局专题「{terms.get('topic')}」按 search_term 走法规库"
-        return {"ok": ok, "note": f"{need}；检索词 {terms.get('fgk') or '缺失'}"}
+    cov = CV.assess(t, item["question"], evidence=None)
+    need = [i["项"] for i in cov["分项"] if i["类"] == "依据"]
+    lack_axis = [i["项"] for i in cov["分项"] if i["状态"] == "缺"]
+    to_verify = [i["项"] for i in cov["分项"] if i["状态"] == "待核"]
 
-    if t == "option_judge":
-        ok = bool(parent)
-        need = "需本体法全文（逐条比对）"
-    elif t in ("entitlement", "liability", "risk", "treatment"):
-        ok = bool(parent)
-        need = "需本体法，且判型已触发多轮模板"
+    # 可达性判据按依据源分两支：sta 专题本来就没有本体法，硬要求会把正确实现判成不合格
+    if terms.get("authority") == "sta":
+        ok = bool(terms.get("fgk"))
+        got = f"总局专题检索词 {terms.get('fgk') or '缺失'}"
     else:
-        ok = bool(parent)
-        need = "需本体法"
-    return {"ok": ok, "note": f"{need}；本体法 {parent or '未识别'}"}
+        ok = bool(terms.get("parent_law"))
+        got = f"本体法 {terms.get('parent_law') or '未识别'}"
+    return {"ok": ok, "必备依据": need, "缺前提": lack_axis, "待核": to_verify,
+            "覆盖率": cov["覆盖率"],
+            "note": f"{t} 类必备 {len(need)} 项（{'、'.join(need)}）；{got}；"
+                    f"题面缺的前提 {'、'.join(lack_axis) or '无'}，"
+                    f"离线判不了的 {len(to_verify)} 项记待核"}
 
 
 def score_caveat(item: dict, labels: dict) -> dict:
