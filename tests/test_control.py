@@ -42,6 +42,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import tax_control  # noqa: E402
 import tax_inspect  # noqa: E402
+import red_line_map  # noqa: E402  ⑦ 红线的正文归属登记表（tests/ 目录本身就在检索路径上）
 
 SKILL = ROOT / "SKILL.md"
 TPL = ROOT / "references" / "output_templates.md"
@@ -671,20 +672,11 @@ class TestDocHooks(unittest.TestCase):
             self.assertIn(needle, body, "⑥ 那一段少了：%s" % needle)
         self.assertIn("九种输出形态", body)
 
-    def test_red_line_25_is_numbered_and_intact(self):
-        skill = self.skill()
-        body = skill.split("\n## ⑦ ")[1].split("\n## ")[0]
-        nums = [int(m.group(1)) for m in re.finditer(r"^(\d+)\. ", body, re.M)]
-        # 本层只钉到自己那一条（第 25 条）；后面再加红线由加的那一层自己钉内容，
-        # 这里判的只有"编号连续"和"第 25 条还是那条禁把没有记录写成没有发生"。
-        self.assertEqual(nums, list(range(1, len(nums) + 1)),
-                         "⑦ 的红线条目编号不连续：%s" % nums)
-        self.assertGreaterEqual(len(nums), 25, "⑦ 里第 25 条不见了")
-        last = re.search(r"(?m)^25\. (.+)$", body)
-        self.assertIsNotNone(last, "⑦ 里找不到以『25. 』开头的条目")
-        self.assertTrue(last.group(1).startswith("**禁止"),
-                        "第 25 条不是一条禁止：%s" % last.group(1)[:20])
-        item = re.search(r"(?ms)^25\. .*?(?=^26\. |\Z)", body).group(0)
+    def test_red_line_25_is_the_control_one(self):
+        # 第 25 条是跨层红线，全文留在 ⑦。编号连不连续、指针与锚对不对，由
+        # `test_doc_contract` 的登记表用例逐条判；本层只认自己那几句还在。
+        self.assertEqual(red_line_map.holder(25), ("SKILL.md", "⑦ 禁止行为清单"))
+        item = red_line_map.body(25)
         for needle in ("没有记录", "没有发生", "无法确认"):
             self.assertIn(needle, item, "第 25 条少了『%s』这一句" % needle)
 

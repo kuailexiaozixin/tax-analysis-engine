@@ -92,7 +92,7 @@ OFFLINE_GROUP = [
     ("评测集规则用例", [PY, str(TESTS_DIR / "test_eval_set.py")]),
     ("答题评测判分口径用例（输出格式轴/PROMPT 版本进指纹）",
      [PY, str(TESTS_DIR / "test_eval_answer.py")]),
-    ("文档内部契约用例（目录锚点/⑥形态清单/前向指针/归属表符号）",
+    ("文档内部契约用例（目录锚点/⑥形态清单/前向指针/归属表符号/⑦红线归属登记表）",
      [PY, str(TESTS_DIR / "test_doc_contract.py")]),
 ]
 

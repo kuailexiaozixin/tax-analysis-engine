@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """文档内部契约的离线用例。不联网、不开浏览器、不调模型。
 
-守的是五类结构问题——都不问内容对错，只问"改了一处有没有忘了另一处"：
+守的是六类结构问题——都不问内容对错，只问"改了一处有没有忘了另一处"：
 
   1. `references/*.md` 顶部目录里每个锚点都必须落到本文某个真实二级标题；对
      `output_templates.md` 与 `out_of_library_layers.md` 这两份按"一节一行"维护
@@ -22,6 +22,10 @@
      说它们是必查项，模板说各自去哪几层取、取不到时留痕那一句怎么写。⑥ 的定性漂回
      "可选"，或模板那句留痕被换成"取不到就不写"，模型就有一条不必检索的出口——
      留白还会让 ⑦ 第 9 条无从核对，因为读者分不清是没查到还是根本没查。
+  6. ⑦ 禁止清单的分层：跨层红线全文留在 ⑦，层专属的那几条只留一行指针，正文在它
+     所属步骤那一节或对应的 `references/` 段落。`tests/red_line_map.py` 逐条核对编号、
+     锚、目的地三者是否互相对上，以及每条正文在全仓库是否只出现一次——搬文本最容易
+     出的事是搬丢一份或留下两份，两者都要能报红。
 
 第 3 项的"文件 → 章节名"抽取只认 SKILL.md 现有的两种句式（`` `x.md` 的"Y"一节``
 与 `` `x.md`「Y」 ``，后者已是多数），扩句式前先加提取规则，否则新指针会静默逃过
@@ -31,14 +35,17 @@
 每条检查都要能报红才算还在工作，所以本文件自带 `test_mutation_*` 自检：往内存副本
 里注入对应的破坏（删枚举值、表格改名、矩阵塞域外取值、删整条交互 bullet、删候选
 总览档位、指针指向不存在的小节、「」式指针整体不认、半句贴两遍、归属表符号漂走、
-把留痕句改成"就整段不写"等），断言那一条检查转红。自检改的是内存副本，不落盘，
-也不往仓库里留注入脚本。
+把留痕句改成"就整段不写"、删空红线正文格、红线锚记号改名、红线指针指错小节、
+红线抄进两份文件、删掉 ⑦ 里那一行指针等），断言那一条检查转红。自检改的是内存副本，
+不落盘，也不往仓库里留注入脚本。
 """
 
 import re
 import sys
 import unittest
 from pathlib import Path
+
+import red_line_map
 
 ROOT = Path(__file__).resolve().parent.parent
 SKILL = ROOT / "SKILL.md"
@@ -484,13 +491,13 @@ class TestSkillFormsInventory(unittest.TestCase):
         self.assertNotIn("放弃优惠", interaction_checks(broken), "删条后检查不会报红")
 
     def test_skill_side_forbids_skipping_the_layer(self):
-        """模板给怎么查，SKILL.md 给不许跳过：两条禁止项必须在位。"""
+        """模板给怎么查，⑦ 给不许跳过：两条禁止项一条全文留着、一条搬到模板那一式的正文格。"""
         skill = SKILL.read_text(encoding="utf-8")
         self.assertIn("未查叠加与择一", skill, "⑦ 没有禁止未查叠加与择一那一条")
-        self.assertIn("禁止把条件全满足当成多项优惠可同享", skill,
-                      "全绿≠可同享没进最高优先级约束")
-        self.assertIn("禁止择一采用矛盾输入", skill,
-                      "冲突输入的处置没进最高优先级约束")
+        self.assertIn("禁止未查叠加与择一就给出多项优惠可同时享受", red_line_map.body(22),
+                      "全绿≠可同享这一条没写进第 22 条的正文")
+        self.assertIn("禁止把择一采用当成矛盾输入的处置", red_line_map.body(23),
+                      "冲突输入的处置没进 ⑦ 禁止清单")
         self.assertIn("择一采用", skill.split("## ⑦")[1],
                       "② 的矛盾输入规则没同步进 ⑦ 禁止清单")
 
@@ -624,6 +631,87 @@ class TestOptionalReasoningBlocks(unittest.TestCase):
                          "改留白后正向判据没报红")
         self.assertIn("就整段不写", silent_exit_words(broken),
                       "改留白后反向判据没报红，说明措辞检查形同虚设")
+
+
+class TestRedLineOwnership(unittest.TestCase):
+    """⑦ 的分层由 `tests/red_line_map.py` 判：跨层红线全文留在 ⑦，层专属的那几条把正文
+    搬到所属步骤那一节或对应的 `references/` 段落，⑦ 那一行退成指针。
+
+    四条判据缺一条就会出现"搬丢了却没人说"：⑦ 的编号连续且条数等于登记值；指针点名的
+    目的地里确有 `【⑦ 第 N 条正文】`，且那个锚落在指针说的那一节里；锚后面那一格以 ⑦
+    留下的同一个标题起头；每一条正文在全仓库逐字只出现一次。
+    """
+
+    def setUp(self):
+        self.skill = SKILL.read_text(encoding="utf-8")
+        self.refs = red_line_map.read_refs()
+
+    def _skill7(self, fn):
+        """只对 ⑦ 那一节做改写，其余原样拼回——变异不能靠全文替换，别处也有 `8. ` 起头行。"""
+        m = red_line_map.SEC7.search(self.skill)
+        self.assertTrue(m, "SKILL.md 里没有 ⑦ 那一节")
+        return self.skill[:m.start(1)] + fn(m.group(1)) + self.skill[m.end(1):]
+
+    def _refs_with(self, name, old, new):
+        self.assertIn(old, self.refs[name], f"{name} 里找不到那段原文")
+        refs = dict(self.refs)
+        refs[name] = refs[name].replace(old, new, 1)
+        return refs
+
+    def test_the_registry_is_clean(self):
+        self.assertEqual(red_line_map.problems(self.skill, self.refs), [],
+                         "⑦ 的红线归属对不上")
+
+    def test_every_item_has_one_readable_body(self):
+        got = red_line_map.holders(self.skill, self.refs)
+        self.assertEqual(sorted(got), list(range(1, red_line_map.TOTAL + 1)))
+        for n, (name, sec, block) in got.items():
+            self.assertTrue(block.strip(), f"第 {n} 条取不到正文格（{name}／{sec}）")
+            self.assertIn("禁止", block[:24], f"第 {n} 条的正文格不以禁止起头")
+
+    def test_mutation_dropped_body_is_caught(self):
+        """自检：正文格被删空、只剩一个锚，标题对不上要报红。"""
+        refs = self._refs_with("references/output_templates.md",
+                               "【⑦ 第 8 条正文】**禁止漏判选项**：选项判断题必须逐条判完。",
+                               "【⑦ 第 8 条正文】\n")
+        p = red_line_map.problems(self.skill, refs)
+        self.assertTrue(any("第 8 条" in x and "起头" in x for x in p),
+                        f"删空正文后不报红：{p}")
+
+    def test_mutation_pointer_to_wrong_section_is_caught(self):
+        """自检：正文还在，指针却指到别的小节，归属判据要报红。"""
+        skill = self.skill.replace(
+            "正文见 references/output_templates.md「逐条比对式」的【⑦ 第 8 条正文】",
+            "正文见 references/output_templates.md「分析六段式」的【⑦ 第 8 条正文】", 1)
+        self.assertNotEqual(skill, self.skill, "变异没落到那条指针上")
+        p = red_line_map.problems(skill, self.refs)
+        self.assertTrue(any("锚实际落在" in x for x in p), f"指错小节后不报红：{p}")
+
+    def test_mutation_duplicated_body_is_caught(self):
+        """自检：把某一格的正文再抄进第二份文档，两份都会各改各的，按逐字重复报红。"""
+        block = red_line_map.body(8)
+        refs = dict(self.refs)
+        key = "references/evidence_grading.md"
+        refs[key] = refs[key].rstrip("\n") + "\n\n" + block + "\n"
+        p = red_line_map.problems(self.skill, refs)
+        self.assertTrue(any("第 8 条" in x and "逐字出现 2 次" in x for x in p),
+                        f"抄成两份后不报红：{p}")
+
+    def test_mutation_anchor_renamed_is_caught(self):
+        """自检：目的地那一格的锚记号被改掉（换措辞、改标题），指针就指不到正文了。"""
+        refs = self._refs_with("references/output_templates.md",
+                               "【⑦ 第 8 条正文】", "【第七 8 条】")
+        p = red_line_map.problems(self.skill, refs)
+        self.assertTrue(any("第 8 条" in x and "那里没有" in x for x in p),
+                        f"锚改名后不报红：{p}")
+
+    def test_mutation_pointer_line_dropped_is_caught(self):
+        """自检：正文搬走了、⑦ 那一行却整条删掉，编号与孤儿锚两处都要报红。"""
+        skill = self._skill7(lambda sec: re.sub(r"(?ms)^8\. .*?(?=^\d+\. |\Z)", "", sec, count=1))
+        self.assertNotEqual(skill, self.skill, "变异没落到 ⑦ 第 8 条那一行")
+        p = red_line_map.problems(skill, self.refs)
+        self.assertTrue(any("编号不连续" in x for x in p), f"少一条后编号不报红：{p}")
+        self.assertTrue(any("被立了锚" in x for x in p), f"锚成了孤儿却不报红：{p}")
 
 
 def _cn_count(token: str) -> int:

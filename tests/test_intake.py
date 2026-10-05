@@ -56,6 +56,7 @@ import tax_analyze   # noqa: E402  ② 的追问句只有一处：CONTEXT_AXES
 import tax_coverage  # noqa: E402  覆盖四态沿用覆盖率层那串名字
 import tax_inspect   # noqa: E402  核对四值、缺口类别与动作、两条红线词表都取自这一处
 import tax_intake    # noqa: E402
+import red_line_map  # noqa: E402  ⑦ 红线的正文归属登记表
 import tax_search    # noqa: E402  历史称谓不得撞上现行税种名
 
 REG = tax_intake.load()
@@ -1185,10 +1186,12 @@ class TestDocsShareTheImplementation(unittest.TestCase):
             self.assertIn(needle, flat, f"② 那一段少了：{needle}")
 
     def test_red_line_27_is_the_intake_one(self):
-        body = SKILL.split("\n## ⑦ ")[1].split("\n## ")[0]
-        nums = [int(m.group(1)) for m in re.finditer(r"^(\d+)\. ", body, re.M)]
-        self.assertEqual(nums, list(range(1, len(nums) + 1)), "⑦ 的红线编号不连续")
-        item = re.search(r"(?ms)^27\. .*?(?=^\d+\. |\Z)", body).group(0)
+        # 第 27 条的正文住在 ⑥ 那一式的多合同受理条件块里，⑦ 只留一行指针；
+        # 指针与锚对不对由 `test_doc_contract` 的登记表用例逐条判，这里只认本层那几句还在。
+        self.assertEqual(red_line_map.holder(27),
+                         ("references/output_templates.md", "风险自检专用输出"))
+        item = red_line_map.body(27)
+        self.assertIn("【⑦ 第 27 条正文】", TEMPLATES)
         for needle in ("合同链", "生效顺序", "出处", "第 25 条"):
             self.assertIn(needle, item, f"第 27 条少了：{needle}")
 
