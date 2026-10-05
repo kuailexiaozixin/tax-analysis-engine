@@ -191,6 +191,7 @@ SKILL.md ② 末尾指向这一节。它回答两个问题：某一格动作**�
 | ⑥ 前 站在检查人员一侧盘缺口 | 脚本出问询单元与三类缺口，Agent 决定问哪几格、怎么把「现有回答」对上 | `tax_inspect.build` / `select` / `signals` / `scenarios` / `covered_by` / `check_pairs` / `caliber_gap`，注册表 `data/inspection_domains.json`；红线在 `tax_inspect.validate` 载入时扫 `FORBIDDEN_REMEDIATION` 与 `PREDICTION_PHRASES` | `python scripts/tax_inspect.py --list`；`--answers` 里名字对不上的数进「核对未用」而不是消失；未询问要点逐条列在【覆盖】里；离线用例 `tests/test_inspect.py` |
 | ⑥ 前 把检查缺口转成制度条文 | 脚本出九要素文本与缺口匹配，Agent 决定摆进答案哪一段 | `tax_control.build` / `intake` / `matches` / `pick` / `validate`，注册表 `data/control_activities.json`；门槛在 `tax_control.NeedsDiagnosis`，红线词表沿用 `tax_inspect.FORBIDDEN_REMEDIATION` 与 `PREDICTION_PHRASES` | `python scripts/tax_control.py --list`；不给诊断也不给假设时退码 2 并回吐取诊断的那两条命令；`--assume` 出来的形态是通用模板；离线用例 `tests/test_control.py` |
 | ⑥ 前 拿结构化账套行比账上的数 | 脚本逐条跑判据、出八要素条目与三类判不动，Agent 决定跑哪几条规则、哪一条摆进「风险自检专用输出」 | `tax_ledger.scan` / `run_rule` / `pending` / `render` / `validate` / `_steps` / `_compare` / `_row_mark`（账套没给行号那一列时按提交顺序顶上序），禁数字的格子由 `tax_ledger.DIGIT_FREE_CELLS` 声明并与注册表逐字比对，注册表 `data/ledger_rules.json`；没给账套在 `tax_ledger.NeedsLedger`，四态沿用 `tax_coverage.STATES`，缺口与红线词表沿用 `tax_inspect.GAP_MISSING`、`tax_inspect.GAP_CALIBER`、`tax_inspect.FORBIDDEN_REMEDIATION`、`tax_inspect.PREDICTION_PHRASES`——前一份只扫『建议』那一格（词表里的『回填』指往历史账上补数，而本层的『参数回填』指把 ③ 检回的现行值填进本次参数表，按整段输出扫等于把自己的说法判死），后一份扫『查什么』与『建议』 | `python scripts/tax_ledger.py --list`；`--pending` 出那份取数工作清单；参数没给来源时整条规则落『待核』而不是拿旧值算；逐行判时未命中行与判不动行分两格计；离线用例 `tests/test_ledger.py` |
+| ② 前 收齐一次交来的几份合同并按维度对账 | 脚本逐单元比条款与履行、出十一格差异条目与五种成因，Agent 决定确认合同链上的哪几条关系（`--confirm`）、把哪一条差异摆进「风险自检专用输出」 | `tax_intake.intake` / `reconcile` / `build_chain` / `superseded_cells` / `_compare_element` / `_verdict` / `time_points` / `historical_hits` / `framework_sections` / `validate`，落点值域在 `tax_intake.LANDINGS`，成因到结论与缺口类别的两张表在 `tax_intake.CAUSE_VERDICT`／`CAUSE_GAP`，禁数字的格子由 `tax_intake.DIGIT_FREE_CELLS` 声明并与注册表逐字比对，注册表 `data/contract_intake_template.json`；一条合同都没给在 `tax_intake.NeedsContracts`，四态沿用 `tax_coverage.STATES`，核对四值／三类缺口与动作／两条红线词表沿用 `tax_inspect`，② 的追问句沿用 `tax_analyze.CONTEXT_AXES`，历史称谓不得撞的现行税种名沿用 `tax_search.TAX_TYPE_KEYWORDS`，每维的『风险指标落点』必须指到 `references/tax_risk_framework.md` 里真实存在的风险指标小节 | `python scripts/tax_intake.py --list`；`--blank` 出那张空白填表；没 `--confirm` 的替代边不作废任何条款，确认后也只作废后一份合同也带着的那几格；抽取的值缺出处那一格整条落『待核』而不进比对；履行侧没记录进「无法确认条目」并落成证据缺口，可喂 `python scripts/tax_inspect.py --answers`；离线用例 `tests/test_intake.py` |
 | ⑥ 前 liability 出数 | 脚本 | `tax_calc.run` / `inputs` / `SKELETONS`（骨架零硬编码，值与档表由 ③ 检回后经 `--set`/`--src` 喂进） | `python scripts/tax_calc.py --list`；缺参数退码 2 并列整份缺口；离线用例 `tests/test_calc.py` |
 | ③④ 决定取数轮次与候选词 | 脚本给计划，Agent 放宽 | `tax_answer.build_plan`，回显在 `rounds_done` | `python scripts/tax_answer.py "<原话>" --plan` |
 | ③ L2 要"整栏横截面"（这一栏现行文件都有哪些） | 脚本 | `tax_gov_list.sync` / `lookup` / `stats`，栏目与栏目页两张表 `CHANNELS`、`CHANNEL_PAGES` | `python scripts/tax_gov_list.py stats` 读栏目/条目数/时效性分布/栏目页；离线用例 `tests/test_gov_list.py` |
@@ -259,6 +260,17 @@ SKILL.md ② 末尾指向这一节。它回答两个问题：某一格动作**�
   另一种边界在取值侧：规则比的那两个数一律来自 ③ 检回并带来源的参数，检不回、没给
   来源、或检回的表里没有被判定那一行所属那一档时，规则整条或该行判不动。本层不联网、
   不推算节假日顺延、也不拿邻近档的税率顶上来——顶上来就是把 ③ 的缺口写成账上的结论。
+- **多合同受理的覆盖面就是 `data/contract_intake_template.json` 那九维度十八要素，判的是
+  「合同写的那一格」与「实际做的那一格」对不对得上，不判该缴多少、不下风险等级、也不预测
+  检查结果**。该缴多少走 ⑥ 与 `tax_calc`，账上的两个数对不上走 `tax_ledger`，风险等级落在
+  「风险自检专用输出」那一式里判。这一层的边界有三处：**要素没写进表就比不动**——表外那些
+  约定（交付节点的技术标准、竞业与保密的税务后果）本层一格都不判，所以「差异条目 0 条」只
+  说这十八要素没检出矛盾，不说这几份合同经得起核；**合同链只做到候选**——边的状态默认
+  『待用户确认』，未确认的替代关系不作废任何条款，两侧的值都摆出来并给『先确认这一条边』的
+  动作，确认后也只作废后一份合同也带着的那几格，没有整份失效这种判定；**出处定不到位就不
+  比**——抽取来的值缺 文件／位置／摘录 任一格，整条落『待核』、不进比对，因为拿一段对不上
+  原文的转述去比履行，等于让本层自己造一份条款再拿去核对。填表来的值不要求出处，但每一处
+  引用它的输出都带「［填表，未经抽取核对］」，读者看得见这一格还没跟原件核过。
 - **法规库那一轮"没命中"仍会被 ④ 写成"取数失败"**。`tax_fgk.search_fgk` 零命中时
   写一句 `_error` 说明（翻完几页、共几条命中、范围限于文件类标签），而检索层的
   `_rows_and_error` 认的是"`_error` 非空即失败"，`gather` 于是把这一轮记进
