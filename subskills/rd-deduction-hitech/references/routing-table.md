@@ -6,7 +6,7 @@
 |----------|--------|---------------|
 | 查加计扣除政策沿革/比例/适用行业 | `book-rd-deduction-hightech/rd-deduction-overview.md` | "加计扣除" "政策沿革" "100%" "120%" "负面清单行业" |
 | 查加计扣除6类费用归集/10%限额/冲减 | `book-rd-deduction-hightech/rd-deduction-benefits.md` | "人员人工" "直接投入" "折旧费用" "无形资产摊销" "新产品设计费" "其他相关费用" "10%限额" "冲减研发费用" |
-| 查三口径差异（会计/高企/加计） | `book-rd-deduction-hightech/rd-deduction-benefits.md`（九）+ `book-ipo-rd-guide/ipo-tax-rules.md`（1.范围对比表） | "三口径" "口径差异" "会计口径" "高企口径" "加计口径" |
+| 查三套口径的科目级取值与差异 | `rd-mgmt-methodology.md` 第 4.1 节（唯一基准）+ `book-rd-deduction-hightech/hightech-certification-conditions.md`（三）+ `book-ipo-rd-guide/ipo-tax-rules.md`（1.范围对比表） | "三口径" "口径差异" "会计口径" "高企口径" "加计口径" |
 | 查研发支出资本化条件判断 | `book-rd-deduction-hightech/rd-financial-control.md`（三）+ `book-ipo-rd-guide/ipo-accounting-capitalization.md` | "资本化" "费用化" "开发阶段" "研究阶段" "6项条件" |
 | 查辅助账样式与核算流程 | `book-rd-deduction-hightech/rd-financial-control.md`（二）+ `policy-docs/研发费用加计扣除政策执行指引2.0.md`（五） | "辅助账" "2021版" "归集表" "汇总表" |
 | 查研发业务流程与风险管控 | `book-rd-deduction-hightech/rd-financial-control.md`（三） | "研发流程" "风险管控" "6阶段" |

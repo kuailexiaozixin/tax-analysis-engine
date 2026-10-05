@@ -17,7 +17,7 @@
 | `01-regulations/travel-meeting-expense-system.md` | 研发差旅费及会议费管理制度 | 指令18 |
 | `01-regulations/equipment-management-system.md` | 研发设备管理制度 10 章（专用/共用设备折旧分摊） | 设备管理制度 |
 | `01-regulations/material-management-system.md` | 研发物料管理制度 9 章（领料边界/试制试产/回料） | 物料管理制度 |
-| `01-regulations/workhour-management-system.md` | 研发工时管理制度 8 章（非全时/跨项目分摊/三口径） | 工时管理制度 |
+| `01-regulations/workhour-management-system.md` | 研发工时管理制度 8 章（非全时/跨项目分摊/加计·高企·IPO 三口径提醒） | 工时管理制度 |
 | `01-regulations/personnel-management-system.md` | 研发人员管理制度 10 章（认定/薪酬/高企183天） | 人员管理制度 |
 | `01-regulations/project-initiation-management.md` | 研发项目立项管理办法 8 章（评审/变更/中止/自检） | 立项管理办法 |
 | `01-regulations/project-acceptance-management.md` | 研发项目验收结项管理办法 8 章（阶段验收/结题/归档） | 验收管理办法 |

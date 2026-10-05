@@ -10,11 +10,11 @@ rd-deduction-hitech/
 ├── NOTE.md                  # 本说明
 └── references/
     ├── hitech-scoring.md    # 高企评分自检规则
-    ├── deduction-guide.md   # 加计归集与四套口径
+    ├── deduction-guide.md   # 加计归集与扩展口径（R&D 统计 / IPO）
     ├── audit-response.md    # 2026 监管、稽查、资格维持
     ├── workflow-governance.md   # 工作流 A（制度侧）
     ├── workflow-evidence.md     # 工作流 B（证据/资料包）
-    ├── rd-mgmt-methodology.md  # 研发费用管理方法论底座
+    ├── rd-mgmt-methodology.md  # 研发费用管理方法论底座（第 4.1 节＝三套口径科目级唯一基准）
     ├── regulatory-basis.md      # 政策口径索引
     ├── routing-table.md         # 53 条意图→文件路由
     ├── templates-index.md       # 34 模板清单
