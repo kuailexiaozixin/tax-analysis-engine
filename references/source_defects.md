@@ -189,6 +189,7 @@ SKILL.md ② 末尾指向这一节。它回答两个问题：某一格动作**�
 | ② 规则陈述类不追问个案 | 脚本 | `tax_analyze.RULE_STATEMENT_TYPES` / `RULE_AXES`，产出 `rule_note` | 命令行【适用边界】那一栏有没有这句 |
 | ②⑧ 这类题必须有什么、现在缺哪一项 | 脚本判状态，Agent 定夺要不要接着答 | `tax_coverage.assess` / `load`，注册表 `data/evidence_requirements.json` | `python scripts/tax_coverage.py liability --question "<原话>"`；离线用例 `tests/test_evidence_coverage.py` |
 | ⑥ 前 站在检查人员一侧盘缺口 | 脚本出问询单元与三类缺口，Agent 决定问哪几格、怎么把「现有回答」对上 | `tax_inspect.build` / `select` / `signals` / `scenarios` / `covered_by` / `check_pairs` / `caliber_gap`，注册表 `data/inspection_domains.json`；红线在 `tax_inspect.validate` 载入时扫 `FORBIDDEN_REMEDIATION` 与 `PREDICTION_PHRASES` | `python scripts/tax_inspect.py --list`；`--answers` 里名字对不上的数进「核对未用」而不是消失；未询问要点逐条列在【覆盖】里；离线用例 `tests/test_inspect.py` |
+| ⑥ 前 把检查缺口转成制度条文 | 脚本出九要素文本与缺口匹配，Agent 决定摆进答案哪一段 | `tax_control.build` / `intake` / `matches` / `pick` / `validate`，注册表 `data/control_activities.json`；门槛在 `tax_control.NeedsDiagnosis`，红线词表沿用 `tax_inspect.FORBIDDEN_REMEDIATION` 与 `PREDICTION_PHRASES` | `python scripts/tax_control.py --list`；不给诊断也不给假设时退码 2 并回吐取诊断的那两条命令；`--assume` 出来的形态是通用模板；离线用例 `tests/test_control.py` |
 | ⑥ 前 liability 出数 | 脚本 | `tax_calc.run` / `inputs` / `SKELETONS`（骨架零硬编码，值与档表由 ③ 检回后经 `--set`/`--src` 喂进） | `python scripts/tax_calc.py --list`；缺参数退码 2 并列整份缺口；离线用例 `tests/test_calc.py` |
 | ③④ 决定取数轮次与候选词 | 脚本给计划，Agent 放宽 | `tax_answer.build_plan`，回显在 `rounds_done` | `python scripts/tax_answer.py "<原话>" --plan` |
 | ③ L2 要"整栏横截面"（这一栏现行文件都有哪些） | 脚本 | `tax_gov_list.sync` / `lookup` / `stats`，栏目与栏目页两张表 `CHANNELS`、`CHANNEL_PAGES` | `python scripts/tax_gov_list.py stats` 读栏目/条目数/时效性分布/栏目页；离线用例 `tests/test_gov_list.py` |
@@ -239,6 +240,15 @@ SKILL.md ② 末尾指向这一节。它回答两个问题：某一格动作**�
   `complete` 只在这张表范围内成立：表外的事项既不会进【未询问】，也不会让命令行报错，
   读的人别把它当成"全税种都问过了"。要加一格得连 `一致性核对` 的两端与 `支撑材料`
   一起补齐——只写一句问询会被 `tax_inspect.validate` 当场拒掉，缺哪一格它就报哪一格。
+- **内控生成的覆盖面就是 `data/control_activities.json` 里那十一环，两处判据管得住表、
+  管不住企业**。正向门槛在输入侧（`tax_control.NeedsDiagnosis`：没有缺口也没有假设就
+  拒生成），反向门槛在载入时判（每个检查要点的三类缺口都要有对着它的活动，少一格
+  `tax_control.validate` 报错并逐格列出）。这两条管的是"缺口都有处方"，管不到"企业
+  正在按这条制度做"——脚本读不到企业的执行记录，输出的每一条都要企业对着自己的岗位
+  与流程确认一遍才谈得上落地。两类内容由别的层负责，不在本表：政策口径不清的缺口，
+  本表只给"找到现行口径并落到那一年"的流程，口径本身回 ⑧ 定级与 ⑨ 类案取；保存期限
+  那一格写的是管理下限，法定年限要按 ⑧ 挑出的文件另行核对，`tax_control.RETENTION_RE`
+  只保证那一格真写出了一个期限，不保证那个期限是对的年限。
 - **法规库那一轮"没命中"仍会被 ④ 写成"取数失败"**。`tax_fgk.search_fgk` 零命中时
   写一句 `_error` 说明（翻完几页、共几条命中、范围限于文件类标签），而检索层的
   `_rows_and_error` 认的是"`_error` 非空即失败"，`gather` 于是把这一轮记进
