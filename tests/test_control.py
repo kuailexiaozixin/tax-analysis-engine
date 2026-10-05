@@ -671,18 +671,22 @@ class TestDocHooks(unittest.TestCase):
             self.assertIn(needle, body, "⑥ 那一段少了：%s" % needle)
         self.assertIn("九种输出形态", body)
 
-    def test_red_line_25_is_at_the_end(self):
+    def test_red_line_25_is_numbered_and_intact(self):
         skill = self.skill()
         body = skill.split("\n## ⑦ ")[1].split("\n## ")[0]
         nums = [int(m.group(1)) for m in re.finditer(r"^(\d+)\. ", body, re.M)]
-        self.assertEqual(nums, list(range(1, 26)), "⑦ 的红线条目编号不连续或末尾不是 25")
+        # 本层只钉到自己那一条（第 25 条）；后面再加红线由加的那一层自己钉内容，
+        # 这里判的只有"编号连续"和"第 25 条还是那条禁把没有记录写成没有发生"。
+        self.assertEqual(nums, list(range(1, len(nums) + 1)),
+                         "⑦ 的红线条目编号不连续：%s" % nums)
+        self.assertGreaterEqual(len(nums), 25, "⑦ 里第 25 条不见了")
         last = re.search(r"(?m)^25\. (.+)$", body)
         self.assertIsNotNone(last, "⑦ 里找不到以『25. 』开头的条目")
         self.assertTrue(last.group(1).startswith("**禁止"),
                         "第 25 条不是一条禁止：%s" % last.group(1)[:20])
-        self.assertIn("没有记录", body)
-        self.assertIn("没有发生", body)
-        self.assertIn("无法确认", body)
+        item = re.search(r"(?ms)^25\. .*?(?=^26\. |\Z)", body).group(0)
+        for needle in ("没有记录", "没有发生", "无法确认"):
+            self.assertIn(needle, item, "第 25 条少了『%s』这一句" % needle)
 
     def test_template_conditional_block(self):
         md = TPL.read_text(encoding="utf-8")

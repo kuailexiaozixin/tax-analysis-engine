@@ -85,6 +85,8 @@ OFFLINE_GROUP = [
      [PY, str(TESTS_DIR / "test_inspect.py")]),
     ("内控生成用例（注册表形状与九要素/门槛两侧/缺口匹配/覆盖诚实/命令行/文档挂线）",
      [PY, str(TESTS_DIR / "test_control.py")]),
+    ("账套巡检用例（注册表形状与漂移/零数字/四层边界/六种已知答案/三种判不动/覆盖诚实/命令行/文档挂线）",
+     [PY, str(TESTS_DIR / "test_ledger.py")]),
     ("评测集规则用例", [PY, str(TESTS_DIR / "test_eval_set.py")]),
     ("答题评测判分口径用例（输出格式轴/PROMPT 版本进指纹）",
      [PY, str(TESTS_DIR / "test_eval_answer.py")]),
