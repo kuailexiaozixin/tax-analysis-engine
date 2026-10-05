@@ -188,6 +188,7 @@ SKILL.md ② 末尾指向这一节。它回答两个问题：某一格动作**�
 | ② 题面自相矛盾时指出冲突 | **Agent，脚本不判** | 无（`tax_analyze` 全文不含冲突判定） | 只能人工读题面，见 ⑦ 第 23 条 |
 | ② 规则陈述类不追问个案 | 脚本 | `tax_analyze.RULE_STATEMENT_TYPES` / `RULE_AXES`，产出 `rule_note` | 命令行【适用边界】那一栏有没有这句 |
 | ②⑧ 这类题必须有什么、现在缺哪一项 | 脚本判状态，Agent 定夺要不要接着答 | `tax_coverage.assess` / `load`，注册表 `data/evidence_requirements.json` | `python scripts/tax_coverage.py liability --question "<原话>"`；离线用例 `tests/test_evidence_coverage.py` |
+| ⑥ 前 站在检查人员一侧盘缺口 | 脚本出问询单元与三类缺口，Agent 决定问哪几格、怎么把「现有回答」对上 | `tax_inspect.build` / `select` / `signals` / `scenarios` / `covered_by` / `check_pairs` / `caliber_gap`，注册表 `data/inspection_domains.json`；红线在 `tax_inspect.validate` 载入时扫 `FORBIDDEN_REMEDIATION` 与 `PREDICTION_PHRASES` | `python scripts/tax_inspect.py --list`；`--answers` 里名字对不上的数进「核对未用」而不是消失；未询问要点逐条列在【覆盖】里；离线用例 `tests/test_inspect.py` |
 | ⑥ 前 liability 出数 | 脚本 | `tax_calc.run` / `inputs` / `SKELETONS`（骨架零硬编码，值与档表由 ③ 检回后经 `--set`/`--src` 喂进） | `python scripts/tax_calc.py --list`；缺参数退码 2 并列整份缺口；离线用例 `tests/test_calc.py` |
 | ③④ 决定取数轮次与候选词 | 脚本给计划，Agent 放宽 | `tax_answer.build_plan`，回显在 `rounds_done` | `python scripts/tax_answer.py "<原话>" --plan` |
 | ③ L2 要"整栏横截面"（这一栏现行文件都有哪些） | 脚本 | `tax_gov_list.sync` / `lookup` / `stats`，栏目与栏目页两张表 `CHANNELS`、`CHANNEL_PAGES` | `python scripts/tax_gov_list.py stats` 读栏目/条目数/时效性分布/栏目页；离线用例 `tests/test_gov_list.py` |
@@ -230,6 +231,14 @@ SKILL.md ② 末尾指向这一节。它回答两个问题：某一格动作**�
   不写它们的反爬形态与阈值——没有量过就没有记录。后果写进输出模板：类案支持的
   强度上限是"官方处理口径"（税务机关怎么查、怎么罚、怎么公布），不是"司法裁判口径"
   （法院怎么判）；要的是后者时这一层是空的，得说明缺口，不能拿查处通报冒充判决。
+- **稽查模拟的覆盖面就是 `data/inspection_domains.json` 里那几域，域外的事项等于没问**。
+  这张表现在装的是研发与高企那条线（人员与工时归集、账证与辅助账一致性、项目实质与
+  立项管理、领料与耗用、设备无形资产与场地、委托研发与关联交易），加上跨税种共用的
+  申报、优惠资格与发票那一域。土地增值税清算、资源税、环境保护税、契税与房产税、
+  跨境数字服务的预提所得税这些事项一格都没写。所以 `tax_inspect.build` 报的
+  `complete` 只在这张表范围内成立：表外的事项既不会进【未询问】，也不会让命令行报错，
+  读的人别把它当成"全税种都问过了"。要加一格得连 `一致性核对` 的两端与 `支撑材料`
+  一起补齐——只写一句问询会被 `tax_inspect.validate` 当场拒掉，缺哪一格它就报哪一格。
 - **法规库那一轮"没命中"仍会被 ④ 写成"取数失败"**。`tax_fgk.search_fgk` 零命中时
   写一句 `_error` 说明（翻完几页、共几条命中、范围限于文件类标签），而检索层的
   `_rows_and_error` 认的是"`_error` 非空即失败"，`gather` 于是把这一轮记进

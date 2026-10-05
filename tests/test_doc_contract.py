@@ -8,10 +8,10 @@
      目录的文件，要求每个二级标题都进目录。
   2. SKILL.md ⑥ 声明的输出形态清单（含"N 种"这个计数）必须与模板文件的
      二级标题逐一对应——往模板加一节却不写进 ⑥，等于那节没人知道要走。同一
-     条理由管着另外三处复述：⑥ 照抄的行判断四值与项结论五档、模板【候选总览】
-     逐项计数的五档，都是同一套取值的复写处——定义处改了名而复写处不动，用户就
-     会看到表格里查不到的档位；【优惠交互与限制】的子检查清单删掉一条，就等于
-     那一层永久不查。
+     条理由管着另外几处复述：⑥ 照抄的行判断四值、项结论五档与一致性核对状态
+     四值，模板【候选总览】逐项计数的五档，都是同一套取值的复写处——定义处改了
+     名而复写处不动，用户就会看到表格里查不到的档位；【优惠交互与限制】的子检查
+     清单删掉一条，就等于那一层永久不查。
   3. SKILL.md 里形如"在 X 文件的 Y 一节"的前向指针必须真的存在那一节；
      `source_defects.md`「主线动作归属」表里引用的代码符号必须 import 得到。
      归属表写的是"这一格由脚本还是 Agent 做"，符号名一旦漂走，表就变成
@@ -124,11 +124,20 @@ def _norm_list(items: list) -> list:
 ROW_VALUES = ["满足", "不满足", "未知", "不适用"]
 VERDICT_VALUES = ["明确匹配", "条件匹配", "待资格确认", "明确不匹配", "无法判断"]
 INTERACTION_AXES = ["叠加", "进项", "开票", "放弃优惠", "留存"]
+# 稽查那一格的第四张：一致性核对的状态四值。⑥ 与模板各写一份，改名必有一处漏改，
+# 用户就会看到脚本产不出、模板也不认的状态名。
+CHECK_VALUES = ["一致", "矛盾", "缺一边", "未取数"]
 
 
 def row_enum(md: str) -> list:
     """模板「行判断只有四值」那行反引号串，原样解析。"""
     m = re.search(r"\*\*行判断只有四值\*\*：`([^`]*)`", md)
+    return _norm_list(m.group(1).split("/")) if m else []
+
+
+def check_enum(md: str) -> list:
+    """模板「一致性核对」那行反引号串里的状态四值，原样解析。"""
+    m = re.search(r"\*\*一致性核对\*\*[^\n`]*`([^`]*)`", md)
     return _norm_list(m.group(1).split("/")) if m else []
 
 
@@ -358,8 +367,9 @@ class TestSkillFormsInventory(unittest.TestCase):
         self.assertEqual(len(names), len(heads) - 1)
         self.assertNotIn("凭空多出来的一节", names)
 
-    def test_template_defines_the_two_enums(self):
-        """模板自己得把两套取值域写全：四值一行、五档一表、示例矩阵不越域且不缺值。
+    def test_template_defines_the_value_domains(self):
+        """模板自己得把取值域写全：四值一行、五档一表、示例矩阵不越域且不缺值，
+        再加上稽查那一格的状态四值。
 
         判据比的是**整串枚举表**，不是零散词。按"某个词在不在文件里"写就是假绿——
         把 `满足 / 不满足 / 未知 / 不适用` 删到只剩两值，单个词
@@ -370,6 +380,8 @@ class TestSkillFormsInventory(unittest.TestCase):
                          "模板的行判断枚举被改动（现读作 %s）" % row_enum(md))
         self.assertEqual(verdict_table(md), VERDICT_VALUES,
                          "模板的项结论五档被改动（现读作 %s）" % verdict_table(md))
+        self.assertEqual(check_enum(md), CHECK_VALUES,
+                         "模板的一致性核对状态被改动（现读作 %s）" % check_enum(md))
         cells = matrix_judgments(md)
         self.assertTrue(cells, "条件矩阵示例表的「判断」列读不到，判据读的表变了")
         self.assertTrue(set(cells) <= set(ROW_VALUES),
@@ -380,12 +392,30 @@ class TestSkillFormsInventory(unittest.TestCase):
                          % sorted(set(ROW_VALUES) - set(cells)))
 
     def test_6_restates_the_enums_verbatim(self):
-        """⑥ 复述的两串枚举必须与模板逐项一致，含顺序。"""
+        """⑥ 复述的三串枚举必须与模板逐项一致，含顺序。"""
         skill_lists = skill_enums(SKILL.read_text(encoding="utf-8"))
-        self.assertEqual(len(skill_lists), 2,
-                         "⑥ 里读到的枚举串不是两串（%s），提取规则已漂" % skill_lists)
+        self.assertEqual(len(skill_lists), 3,
+                         "⑥ 里读到的枚举串不是三串（%s），提取规则已漂" % skill_lists)
         self.assertIn(ROW_VALUES, skill_lists, "⑥ 没照抄行判断四值")
         self.assertIn(VERDICT_VALUES, skill_lists, "⑥ 没照抄项结论五档")
+        self.assertIn(CHECK_VALUES, skill_lists, "⑥ 没照抄一致性核对状态四值")
+
+    def test_mutation_check_state_renamed_is_caught(self):
+        """自检：把模板里的"未取数"改名而 ⑥ 不动，两处检查都必须报红。
+
+        这一格是第四张取值域，只在稽查那一行出现；改名后脚本仍产出旧名，答案里
+        就会出现模板没有的状态。
+        """
+        md = (REF_DIR / "output_templates.md").read_text(encoding="utf-8")
+        broken = md.replace("`一致 / 矛盾 / 缺一边 / 未取数`",
+                            "`一致 / 矛盾 / 缺一边 / 没数`", 1)
+        self.assertNotEqual(broken, md, "变异没落到模板那行状态上")
+        self.assertEqual(check_enum(md), CHECK_VALUES)
+        self.assertNotEqual(check_enum(broken), CHECK_VALUES, "改名后模板检查不会报红")
+        self.assertIn(CHECK_VALUES, skill_enums(SKILL.read_text(encoding="utf-8")),
+                      "⑥ 本来就没抄这四值，两处比对形同虚设")
+        self.assertNotIn(check_enum(broken), skill_enums(SKILL.read_text(encoding="utf-8")),
+                         "模板改名后 ⑥ 与模板的比对不会报红")
 
     def test_mutation_enum_shrunk_is_caught(self):
         """自检：把模板那行四值删到两值，改前读作四值、改后必须不等。"""
