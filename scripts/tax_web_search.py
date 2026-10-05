@@ -195,7 +195,7 @@ def build_filters(in_title: bool = False, precise: bool = False,
 
 def search_chinatax(keyword: str, page: int = 1, size: int = 10,
                     filters: Optional[dict] = None, file_only: bool = True,
-                    order: str = "relevance") -> dict:
+                    order: str = "relevance", column: Optional[str] = None) -> dict:
     """
     检索国家税务总局站点。
 
@@ -208,6 +208,11 @@ def search_chinatax(keyword: str, page: int = 1, size: int = 10,
             实测）；要连新闻、视频、各地动态一起搜时传 False
         order: 排序，取值限 ORDER_VALUES：relevance（默认）/ date_desc（最新在前的
             成文日期倒序）/ category / date_asc
+        column: 栏目号，如 "5741"（新闻发布）。默认 None 与原行为一致——发空串
+            等于不限栏目。要用栏目收窄时给值；这一维与 label 不一样：实测
+            2026-10-04 发 column=5741 时「骗取出口退税」189 条收窄到 119 条，
+            而 label 发非十类文件名（如「新闻」）一律回 0 条，所以案例检索只能
+            走 column，不能走 label（见 references/source_defects.md）。
 
     页码基准：search5 的 pageNum 从 0 起算。实测同一检索词「企业重组」
     发 pageNum=0 与 pageNum=1 各回 10 条、url 交集为空，且 pageNum=0 那组
@@ -236,7 +241,7 @@ def search_chinatax(keyword: str, page: int = 1, size: int = 10,
         "pageSize": max(size, 10),
         "pageNum": max(page, 1) - 1,
         "orderBy": ORDER_VALUES[order],
-        "column": "",
+        "column": column or "",
         "label": FILE_LABELS if file_only else ALL_LABELS,
     }
     params.update(filters or {})

@@ -8,6 +8,8 @@
 ## 目录
 
 - [由代码保证的源缺陷](#由代码保证的源缺陷)
+- [限流记录的实测台账](#限流记录的实测台账)
+- [案例通道的实测台账](#案例通道的实测台账)
 - [两个值得单独说明的细节](#两个值得单独说明的细节)
 - [量过之后决定不改的三件事](#量过之后决定不改的三件事)
 - [主线动作归属](#主线动作归属)
@@ -19,7 +21,7 @@
 
 | 源缺陷 | 现在由谁保证 | 保证到什么程度 |
 |--------|--------------|----------------|
-| NPC 限流，并行必现 | `tax_search.npc_gate`（实现为 `tax_http.SerialGate`）：`%TEMP%\tax-analysis-engine-npc.lock` 跨进程文件锁 + 进程内 `threading.Lock` | 多个进程同时开跑会自己排队，不用再记"别并行" |
+| NPC 限流，并行必现 | `tax_search.npc_gate`（实现为 `tax_http.SerialGate`）：`%TEMP%\tax-analysis-engine-npc.lock` 跨进程文件锁 + 进程内 `threading.Lock` | 多个进程同时开跑会自己排队，不用再记"别并行"。**这句记录是什么时候量的、今天还成不成立，见[限流记录的实测台账](#限流记录的实测台账)** |
 | 360 被封 → 地方口径与税屋这一层是空的 | `tax_aggregator` 返回的 `gaps` 与 `degraded_note` | 缺了哪层、为什么缺、能不能拿别的源顶，都写成一句可直接照抄的话；网页端渲染成警示条，不再冒充普通的"0 条" |
 | fgk 翻得越深相关性越差 | `tax_fgk` 第 2 页起标 `_reliability: medium`，并写上 `FGK_DEEP_NOTE`（`FGK_SHALLOW_PAGES = 1`） | 深页条目留在结果里参与分层，提醒就是那句写明"取自第几页、引用前要回上一级数据库核对上位法"的原文，不降权也不剔除 |
 | 公众号并发加压触发反爬 | `tax_wechat._sogou_get`：1 秒最小间隔 + 搜狗专用串行闸（`%TEMP%\tax-analysis-engine-sogou.lock`） | 打 `weixin.sogou.com` 的请求（检索、链接还原）统一进闸；离线并发用例断言同一时刻在跑的请求数峰值为 1 |
@@ -36,6 +38,7 @@
 | "已修改"被当成时效不明 | `tax_evidence.judge_validity` 把"已修改/已修订"判为 `effective`，并在 `note` 里追加"引用须按修改后的版本" | 仍在效的文件留在依据层，该说的话换成"引哪一版" |
 | 空清单有四种成因，塌成一句"未找到/库里没有"就分不清是哪种 | 见下三条：`_fetch_failed`（取数真失败）、`_filter_note`（维度拼窄）、`_empty_reason`（翻页取空）、翻完未筛出的 `_error`；`frontend/index.html` 的 `renderResults` 按"越靠近真相越先看"分流，取数失败排最前 | 越界是翻页用法问题、拼窄要放宽维度、失败要稍后重试，四种都不写成"该库没有这份文件"；盯它的是 `test_source_defects.py::TestFrontendShowsDegradedNote::test_empty_state_keeps_the_causes_apart` |
 | 规则陈述类问题被回三条"你的主体/地区/金额未交代" | `tax_analyze.RULE_STATEMENT_TYPES` 与 `RULE_AXES`：`lookup`/`fill_blank` 只保留时点轴，其余缺失转成 `rule_note` | 追问只问会影响规则本身的问题；个案缺失改在答案里以【适用边界】写明 |
+| "这类题必须有哪些依据"只写在 ① 表格与 ② 四轴的散文里，没人能逐条判有没有，"依据充分"成了作答人自报的一句话 | `tax_coverage.load()` 载入时把注册表 `data/evidence_requirements.json` 的要件名与 `QUESTION_TYPES[型]["needs"]`、轴键与 `CONTEXT_AXES` 逐一比对；`assess` 逐项判 已满足／缺／不适用／待核，出 `覆盖率 = 已满足 ÷（总数 − 不适用）` | 改代码里的名字不改这张表就载入报错（五种漂移各有一条用例）；`None`（还没检）与 `[]`（检了没有）分成待核与缺，检索故障读不成"这类题不需要依据"；待核永不计入已满足；分母为 0 出 `null` 不出 1.0。用例 `tests/test_evidence_coverage.py` |
 | 「尚未生效」在传了 `--at` 又没有施行日期时被转正成现行有效 | `tax_evidence.judge_validity`：`at` 分支对 `pending` 单独走一条判定——有施行日期且不晚于观察时点才转正，没日期留在 `pending` | 观察时点那条推荐用法不再把没开始施行的文件送进依据层（`pending` × 规范性文件 = 38.5 分）|
 | 「财税文件」那一栏根本不录时效，上位规则被成片压在依据线以下 | `tax_answer.corroborate_validity_from_target` 读点名文件正文首段"根据……规定"列出的制定依据，给状态判不出来的条目打上 `corroborated_by`；`tax_evidence.judge_validity` 认这个字段，按在效计分 | 只有状态"判不出来"的条目会被补，明文废止或未生效的一律不动；只读首段；答案里【其余法定依据】那一条下面会印证据来源，要照抄 |
 | 同一档检索意图在 markdown 与界面各有一套标签表，漏一档不报错 | `tax_search.INTENTS` 登记取值域；`tests/test_routing_terms.py::test_intent_vocabularies_agree` 断言它与 `tax_formatter.INTENT_HEADERS`、`tax_server.INTENT_LABELS` 键集合相等，并且与主线九类题型键互不相交 | 这一档只决定展示措辞；真正下结论用的判型是 `tax_analyze.QUESTION_TYPES` 那九类 |
@@ -69,6 +72,80 @@
 | 栏目注册表的键是本地起的别名，与接口自己报的 `channelName`、条目里的 `效力等级`、search5 的效力等级取值域各叫各的，四者要靠人记住对得上 | `tax_gov_list.CHANNELS` 的键统一取接口自己的 `channelName`（"其他"改成"其他文件"），七栏键逐个落在 `tax_web_search.EFFECT_LEVEL_VALUES` 里；`--channel`、`stats` 的栏目名、索引行的 `channel` 字段因此只需要一个名字 | 值域与 id 形态由 `test_gov_list.py::TestChannelRegistry` 三条钉住：`test_channel_ids_are_distinct_hex32`（32 位十六进制、互不重复、默认键在册）、`test_channel_keys_are_the_api_own_names_and_facet_names`、`test_measured_aging_values_all_judge_known`（用例里那份判级表与 `AGING_VALUES` 键集合相等，逐值经 `judge_validity` 不落 `unknown`；七栏整栏分布记在 `CHANNELS` 注释）。加新栏要先过这条，取值域没登记就不收 |
 | 离线 `lookup --aging` 是精确等值比对，写成"有效"筛出 0 条，与"这一栏没有现行有效的文件"长得一样 | `tax_gov_list.lookup` 在筛之前按 `tax_web_search.AGING_VALUES` 校验，域外值 `SystemExit` 并把五种取值逐个列进报错；与检索面 `tax_web_search.build_filters` 同一口径（域外值在动手筛/发请求之前就报） | 2026-10-04 对本机 1925 条索引实测：`lookup 增值税 --aging 有效` 退出码 1、报错写出「全文有效、已修改、全文失效、全文废止、尚未生效」；`--aging 全文有效` 命中 2 条；`--aging 尚未生效` 是域内值，命中 0 条也只报"命中 0 条"不报错——域内筛空是结果，用法错不是。盯它的是 `test_gov_list.py::TestLookupFilterDomain` 两条 |
 | 政策法规库各栏目的可浏览页看着能按 `<c码>/listflfg.html` 拼，实际页面名不统一——按模板拼出来的「税务部门规章」`c100011/listflfg.html` 回 404 | `tax_gov_list.CHANNEL_PAGES` 把七条 URL 逐条录成数据（不拼接），`build_index` 落进索引顶部的 `栏目页`，`stats` 与 `--json` 都带出；未登记栏目落空串而不是拼一个看着像的链接 | 2026-10-04 本机对七条 URL 逐个 GET：六条 `listflfg.html` 全 200，规章那条 `c100011/list.html` 200，而 `c100011/listflfg.html` 404。静态 HTML 里栏目名由 JS 渲染，页面自身只在导航与脚本里回显本栏 c 码，所以只能逐条量。`sync --force` 重建 1925 条索引后 `stats` 印出 `栏目页：https://fgk.chinatax.gov.cn/zcfgk/c100012/listflfg.html`；索引里没有这一格时 `stats` 明写"这份索引没带栏目页，重跑 sync 即补齐"，不印空串冒充有链接。盯它的是 `test_gov_list.py::TestChannelPages` 四条（键集合与 `CHANNELS` 相等且都在政策法规库域下、规章那一条的页面名不与其余六栏同质、未登记栏目落空串、索引缺这一格时 `stats` 写明缺在哪而不是印空串） |
+
+## 限流记录的实测台账
+
+限流与风控是站点随时间改的东西，而闸与退避是一次写下的代码。一条"某年并行被打挂过"
+的记录如果没有再量的日期，读的人就分不清它是在说今天的站点还是说当时的站点——所以
+**凡是作为建闸或退避理由的限流记录，都要在这里占一行，并带齐三个字段**：最近实测日期、
+实测方法（连发几次 + 几线程 × 每线程几次）、当时结果（按形态逐项计数）。三字段缺任何
+一格，这行就是没有证据；`tests/test_rate_limit_ledger.py` 逐格查，代码里新装一把闸而台账
+里没有对应行也会报红。
+
+复跑走 `python tests/probe_rate_limit.py --target npc|sogou|so360|fgk-list
+[--burst N] [--threads M] [--per-thread K]`。探针把生产路径实际要发的那一份请求抓出来
+重放（不手写副本，副本会随 payload 改版失真），并跳过串行闸——它要量的就是并行。
+单次运行的请求总量卡在 `MAX_REQUESTS = 60`：这是查询式访问的复测，不是压测。
+
+| 记录原话 | 入口 | 现在由什么挡着 | 最近实测日期 | 实测方法 | 当时结果 |
+|---|---|---|---|---|---|
+| NPC 限流，并行必现；形态有三种——断连、HTTP 200 带 `<noscript>` 挑战页、5xx，都不回 429（`commands.md`「NPC 限流」） | `POST flk.npc.gov.cn/law-search/search/list`，详情与下载同站同闸 | `tax_search.npc_gate`（闸落成代码 2026-09-28）＋ `_MIN_INTERVAL` 0.6 秒 ＋ `max_retries` 4 按 2/4/8 秒退避 | 2026-10-04 | 三趟共 104 次：连发 15 + 8 线程×2、连发 15 + 8 线程×2、连发 10 + 16 线程×2，0 间隔、不经闸 | `200-JSON`×102、`ReadTimeout`×2（两趟各一次，都落在并发段，15 秒读上限，生产路径按退避重试）；`挑战页`×0、`429`×0、`5xx`×0、`断连`×0、`非JSON正文`×0——记录里那三种形态在 16 路并发下都没复现 |
+| 搜狗并发加压触发反爬（跳 `/antispider/`；检索与链接还原须共用一个 Session，脱会话即判爬虫） | `GET weixin.sogou.com/weixin?type=2` | `tax_wechat.sogou_gate`（闸落成代码 2026-09-28）＋ `_SOGOU_MIN_INTERVAL` 1.0 秒 | 未复测 | `--target sogou` | 没有当次数据。这一行只说明闸还在、记录还没再量过，不等于"限流仍然存在"，也不等于"可以拆闸" |
+| 360 对被限流的本机 IP 回一份约 5KB 的「访问异常出错」页：HTTP 200、一张结果卡都没有 | `GET m.so.com/s` | 没有闸；`MAX_RETRIES` 2 后把这句原样写进 `_error` | 未复测 | `--target so360` | 没有当次数据。识别形态（`_BLOCK_MARKER`）在生产代码里，量的时候照它判 |
+| `mp.weixin.qq.com` 的正文读取**没测到**与搜狗同样的阈值，所以只按 `READ_INTERVAL` 2.0 秒拉开间隔、不入闸 | `GET mp.weixin.qq.com/s?...` | 只有间隔，没有闸 | 从未取过阈值 | 探针未收录这一路（要收就先在 `TARGETS` 里加一条，别在台账里写没量过的数字） | 没有当次数据。这条记录的内容本身就是"没验证过"，因此不存在过期问题；它是边界，不是闸的存废待定 |
+| 总局清单接口连发不限流（`tax_gov_list` 模块文档那句"实测 20 次连发不限流"） | `POST www.chinatax.gov.cn/getFileListByCodeId` | 没有闸，靠整栏分页爬全时天然串行 | 2026-10-04 | 连发 30 次（0 间隔）+ 6 线程 × 每线程 3 次，共 48 次，耗时 2.2 秒 | `200-JSON`×48、`反爬字样`×0、`异常`×0——与记录一致，量级比原记录（20 次连发）高一档且加了并发 |
+
+读这张表的三条用法：
+
+- **闸的存废按这一张表判，不按主表那句记录**。要把某个入口放宽成并行，先复跑探针，
+  让台账里那一行的最近实测日期晚于改动日期；日期是"未复测"的行不能作为拆闸的依据，
+  也不能作为保留的理由。今日这轮把 NPC 的量级验到 16 路并发、共 104 次请求，
+  记录里那三种形态一个都没出现——这削弱的是"并行必现"这四个字，没有削弱到闸本身：
+  单次复测只说明这一天这个出口 IP 上没触发，更高量级与别的时段未探测（`MAX_REQUESTS`
+  卡在那儿），闸的代价是排队等待，不是失败，所以本轮不动闸、只把记录改成可复查的。
+- **真被限的那天，把形态原样抄进「当时结果」**。探针已经把失败形态归成标签并留一份
+  原文（状态码、字节数、`Content-Type`、正文首 120 字），抄的是那一行，不是"又被限了"。
+  主表与 `commands.md` 里那些形态描述（38,499 字节的挑战页、约 5KB 的访问异常页）都是
+  这样留下的；形态变了就直接改这一格，别把新形态写进旧句子。
+- **限流与代码坏了要分开**。等锁超过 `TAX_NPC_LOCK_TIMEOUT` / `TAX_SOGOU_LOCK_TIMEOUT`
+  抛的 `TimeoutError` 是本机另一个进程在排队，探针不产这一种形态；`ReadTimeout` 也不是
+  被拦，它计入"当时结果"但不改判记录的成立与否。判据在主表那句：形态对得上才算复现。
+
+## 案例通道的实测台账
+
+类案检索（`scripts/tax_cases.py`）整条链路都站在税务总局 search5 的现场行为上：
+全站能不能召回案例、哪一维收得窄、日期排序可不可信、案例与文件怎么判别。这些都会
+随对方改版而变，所以按限流台账同一把标尺登记：**每行带齐三字段**（最近实测日期、
+实测方法、当时结果），缺任一格就是没有证据。复跑走
+`python tests/probe_case_channel.py --dry-run`（只看要发哪几条）与
+`python tests/probe_case_channel.py`（真发 19 条，回吐下面这些数字）。这一张表
+由 `tests/test_cases.py::LedgerContract` 逐格查，规则与限流台账一致。
+
+| 判据（谁在用） | 入口 | 最近实测日期 | 实测方法 | 当时结果 |
+|---|---|---|---|---|
+| 全站能召回案例，案例与新闻混排、没有独立"案例"栏目（`tax_cases.ADVERSE_WORDS` 那一轮取词） | `GET search5/search/s`，`label=''`、`column=''` | 2026-10-04 | 四组案例词各 1 次，逐组读 `searchTotal` 全 10 行 | total×命中词：`重大税收违法案件`×83、`税收违法 曝光`×103、`骗取出口退税`×189、`虚开发票 查处`×828；首屏判为案例（URL 带案例子栏目代号且不带文号）1、3、5、10 条。与既有记录的差异：`虚开发票 查处` 记录值 785，本轮 828 |
+| 栏目维收得窄（`tax_cases` 固定发 `column=5741`） | 同一接口，`column` 参数 | 2026-10-04 | 同一检索词发两次对照：不带 column 与带 `column=5741`（新闻发布） | `骗取出口退税`×189→119、`重大税收违法案件`×83→30。既有记录里"税收政策栏仅 7、互动 8"两栏**未复测**（那两个栏目号没取到，探针里没有它们那一条） |
+| 标签维对案例不可用，检索式必须发空 label（`tax_web_search.search_chinatax(file_only=False)`） | 同一接口，`label` 参数 | 2026-10-04 | 三个非十类文件名的 label 各 1 次：`新闻`、`稽查`、`曝光台` | `total=0`×3、清单 0 条×3。是硬失败不是回基线（`label` 域内值才会收窄，见本文件前半部分那条白名单记录） |
+| 日期序可用来做增量与时效排序（`tax_cases` 的 `recent` 模式） | 同一接口，`orderBy=1` + `column=5741` | 2026-10-04 | 同一检索词翻 2 页，逐行读 `pubDate`，页内与跨页都判单调 | 每页 10 个日期，页内单调递减 True×2；合并 20 个日期单调递减 True，区间 `2026-09-28 … 2024-05-31` |
+| 案例与文件的判别只能用主机名，不能看路径（`tax_cases.classify_row` 的排除支） | 同上，四组检索词共读 125 行结果 | 2026-10-04 | 逐行取 URL 的栏目代号（6 位）与正文 id（7 位），跨请求计数 | 带文号的行 9 条，全部落在 `fgk.chinatax.gov.cn`；但 `/zcfgk/` **不区分文件与案例**——案例条目 `c5247913`（`c102439` 曝光栏）、`c5248283`（`c103098` 合规小课堂）都在 `www.chinatax.gov.cn/zcfgk/` 下。既有记录那句"案例条目是 `/chinatax/n810…/`、法规库含 `/zcfgk/`"作为判据不成立，改用 `tax_web_search.FGK_MARKER` 判主机 |
+| 同一条正文会在两台主机各回一遍，台账要先去重（去重键 `tax_cases.content_id`） | 同上，同一批 125 行 | 2026-10-04 | 按 URL 末段的 7 位正文 id 聚合，看它挂过几台主机 | 双主机重复 3 组：`c5247913`、`c5248283`、`c5245915`，每组都是 `fgk` 与 `www` 各一行、标题与日期相同。不去重，同一起案件会占掉两个候选位 |
+| 三个案例子栏目代号各自是什么（`tax_cases.SUBTYPES`） | 同上，同一批 125 行 | 2026-10-04 | 逐行取 URL 里 6 位栏目代号，跨请求计数 | `c102025`×46（各地查处/曝光通报）、`c102439`×11（典型案件曝光）、`c102435`×2。`c102435` 那 2 行是「重大税收违法案件信息公布（2014年10月30日）」这类**逐月汇总公布页**，正文摘要只有一句"链接：重大税收违法案件信息公布栏"，不是逐案清单页——它召回得少，不能当成主通道 |
+| 案例栏目没有直连清单页，只能走 search5（`tax_gov_list` 那套栏目直连在这里用不上） | `GET .../n810215/c102435/common_list.html` 与 `.shtml` | 2026-10-04 | 两种后缀各 1 次 | HTTP 404×2，响应体各 143,971 字节，起头是 `<!doctype html><html lang="en">`，即首页 HTML 而不是清单页。既有记录写的是 400，本轮量为 404 |
+| 检索词形态决定这一趟是不是案例（`tax_cases` 的三轮式取词不用"案例/公布"字样） | 同一接口，四组对照 | 2026-10-04 | 两组"案情词 + 案例/公布"、两组"案情词 + 处理结果词"，各读全 10 行 | 「骗取出口退税 案例」total×1、「重大税收违法案件 公布」total×4，两组首屏判为案例 0 条；「虚开发票 依法查处 罚款」total×508 首屏判为案例 10 条、「偷税 案件」加 `column=5741` total×292 首屏判为案例 6 条。往检索词里加"案例"两个字反而把案例筛掉 |
+| 发布方栏只有一半的行带，来源等级因此必须两处一起读（`tax_cases.issuer_of`、`tax_cases.source_grade`） | 同一接口，`column=5741` 两主题共 50 行，原样落盘在 `tests/_fixture/case_channel_rows.json` | 2026-10-04 | 逐行数 `publisher` 非空的行；空的那一半取标题冒号前那一段，看有没有机关字形 | 50 行里 `publisher` 非空 25 行。非空的 25 行中媒体署名 10 行（新华社×3、经济日报×2，法制日报、南宁日报、中国新闻社、中国税务报、税务总局新媒体各 1），机关署名 15 行（国家税务总局办公厅×10、国家税务总局×4、广西壮族自治区地方税务局×1）。`publisher` 为空的 25 行里，16 行靠标题段读出机关（"河南省税务部门查处……"这一类，带行政区划的 15 行判 A2、"全国税务部门组织税收收入情况"1 行判 A1），余下 9 行整段读不出发布方——所以这一档不给默认值：读不出机关又不在官方案例栏目的落 C，在这三个栏目里的按栏目名义算本级。与既有记录的差异：旧判据把这类行一律记成 A2「各地税务机关通报」，本轮量为不实 |
+| 窄主题下三个案例栏目可能一条不给，候选全落在「其他新闻」（`tax_cases.OTHER_SUBTYPE`、`tax_cases.LEVEL_BY_SUBTYPE`） | 同一接口，走脚本本体：`python scripts/tax_cases.py "研发费用加计扣除" --element 混岗工时 --element 辅助账 --mode recent`，共 3 次请求 | 2026-10-05 | 读台账的「子类型」栏分布 | 候选 25 条，子类型全是「其他新闻」（C4），c102025/c102439/c102435 三个案例栏目 0 条；其中媒体署名 2 条判 C。这不等于"官方没查过研发领域的同类案件"——它说的是这一档检索式在案例栏目里没召回，答案那一栏要写成"这一层还没查到"并附检索式，不能写成"没有先例"。换主题（虚开发票、骗取出口退税）时同一条链路能取到案例栏目条目，见上面 2026-10-04 那几行 |
+
+读这张表的三条用法：
+
+- **这一趟查的是通道行为，不是某一起案件**。要改的是 `tax_cases` 走哪一维、按什么
+  判案例，不是"某年某月曝光过什么"。哪一天 `column=5741` 收不动了、或 `label=新闻`
+  开始回条数，重跑探针就看得见，不必照旧句子猜。
+- **判据换了就要同时改代码**。第五行那条（用主机名判文件/案例）与第六行（先按正文 id
+  去重）都是 `tax_cases` 里真在跑的规则，台账与代码哪天对上不上，
+  `tests/test_cases.py` 会报红；只改文档不改代码，改的就是一个没人执行的句子。
+- **`case_support: "无"` 是这一通道正常输出的一种**。第 9 行说明检索词形态能一句话
+  把命中从 508 打到 1，所以零结果既可能是"官方没公布过这类案"，也可能是"问法不对"，
+  两种都不写成"没有类案"，写法见 `references/output_templates.md` 的「类案支持」块。
 
 ## 两个值得单独说明的细节
 
@@ -110,6 +187,8 @@ SKILL.md ② 末尾指向这一节。它回答两个问题：某一格动作**�
 | ② 决定追问哪几根轴 | 脚本给候选，Agent 取舍 | `tax_analyze.detect_context_gaps` / `pick_probes` | `python scripts/tax_analyze.py "<原话>" --probes 3` |
 | ② 题面自相矛盾时指出冲突 | **Agent，脚本不判** | 无（`tax_analyze` 全文不含冲突判定） | 只能人工读题面，见 ⑦ 第 23 条 |
 | ② 规则陈述类不追问个案 | 脚本 | `tax_analyze.RULE_STATEMENT_TYPES` / `RULE_AXES`，产出 `rule_note` | 命令行【适用边界】那一栏有没有这句 |
+| ②⑧ 这类题必须有什么、现在缺哪一项 | 脚本判状态，Agent 定夺要不要接着答 | `tax_coverage.assess` / `load`，注册表 `data/evidence_requirements.json` | `python scripts/tax_coverage.py liability --question "<原话>"`；离线用例 `tests/test_evidence_coverage.py` |
+| ⑥ 前 liability 出数 | 脚本 | `tax_calc.run` / `inputs` / `SKELETONS`（骨架零硬编码，值与档表由 ③ 检回后经 `--set`/`--src` 喂进） | `python scripts/tax_calc.py --list`；缺参数退码 2 并列整份缺口；离线用例 `tests/test_calc.py` |
 | ③④ 决定取数轮次与候选词 | 脚本给计划，Agent 放宽 | `tax_answer.build_plan`，回显在 `rounds_done` | `python scripts/tax_answer.py "<原话>" --plan` |
 | ③ L2 要"整栏横截面"（这一栏现行文件都有哪些） | 脚本 | `tax_gov_list.sync` / `lookup` / `stats`，栏目与栏目页两张表 `CHANNELS`、`CHANNEL_PAGES` | `python scripts/tax_gov_list.py stats` 读栏目/条目数/时效性分布/栏目页；离线用例 `tests/test_gov_list.py` |
 | ④ 五源聚合与取数失败留名 | 脚本 | `tax_answer.gather`，产出 `rounds_done[].failed` | `tests/test_source_defects.py::TestRoundFailureIsNotSilent` |
@@ -121,6 +200,7 @@ SKILL.md ② 末尾指向这一节。它回答两个问题：某一格动作**�
 | ⑥ 命令行排版 | 脚本 | `tax_answer._print_answer`；单源卡片走 `tax_formatter` | 网页那条另见 ⑫ |
 | 优惠叠加与择一核验 | Agent | 无——原文措辞判不了；要求写在 ⑦ 第 22 条 | 答案里【优惠交互与限制】段在不在 |
 | 优惠全集穷举 | 脚本 | `subskills/tax-preference/preference.py` 的 `sync` / `query` | `tests/test_preference.py` |
+| 闸外的事：复测一条限流记录 | 脚本给证据，人决定闸的存废 | `tests/probe_rate_limit.py`，回显就是台账那三字段 | `python tests/probe_rate_limit.py --target npc --dry-run` 看要发的请求；`tests/test_rate_limit_ledger.py` 钉台账三字段齐全、且代码里每把闸在台账占一行 |
 
 ## 仍然是边界的几件事
 
@@ -128,9 +208,13 @@ SKILL.md ② 末尾指向这一节。它回答两个问题：某一格动作**�
   `TAX_SOGOU_LOCK_TIMEOUT`（默认各 180 秒）会抛 `TimeoutError`，报错里直说
   "另有进程正在打 NPC / 搜狗"。遇到它先找自己另一个会话——那是在排队的提示，
   不是代码坏了。
-- **闸只罩两个已知会限流的入口**。NPC 与搜狗是实测到阈值的；`mp.weixin.qq.com`
-  的正文读取没测到同样的阈值，仍按 `READ_INTERVAL` 拉开间隔，没往闸里塞——
-  不给自己没验证过的结论。别以为"有闸"就等于"所有站点都被限速保护"。
+- **闸只罩两个入口，而且这两把闸各自的证据新旧不同**。NPC 与搜狗各有一把闸
+  （`npc_gate`、`sogou_gate`）；`mp.weixin.qq.com` 的正文读取没测到同样的阈值，
+  仍按 `READ_INTERVAL` 拉开间隔，没往闸里塞——不给自己没验证过的结论。
+  别以为"有闸"就等于"所有站点都被限速保护"。两把闸的证据日期见
+  [限流记录的实测台账](#限流记录的实测台账)：NPC 那把在 2026-10-04 复跑到 16 路并发
+  仍未复现记录里的形态，搜狗那把未复测。这一格给的是"什么时候量的、量出来什么"，
+  拆不拆闸由读到这一行的人决定。
 - **缺口说明是"这次没取到"，不是"该层没有内容"**。程序只把这句话递过去，
   不替你重试、也不替你换源补缺；用什么口径回答仍然由上层决定。
 - **文号检索不出来有两种，本层只收掉了一种**。`_citation_phrase` 补前缀只在文号
@@ -139,6 +223,13 @@ SKILL.md ② 末尾指向这一节。它回答两个问题：某一格动作**�
   只能拿裸短形去查——实测这样一趟给 2 条命中，取回的清单里没有一份文号对得上，
   于是报 `not_in_library`，并把"用的哪个检索词、接口给了几条命中"一起写进提醒。
   这一格要真正收掉得再按文件名对一遍，本层还没做。
+- **法院判决与复议决定这一层没接进来**。类案检索（`scripts/tax_cases.py`）只走
+  税务总局站内的查处通报与曝光典型，`中国裁判文书网`（`wenshu.court.gov.cn`）与
+  `人民法院案例库`（`rmfyalk.court.gov.cn`）都未实现：前者要登录与验证码且近年
+  公开量骤减，后者整个库在登录墙后。**这两个入口本机一次请求都没发过**，所以这里
+  不写它们的反爬形态与阈值——没有量过就没有记录。后果写进输出模板：类案支持的
+  强度上限是"官方处理口径"（税务机关怎么查、怎么罚、怎么公布），不是"司法裁判口径"
+  （法院怎么判）；要的是后者时这一层是空的，得说明缺口，不能拿查处通报冒充判决。
 - **法规库那一轮"没命中"仍会被 ④ 写成"取数失败"**。`tax_fgk.search_fgk` 零命中时
   写一句 `_error` 说明（翻完几页、共几条命中、范围限于文件类标签），而检索层的
   `_rows_and_error` 认的是"`_error` 非空即失败"，`gather` 于是把这一轮记进

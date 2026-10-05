@@ -256,8 +256,33 @@ PROMPT 第 3 条要求的行为）与 `refused_unparsed`（非 json 且拿不到
 |-----|-------|------------|
 | `typing` | 判型对不对 | 把"下列…正确的有"当政策查询去答 |
 | `primary` | 主依据层级够不够 | 命中了《企业所得税法》但主依据是解读文章 |
-| `sufficient` | 依据够不够支撑该类型的结论 | 只找一条法就说"符合条件" |
+| `sufficient` | 依据够不够支撑该类型的结论（必备项清单取自注册表，不由打分函数自己数） | 只找一条法就说"符合条件" |
 | `caveat` | 限制条件处理得对不对 | 题面没交代主体就给具体数额 |
+
+`sufficient` 这一格以前写着一串 if：`option_judge` 要本体法、
+`entitlement`/`liability`/`risk`/`treatment` 要本体法、`authority="sta"` 的专题改看
+法规库检索词。那是 ① 表格「必需依据」与 ② 四轴的第三份副本，改表不会通知它。
+现在必备项取自 `data/evidence_requirements.json`（经 `tax_coverage.assess` 逐项判状态），
+函数只留**离线判得动的那一根可达性判据**：本轮计划有没有为该题装配出打得到依据层的
+检索词。`ok` 的口径与改前一致（2026-10-04 实测：`python tests/eval_analysis.py --sample 0
+--labeled-only` 291 题，
+`sufficient` 290/290、`typing` 254/291、`caveat` 281/291），历史分数不断档；
+变的是"这类题该有哪些依据"由谁说了算。
+
+离线这一路手里没有检回的依据，所以依据要件一律记 **待核** 而不是 **缺**：待核是
+"这一轮还没检"，缺是"检了一圈没有这类材料"，把两者合成一个数，检索故障就会被读成
+"这类题不需要依据"。真要按依据项打分，得走 `eval_answer.py` 那条带 `evidence_bundle`
+的路，把清单原样喂进 `tax_coverage.assess(evidence=...)`。
+
+19 道人工标注为 `liability` 的题实测（`python tests/eval_analysis.py --sample 0
+--validity all --labeled-only --json`，全时效档一起跑才 19 道都进样本；默认 `ok` 档只有
+3 道在内，离线、不调模型）：判型 19/19 落在 `liability`；
+离线覆盖率 0.125—0.5、均值 0.342——每题 8 个必备项里有 4 项判不动（3 项依据要件 +
+1 项展开算式），判得动的就是四根前提轴齐不齐。缺得最多的是**地区**（14/19），
+其次主体与身份（5/19）、时点（3/19）、金额与规模（2/19），四轴全不缺只有 3 题。
+这个数说的是"这类题真到手上时，光题面撑不起结论"的频次，不是答错率；钉住清单来源的是
+`tests/test_evidence_coverage.py::TestEvalScorerReadsTheTable`——把表里一项删掉，
+打分输出的必备清单必须跟着少一项，跟着变才证明它没有自己留一份。
 
 ```bash
 python tests/eval_analysis.py --sample 200               # 全量抽，含未标注题
