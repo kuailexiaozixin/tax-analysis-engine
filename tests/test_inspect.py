@@ -516,6 +516,19 @@ class TestDocsShareTheImplementation(unittest.TestCase):
         for f in tax_inspect.SIX_FIELDS:
             self.assertIn(f, body, f"模板里少了『{f}』这一格")
         self.assertIn("未询问", body)
+        # ⑥ 只留触发条件与命令，「未用的回答」这一格连成因一起搬进模板；两个成因的
+        # 名字取自代码常量，改名或删格都要在这里报红，否则搬过去的细则会没人认领。
+        self.assertIn("未用的回答", body)
+        for cause in tax_inspect.UNUSED_HINTS:
+            self.assertIn(cause, body, f"模板里少了『{cause}』这一成因")
+
+    def test_mutation_unused_answer_cell_dropped_is_caught(self):
+        """自检：把模板那一格整格删掉，上一条判据必须报红。"""
+        body = TEMPLATES.split("## 稽查模拟问询式", 1)[1]
+        broken = body.replace("**未用的回答**", "**答过的数**", 1)
+        self.assertNotEqual(broken, body, "变异没落到那一格的标签上")
+        self.assertIn("未用的回答", body)
+        self.assertNotIn("未用的回答", broken, "删掉这一格后判据不会报红")
 
     def test_risk_framework_links_the_question_layer(self):
         self.assertIn("tax_inspect", FRAMEWORK)
