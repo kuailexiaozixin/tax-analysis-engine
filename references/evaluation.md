@@ -32,16 +32,31 @@
 | FinCDM `CPA-KQA` | 不用 | 题面绝大多数问的是审计与企业会计准则，无法按题筛出税务部分 |
 | CFQA | 不用 | 中文上市公司年报问答，不是税收法律法规。它的 `答案出自` 字段是本技能"依据出处"的原型 |
 
-原始题库文件放在**仓库外**的 `../eval_data/`：CC BY-NC-SA 与无许可文件的题库不允许
-随技能再分发。文件名与上游路径登记在 `build_eval_set.py` 的 `DATASET_FILES` 和
-`SOURCES` 两个常量里，脚本靠文件名找文件。
+原始题库文件放在技能目录内的 `data/eval/raw/`。克隆后这个目录已经在那儿（仓库带着
+一个 `.gitkeep` 说明文件），把 CSV 放进来就能用。目录里的题面与构建产物
+`data/eval/tax_eval_set.jsonl` 一起写在 `.gitignore` 里：CC BY-NC-SA 与无许可文件的
+题库不允许随技能再分发。文件名与上游路径登记在 `build_eval_set.py` 的
+`DATASET_FILES` 和 `SOURCES` 两个常量里，脚本靠文件名找文件。
+
+随技能分发的是 `data/eval/MANIFEST.json`：5 个原始 CSV 与构建产物各自的字节数和
+SHA256、题数与按题库／子集／题型／时效的构成计数、时效规则命中数，加上逐条许可
+说明。它不含任何题面文本，所以能入库；作用是让拿到题面的人先判断自己下的和评测
+用的是同一批数据，而不是凭文件名猜。三个评测脚本（`eval_answer`、`eval_analysis`、
+`eval_retrieval`）读的都是 `data/eval/tax_eval_set.jsonl` 这一份，路径由脚本自己
+按所在目录算出，不跟工作目录走。
 
 ## 构建与去重
 
 ```bash
-python tests/build_eval_set.py --data-dir ../eval_data --report   # 只看构成，不落盘
-python tests/build_eval_set.py --data-dir ../eval_data            # 产出 tax_eval_set.jsonl
+python tests/build_eval_set.py --report          # 只看构成，不落盘
+python tests/build_eval_set.py                   # 产出 data/eval/tax_eval_set.jsonl
+python tests/build_eval_set.py --make-manifest   # 上一步之后再写 MANIFEST.json
+python tests/build_eval_set.py --verify          # 本地数据对清单：缺哪份、哪份哈希不符
 ```
+
+`--data-dir` 与 `--out` 的默认值就是上面这两个技能内路径，换机器不用带参数。
+一题都没收进来时脚本退出并写明缺哪几个文件，不写空文件：空评测集到了下游会被
+读成"0 分"，而真实原因是没数据。
 
 产出一行一题，字段是 `key / source / subset / ordinal / question / options / answer /
 answer_type / validity / flags`。
@@ -103,7 +118,7 @@ answer_type / validity / flags`。
 python tests/run_all.py                      # 离线门禁：一次跑完所有不联网用例
 python tests/run_all.py --list               # 权威清单：当前有哪些用例（别手抄进文档）
 python tests/run_all.py --online             # 追加联网 e2e，含 test_tax_search.py
-python tests/build_eval_set.py --data-dir ../eval_data
+python tests/build_eval_set.py --make-manifest
 python tests/eval_analysis.py --sample 200 --labeled-only       # 诊断，不调模型
 python tests/eval_retrieval.py --validity ok                    # 诊断，不调模型
 python scripts/tax_browser.py --check        # 税屋正文链路是否可用
@@ -316,7 +331,7 @@ python tests/eval_analysis.py --sample 80 --dump-labels   # 导出题型供人�
 ### 数值字段严格比对：卡在没有 gold 数额，不卡在代码
 
 外部税务评测常把"解析输出 → 字段对齐 → 数值严格比对 + 文本语义相似"当打分主干。
-本仓库现在做不了数值那一步，原因是数据而非判分逻辑：现行 1001 题（`eval_data/
+本仓库现在做不了数值那一步，原因是数据而非判分逻辑：现行 1001 题（`data/eval/
 tax_eval_set.jsonl`）里，**标准答案含金额或百分比的是 0 题**；金额与百分比只出现在
 173 题的选项中，而选项是判卷材料、不是 gold 数值。要落这一步得先补一类题：题面把
 计税参数给全（所得额、比例、扣除项、主体身份），gold 给具体数额并标单位，同时定下

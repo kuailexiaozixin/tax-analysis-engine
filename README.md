@@ -532,6 +532,10 @@ tax-analysis-engine/
 │   ├── control_activities.json    # 控制环节与活动注册表（每活动带九要素与诊断入口，环节下限、覆盖底线、按域挂的类别限制由 tax_control.load() 逐格校验）
 │   ├── ledger_rules.json           # 账套巡检规则注册表（四层检查、八要素、每条规则带参数检索词与 law_hint；`_说明` 里的检查层／风险条目八要素／规则字段／参数字段／判据字段／比较算子／筛选算子／等级值域／状态值域九张名字清单与代码常量逐组比对，禁数字的格子清单（算式／判据／取数／子集／账套字段／参数.名／参数.检索词／筛选算子／比较算子共九格）也逐字比对，`tax_ledger.load()` 少一格不扫就报错）
 │   ├── contract_intake_template.json # 多合同受理模板注册表（九维度 × 十八要素 × 五件套、合同链四种边、判断单元四要素、七行历史税种称谓；`_说明` 里十九张名字清单——九维度／维度字段／要素字段／要素五件套／记录字段／合同链边字段／判断单元字段／原文出处的三格／取值来源三态／合同链边类型／合同链确认状态／判断单元四要素／一致性核对四值／比对结论的成因／差异条目字段／落点值域／历史税种称谓／重查指针的说法／不许出现数字的格子——与代码常量逐张逐序比对，`成因各自的动作` 那五句必须写出代码给的结论名与缺口类别名，`tax_intake.load()` 少一张就不载入）
+│   ├── eval/                       # 评测数据：只有清单入库，题面与产物受上游许可约束不入库
+│   │   ├── MANIFEST.json           # 5 份原始 CSV 与评测集的 SHA256·字节数、题数与构成、逐条许可说明
+│   │   ├── raw/                    # 原始题面 CSV（放这里，`.gitignore` 已排除）
+│   │   └── tax_eval_set.jsonl      # 构建产物 1001 题（`.gitignore` 已排除，由 build_eval_set.py 重建）
 │   └── sync/                       # 离线目录同步产物（减免税政策目录、政策文件库清单）
 ├── references/                     # tax_categories · search_strategies · tax_risk_framework
 ├── tests/
@@ -576,11 +580,15 @@ tax-analysis-engine/
 
 （`tests/results/` 是评测运行的输出目录：依据缓存、模型输出缓存与 `--out` 结果都落这里。目录在需要时**自动创建**，已进 `.gitignore`、不入库，所以仓库里看不到它。）
 
-评测集原始数据不入仓库，放在 `../eval_data/`：FinanceIQ 与 FinEval 是 CC BY-NC-SA-4.0，
-IDEAFinBench 上游没有 LICENSE 文件，再分发前得先找上游确认。构建命令从那里读、也写到那里：
+评测数据放在技能目录内的 `data/eval/`，构建命令的默认读写点也在那里。原始题面
+不入库：FinanceIQ 与 FinEval 是 CC BY-NC-SA-4.0，IDEAFinBench 上游没有 LICENSE
+文件，再分发前得先找上游确认。入库的是 `data/eval/MANIFEST.json`，它记着 5 份原始
+CSV 与评测集各自的 SHA256、字节数、题数与构成，下载题面后按它核对是否同一批数据：
 
 ```bash
-python tests/build_eval_set.py --data-dir ../eval_data --report
+python tests/build_eval_set.py --report          # 只看构成，不落盘
+python tests/build_eval_set.py --make-manifest   # 建评测集并写清单
+python tests/build_eval_set.py --verify          # 本地数据与清单逐项对哈希
 ```
 
 ---

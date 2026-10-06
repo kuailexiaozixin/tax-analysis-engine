@@ -50,10 +50,10 @@ import tax_coverage as CV           # noqa: E402
 import tax_evidence as E            # noqa: E402
 import tax_answer as AN             # noqa: E402
 
-EVAL_DIR = HERE.parent.parent / "eval_data"
+EVAL_DIR = HERE.parent / "data" / "eval"
 EVAL_SET = EVAL_DIR / "tax_eval_set.jsonl"
 # 统一评测集还没构建时退回原始 CSV，让脚本在只有题库的状态下也能跑
-EVAL_GLOB = str(EVAL_DIR / "*tax_law_val.csv")
+EVAL_GLOB = str(EVAL_DIR / "raw" / "*tax_law_val.csv")
 
 # ── 人工标注 ───────────────────────────────────────────────────────────────
 # 标注以题面为键，不用 id：各题库子集的 id 都各自从 1 或 0 开始，同一个 id 会

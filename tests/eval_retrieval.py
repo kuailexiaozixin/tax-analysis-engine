@@ -42,6 +42,10 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
 
+# 默认评测集写在技能目录内，不跟工作目录走：原来那个 "../eval_data/…" 的相对
+# 默认值只有从 tests/ 里发命令才成立，从仓库根发就指向别处。
+EVAL_SET = SCRIPT_DIR.parent / "data" / "eval" / "tax_eval_set.jsonl"
+
 for _s in (sys.stdout, sys.stderr):
     try:
         _s.reconfigure(encoding="utf-8", errors="replace")
@@ -219,7 +223,7 @@ def pct(a, b):
 
 def main():
     p = argparse.ArgumentParser(description="统一评测集上的检索质量评测")
-    p.add_argument("--set", dest="set_path", default="../eval_data/tax_eval_set.jsonl",
+    p.add_argument("--set", dest="set_path", default=str(EVAL_SET),
                    help="build_eval_set.py 产出的评测集")
     p.add_argument("--validity", default="ok",
                    help="只跑该时效档：ok / review / stale / all")
@@ -236,7 +240,7 @@ def main():
     records = load_set(Path(args.set_path))
     if not records:
         print(f"❌ 读不到评测集：{Path(args.set_path).resolve()}")
-        print("   先跑 python tests/build_eval_set.py --data-dir ../eval_data")
+        print("   先跑 python tests/build_eval_set.py --verify，按它回吐的清单补齐原始题面")
         return 1
 
     if args.validity != "all":

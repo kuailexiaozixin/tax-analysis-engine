@@ -66,9 +66,9 @@ import tax_detail as DT               # noqa: E402
 import tax_fgk as FG                  # noqa: E402
 import tax_llm as L                   # noqa: E402
 
-EVAL_DIR = HERE.parent.parent / "eval_data"
+EVAL_DIR = HERE.parent / "data" / "eval"
 EVAL_SET = EVAL_DIR / "tax_eval_set.jsonl"
-EVAL_GLOB = str(EVAL_DIR / "*tax_law_val.csv")
+EVAL_GLOB = str(EVAL_DIR / "raw" / "*tax_law_val.csv")
 RESULTS_DIR = HERE / "results"
 CACHE_PATH = RESULTS_DIR / "answer_llm_cache.jsonl"
 # 依据块单独落盘：取一次依据要打人大库检索加下载解析全文，

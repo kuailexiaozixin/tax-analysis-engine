@@ -85,7 +85,7 @@ def eval_route_stats() -> dict:
     路由是确定性字符串匹配，所以"未路由"的比例可以在改前改后各量一次直接对比，
     不必重跑检索，更不必调模型。评测集读不到就返回空统计，探针仍然可用。
     """
-    path = PROJECT_ROOT.parent / "eval_data" / "tax_eval_set.jsonl"
+    path = PROJECT_ROOT / "data" / "eval" / "tax_eval_set.jsonl"
     if not path.exists():
         return {"missing": str(path)}
     import eval_answer as EA

@@ -1,0 +1,91 @@
+{
+  "note": "本文件只登记哈希与构成，不含任何题面文本。原始 CSV（data/eval/raw/）与构建产物（data/eval/tax_eval_set.jsonl）受上游许可约束不入仓库：FinanceIQ 与 FinEval 为 CC BY-NC-SA-4.0（非商业、相同方式共享），IDEAFinBench 上游没有 LICENSE 文件——没有声明不等于允许再分发。拿到题面后跑 `python tests/build_eval_set.py --make-manifest` 重建，再用 `--verify` 比对本文件登记的哈希；哈希逐字一致即证明用的是同一批数据。",
+  "generated_by": "python tests/build_eval_set.py --make-manifest",
+  "eval_set": {
+    "path": "data/eval/tax_eval_set.jsonl",
+    "bytes": 983882,
+    "sha256": "f868a0333f22c4855abe14cc2fd86409935d66687ee4010a9ad0c70b0ddba314"
+  },
+  "inputs": {
+    "ideafin_cpa_one_tax_law_val.csv": {
+      "path": "data/eval/raw/ideafin_cpa_one_tax_law_val.csv",
+      "bytes": 90301,
+      "sha256": "df5fc86dceb4ef59941c66f8c69fb4051d7dd6059c5994e5412000247c650923",
+      "source": "ideafin",
+      "subset": "cpa_one"
+    },
+    "ideafin_cpa_multi_tax_law_val.csv": {
+      "path": "data/eval/raw/ideafin_cpa_multi_tax_law_val.csv",
+      "bytes": 68977,
+      "sha256": "7d123c75870d9c9a0c707f76e436c7e7454a225b0dfdf815699e2b9f7940c307",
+      "source": "ideafin",
+      "subset": "cpa_multi"
+    },
+    "financeiq_税务师_test.csv": {
+      "path": "data/eval/raw/financeiq_税务师_test.csv",
+      "bytes": 236335,
+      "sha256": "31fc352333e5a2c2eeb61ecbbae9b01933890e7a3a177c5d3da96ca14127147b",
+      "source": "financeiq",
+      "subset": "shuiwushi"
+    },
+    "fineval_tax_law_val.csv": {
+      "path": "data/eval/raw/fineval_tax_law_val.csv",
+      "bytes": 13771,
+      "sha256": "d7660069a08752f5a6b74381980d484b16f9d8917c5aa044b8836b72439d685f",
+      "source": "fineval",
+      "subset": "tax_law_val"
+    },
+    "fineval_tax_law_dev.csv": {
+      "path": "data/eval/raw/fineval_tax_law_dev.csv",
+      "bytes": 3176,
+      "sha256": "4b80f21161cf54dc9b7711f7d2e57ed4890f547d3bddad954fd028bf5b7e28ac",
+      "source": "fineval",
+      "subset": "tax_law_dev"
+    }
+  },
+  "sources": {
+    "ideafin": "DataArcTech/IDEAFinBench：datasets/cpa_one|cpa_multi/val/tax_law_val.csv",
+    "financeiq": "Duxiaoman-DI/FinanceIQ：data/test/税务师.csv（CC BY-NC-SA-4.0）",
+    "fineval": "SUFE-AIFLM-Lab/FinEval：tax_law 的 val 与 dev（CC BY-NC-SA-4.0）"
+  },
+  "composition": {
+    "records": 1001,
+    "by_source": {
+      "financeiq": 486,
+      "fineval": 50,
+      "ideafin": 465
+    },
+    "by_subset": {
+      "cpa_multi": 186,
+      "cpa_one": 279,
+      "shuiwushi": 486,
+      "tax_law_dev": 5,
+      "tax_law_val": 45
+    },
+    "by_answer_type": {
+      "multiple": 186,
+      "single": 815
+    },
+    "by_validity": {
+      "ok": 740,
+      "review": 100,
+      "stale": 161
+    },
+    "rule_hits": {
+      "增值税旧税率": 8,
+      "次近年份": 110,
+      "过期年度": 160
+    },
+    "read_per_subset": {
+      "cpa_multi": 186,
+      "cpa_one": 279,
+      "shuiwushi": 488,
+      "tax_law_dev": 5,
+      "tax_law_val": 45
+    },
+    "dropped": {
+      "shuiwushi: 范围外（税制史）": 2
+    },
+    "cross_source_dups": 0
+  }
+}

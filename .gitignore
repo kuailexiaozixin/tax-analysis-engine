@@ -16,3 +16,10 @@ subskills/*/preference_index.json
 # 同步器下载到的原始产物与 state（可再生，含版本节点每次变的直链）
 data/sync/
 
+# 评测题面不入库：两份 CC BY-NC-SA-4.0、一份上游无 LICENSE 文件，都不允许随技能
+# 再分发。入库的只有 data/eval/MANIFEST.json（哈希与构成，不含题面）和 raw/ 里那个
+# 说明文件——目录要随技能分发才存在，所以排除写成 raw/* 并单独放行它。
+data/eval/raw/*
+!data/eval/raw/.gitkeep
+data/eval/tax_eval_set.jsonl
+

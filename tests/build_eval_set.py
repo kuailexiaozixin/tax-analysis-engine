@@ -22,12 +22,14 @@
 命题口径算成技能的能力分。
 
 用法：
-    python tests/build_eval_set.py --data-dir ../eval_data
-    python tests/build_eval_set.py --data-dir ../eval_data --report
-    python tests/build_eval_set.py --data-dir ../eval_data --out ../eval_data/tax_eval_set.jsonl
+    python tests/build_eval_set.py                      # 读 data/eval/raw/，产出 data/eval/tax_eval_set.jsonl
+    python tests/build_eval_set.py --report             # 只看构成，不落盘
+    python tests/build_eval_set.py --make-manifest      # 同时写 data/eval/MANIFEST.json（入库的清单）
+    python tests/build_eval_set.py --verify             # 核对本地数据与清单是否一致
 """
 import argparse
 import csv
+import hashlib
 import io
 import json
 import re
@@ -40,6 +42,15 @@ for _s in (sys.stdout, sys.stderr):
         _s.reconfigure(encoding="utf-8", errors="replace")
     except (AttributeError, ValueError):
         pass
+
+# 评测数据的三个落点都在技能目录内，克隆后不需要在仓库旁边再摆一个同名目录。
+# 原始 CSV 与构建产物受上游许可约束不入库（见 data/eval/MANIFEST.json 的 note），
+# 入库的只有清单：清单记哈希与构成，不含任何题面文本。
+REPO_ROOT = Path(__file__).resolve().parent.parent
+EVAL_DIR = REPO_ROOT / "data" / "eval"
+RAW_DIR = EVAL_DIR / "raw"
+EVAL_SET = EVAL_DIR / "tax_eval_set.jsonl"
+MANIFEST_PATH = EVAL_DIR / "MANIFEST.json"
 
 # 本地文件名 → (题库, 子集, 读取器)。文件名是固定的，题库改版要同步改这里。
 # 上游路径写在 SOURCES 里，下载方式见 SKILL.md 的评测章节。
@@ -65,6 +76,17 @@ SOURCES = {
     "financeiq": "Duxiaoman-DI/FinanceIQ：data/test/税务师.csv（CC BY-NC-SA-4.0）",
     "fineval": "SUFE-AIFLM-Lab/FinEval：tax_law 的 val 与 dev（CC BY-NC-SA-4.0）",
 }
+
+# 清单里唯一一处许可说明。原始题面与构建产物都不入库，入库的只有这份清单，
+# 所以"为什么不入库"必须写在清单能读到的地方，而不是只写在仓库外的目录里。
+MANIFEST_NOTE = (
+    "本文件只登记哈希与构成，不含任何题面文本。"
+    "原始 CSV（data/eval/raw/）与构建产物（data/eval/tax_eval_set.jsonl）受上游许可约束不入仓库："
+    "FinanceIQ 与 FinEval 为 CC BY-NC-SA-4.0（非商业、相同方式共享），"
+    "IDEAFinBench 上游没有 LICENSE 文件——没有声明不等于允许再分发。"
+    "拿到题面后跑 `python tests/build_eval_set.py --make-manifest` 重建，"
+    "再用 `--verify` 比对本文件登记的哈希；哈希逐字一致即证明用的是同一批数据。"
+)
 
 # 时效规则。每条 (代号, 判档, 扫描范围, 说明)。扫描范围 q=只问题面，
 # all=连选项一起扫（税率与废止税种常出现在选项里）。
@@ -170,11 +192,7 @@ def grade(record: dict):
 
 def build(data_dir: Path):
     """读取全部子集，去重归并。返回 (records, stats)。"""
-    names = {}
-    for p in sorted(data_dir.iterdir()):
-        if not p.is_file():
-            continue
-        names[ALIASES.get(p.name, p.name)] = p
+    names = resolve_raw_names(data_dir)
 
     stats = {"read": Counter(), "dropped": Counter(), "flag": Counter(),
              "dup": 0}
@@ -231,16 +249,147 @@ def build(data_dir: Path):
     return records, stats
 
 
+def sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def repo_rel(path: Path) -> str:
+    """技能内路径写成相对形式；--out/--data-dir 指到仓库外时退回绝对路径。"""
+    try:
+        return str(path.relative_to(REPO_ROOT).as_posix())
+    except ValueError:
+        return path.resolve().as_posix()
+
+
+def resolve_raw_names(data_dir: Path):
+    """原始目录里**登记过的** CSV：本地文件名（含旧命名）→ 路径。
+
+    只认 DATASET_FILES 里的名字，目录里混进的别的文件（包括占位的 .gitkeep）一概
+    不算——否则空目录会被当成"有数据"，走到构建那一步才失败，回吐的原因也是错的。
+    """
+    names = {}
+    if data_dir.is_dir():
+        for p in sorted(data_dir.iterdir()):
+            name = ALIASES.get(p.name, p.name)
+            if p.is_file() and name in DATASET_FILES:
+                names[name] = p
+    return names
+
+
+def summarize(records, stats):
+    """把构成压成不含题面的计数，供清单登记。"""
+    def c(key):
+        return dict(sorted(Counter(r[key] for r in records).items()))
+    return {
+        "records": len(records),
+        "by_source": c("source"),
+        "by_subset": c("subset"),
+        "by_answer_type": c("answer_type"),
+        "by_validity": {k: v for k, v in sorted(Counter(r["validity"] for r in records).items())},
+        "rule_hits": dict(sorted((k[len("规则:"):], v)
+                                 for k, v in stats["flag"].items() if k.startswith("规则:"))),
+        "read_per_subset": dict(sorted(stats["read"].items())),
+        "dropped": dict(sorted(stats["dropped"].items())),
+        "cross_source_dups": stats["dup"],
+    }
+
+
+def write_manifest(out_path: Path, data_dir: Path, records, stats, manifest_path: Path):
+    names = resolve_raw_names(data_dir)
+    m = {
+        "note": MANIFEST_NOTE,
+        "generated_by": "python tests/build_eval_set.py --make-manifest",
+        "eval_set": {"path": repo_rel(out_path),
+                     "bytes": out_path.stat().st_size,
+                     "sha256": sha256_file(out_path)},
+        "inputs": {fname: {"path": repo_rel(p),
+                           "bytes": p.stat().st_size,
+                           "sha256": sha256_file(p),
+                           "source": source,
+                           "subset": subset}
+                   for fname, (source, subset, _) in DATASET_FILES.items()
+                   for p in [names.get(fname)] if p},
+        "sources": SOURCES,
+        "composition": summarize(records, stats),
+    }
+    manifest_path.write_text(json.dumps(m, ensure_ascii=False, indent=2) + "\n",
+                             encoding="utf-8")
+    print(f"清单已写入 {manifest_path.resolve()}（{len(m['inputs'])}/{len(DATASET_FILES)} 个输入登记哈希）")
+    return m
+
+
+def verify(manifest_path: Path, data_dir: Path, out_path: Path):
+    """核对本地数据与清单：缺什么、什么对不上，各自给下一步动作。"""
+    if not manifest_path.exists():
+        print(f"❌ 没有清单：{manifest_path.resolve()}\n"
+              f"   拿到原始题面后跑 `python tests/build_eval_set.py --make-manifest` 生成。")
+        return 1
+    m = json.loads(manifest_path.read_text(encoding="utf-8"))
+    bad = 0
+
+    names = resolve_raw_names(data_dir)
+    for fname, info in m.get("inputs", {}).items():
+        p = names.get(fname)
+        if p is None:
+            print(f"  缺输入  {fname}  → 上游 {SOURCES.get(info['source'], info['source'])}")
+            bad += 1
+            continue
+        got = sha256_file(p)
+        if got != info["sha256"]:
+            print(f"  哈希漂移 {fname}  清单 {info['sha256'][:12]}… 本地 {got[:12]}…")
+            bad += 1
+        else:
+            print(f"  输入一致 {fname}  {info['bytes']} 字节")
+
+    want = m.get("eval_set", {})
+    if not out_path.exists():
+        print(f"❌ 评测集不在：{out_path.resolve()}\n"
+              f"   没有它，eval_answer / eval_analysis / eval_retrieval 三个评测脚本无题可跑。"
+              f"\n   把 5 个原始 CSV 放进 {data_dir.resolve()} 后跑 "
+              f"`python tests/build_eval_set.py`；重建后此处哈希应与清单逐字一致"
+              f"（{want.get('sha256', '未登记')[:12]}…）。")
+        return 1
+    got = sha256_file(out_path)
+    if got == want.get("sha256"):
+        print(f"  评测集一致 {out_path.name}  {want['bytes']} 字节  sha256 {got[:12]}…")
+    else:
+        print(f"❌ 评测集与清单不符：本地 sha256 {got[:12]}…，清单 {want.get('sha256', '未登记')[:12]}…\n"
+              f"   要么原始 CSV 换过版本（重跑 --make-manifest 并核对构成），"
+              f"要么评测集被单独改过（删掉后重建）。")
+        bad += 1
+    return 1 if bad else 0
+
+
+def missing_data_message(data_dir: Path) -> str:
+    return (f"❌ 原始题面不在：{data_dir.resolve()}\n"
+            f"   这一步不能省：评测集由 {len(DATASET_FILES)} 个公开题库的 CSV 归并而成，"
+            f"上游许可（CC BY-NC-SA-4.0 两份；IDEAFinBench 无 LICENSE 文件）不允许把它们"
+            f"随技能再分发，所以仓库里只有清单 {MANIFEST_PATH}。\n"
+            f"   文件名见清单的 inputs，下载位置见 sources；放齐后跑 "
+            f"`python tests/build_eval_set.py --verify` 对哈希，再构建。")
+
+
 def main():
     p = argparse.ArgumentParser(description="归并公开财税题库为统一评测集")
-    p.add_argument("--data-dir", default="../eval_data")
-    p.add_argument("--out", default="", help="默认写到 <data-dir>/tax_eval_set.jsonl")
+    p.add_argument("--data-dir", default=str(RAW_DIR),
+                   help="原始 CSV 所在目录，默认技能内的 data/eval/raw/")
+    p.add_argument("--out", default=str(EVAL_SET),
+                   help="评测集落点，默认技能内的 data/eval/tax_eval_set.jsonl")
     p.add_argument("--report", action="store_true", help="只打印构成，不写文件")
+    p.add_argument("--make-manifest", action="store_true",
+                   help="构建后把哈希与构成写进 data/eval/MANIFEST.json（入库）")
+    p.add_argument("--verify", action="store_true",
+                   help="只核对本地数据与 MANIFEST.json，不写任何文件")
     args = p.parse_args()
 
     data_dir = Path(args.data_dir)
-    if not data_dir.is_dir():
-        print(f"❌ 目录不存在：{data_dir.resolve()}")
+    out_path = Path(args.out)
+
+    if args.verify:
+        return verify(MANIFEST_PATH, data_dir, out_path)
+
+    if not resolve_raw_names(data_dir):
+        print(missing_data_message(data_dir))
         return 1
 
     print(f"读取 {data_dir.resolve()}", file=sys.stderr)
@@ -273,11 +422,24 @@ def main():
     if args.report:
         return 0
 
-    out = Path(args.out) if args.out else data_dir / "tax_eval_set.jsonl"
-    with out.open("w", encoding="utf-8") as f:
+    if not records:
+        print(f"❌ 读到了文件却一题都没收进来：{data_dir.resolve()}\n"
+              f"   不写文件——空评测集到了下游会被读成「0 分」，而真实原因是没数据。\n"
+              f"   上面「丢弃明细」那一栏列的就是每道题的去处；全是「空题面／选项缺失」"
+              f"时，多半是上游改了 CSV 的列名，对照 read_csv() 的取值键查。")
+        return 1
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", encoding="utf-8") as f:
         for r in records:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
-    print(f"\n已写入 {out.resolve()}")
+    print(f"\n已写入 {out_path.resolve()}")
+
+    if args.make_manifest:
+        MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
+        write_manifest(out_path, data_dir, records, stats, MANIFEST_PATH)
+    else:
+        print(f"提示：加 --make-manifest 可把本次哈希与构成写进 {MANIFEST_PATH.name}（入库的那份清单）")
     return 0
 
 

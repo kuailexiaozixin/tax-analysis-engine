@@ -30,6 +30,9 @@ TESTS_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = TESTS_DIR.parent
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
+# 评测集在技能目录内，构建方式见 tests/build_eval_set.py 与 data/eval/MANIFEST.json
+EVAL_SET = PROJECT_ROOT / "data" / "eval" / "tax_eval_set.jsonl"
+
 import tax_analyze as AA          # noqa: E402
 
 # 题面清单：每条都带一句"为什么要盯它"，与 probe_routing.py 同一套攒法。
@@ -75,7 +78,7 @@ def probe_row(text: str) -> dict:
 
 def eval_classify_stats() -> dict:
     """整份评测集走一遍判型，纯本地统计。读不到评测集就返回空统计。"""
-    path = PROJECT_ROOT.parent / "eval_data" / "tax_eval_set.jsonl"
+    path = EVAL_SET
     if not path.exists():
         return {"missing": str(path)}
     questions = []
@@ -131,7 +134,7 @@ def _numeric_option_question(row: dict) -> bool:
 
 def oracle_stats() -> dict:
     """数值选项题判成 liability 的比例；判型词表改宽改窄都会动这个数。"""
-    path = PROJECT_ROOT.parent / "eval_data" / "tax_eval_set.jsonl"
+    path = EVAL_SET
     if not path.exists():
         return {"missing": str(path)}
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
