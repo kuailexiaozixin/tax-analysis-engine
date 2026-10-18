@@ -6,19 +6,24 @@
 还开不开、栏目目录有没有改版。这些事实写在文档里就成了会过期的声明。有了这个探针，
 下一次怀疑文档过期时重跑一遍即可对照，不必靠"上次是谁说的"。
 
-它只读、不调模型、不下载文件；对站点的请求量控制在十几次以内，逐篇之间留间隔。
-放行 cookie 只在本机内存里传递，不落盘。
+它只读、不调模型、不下载文件；全项约 30 个请求，逐篇之间留间隔（站内检索那几档
+每次隔 `tax_shui5.SEARCH_MIN_GAP` = 3 秒，站点自己声明的是 2 秒）。
+放行 cookie 只在本机内存里传递，不落盘。`--no-browser` 只跑不需要放行的第 1 项。
 
-判据分三类，缺一项就报在哪一项上，不静默跳过：
+判据分四类，缺一项就报在哪一项上，不静默跳过：
   1. 挑战面（不需要浏览器）：无 cookie 时首页、robots.txt、文章页、一个不存在的路径
      返回的字节数是否还是同一份挑战页。
-  2. 三条检索通道：站内搜索（帝国 CMS tempid=2）、360 的 site: 检索、栏目翻页。
+  2. 检索与清单入口：站内搜索（帝国 CMS tempid=2）、360 的 site: 检索、栏目列表页翻页。
   3. 正文形态：arcContent 能不能取到、有没有 $N 后续页、尾部有没有混进分享控件。
+  4. 限定与取数入口：站内检索的栏目、发布日期区间、匹配域各收窄到哪一档、
+     栏目表与页面是否同源、标签页 `&page=` 还翻不翻得动。
 
 Usage:
   python subskills/shui5/probe_shui5.py                       # 全项体检
-  python subskills/shui5/probe_shui5.py --no-browser           # 只跑不需要放行的那几项
+  python subskills/shui5/probe_shui5.py --no-browser           # 只跑不需要放行的挑战面
   python subskills/shui5/probe_shui5.py --keyword 留抵退税 --column ShiWuJiDu
+  python subskills/shui5/probe_shui5.py --column 北京 --column2 深圳   # 换逗号多选那两栏
+  python subskills/shui5/probe_shui5.py --tag 增值税法                 # 指名复测标签翻页
 """
 
 import argparse
@@ -219,9 +224,16 @@ def columns(cookies: dict) -> dict:
                      if not local.search(x["目录"])]
     paths = {re.sub(r"^https?://[^/]+", "", urljoin(SITE, h)).split("?")[0]
              for h in re.findall(r'href="([^"]+)"', page)}
-    out["地方栏目数"] = len([p for p in paths if re.match(r"^/article/[^/]+/?$", p)
-                             and local.search(p)])
-    out["地方栏目样例"] = sorted(p for p in paths if local.search(p))[:6]
+    # 地方栏的数法与发货代码同源：build_column_table 把首页所有 /article/<目录>/ 收进表，
+    # 表里除 li.mainlevel 那 11 个之外的就是地方栏。按锚文本正则数会少数几个，
+    # 于是探针报"地方栏 30 个"而表里 36 个，两边对不上账。
+    dirs = {p.rstrip("/").split("/")[-1]
+            for p in paths if re.match(r"^/article/[^/]+/?$", p)}
+    navdirs = {x["目录"].rstrip("/").split("/")[-1] for x in nav}
+    out["栏目目录总数"] = len(dirs)
+    out["地方栏数（表内非 mainlevel）"] = len(dirs - navdirs)
+    out["mainlevel 目录数"] = len(navdirs)
+    out["地方栏目样例"] = sorted(dirs - navdirs)[:6]
     out["专栏"] = sorted(p for p in paths if re.match(r"^/s/[^/]+/?$", p))
     s.close()
     return out
@@ -277,7 +289,170 @@ def article_shape(url: str, cookies: dict) -> dict:
     return out
 
 
-def report(keyword: str, column: str, use_browser: bool) -> dict:
+# ── 9 站内过滤参数：栏目、发布日期区间、匹配域各收窄到哪一步 ──────────────────
+def _raw_search(session: requests.Session, keyword: str, extra: dict) -> dict:
+    """绕过 tax_shui5 的换算，把参数原样 POST 上去看站点自己认不认。
+
+    只用来说"竖线、classid[] 这类写法站点吃不吃"——发货代码会先换算成逗号，
+    所以这一路必须裸提交才看得到站点的原始判据。
+    """
+    time.sleep(SH.SEARCH_MIN_GAP)
+    data = dict(SH.SEARCH_FIELDS, keyboard=keyword, show=SH.SHOW_BY_MATCH["broad"])
+    data.update(extra)
+    try:
+        r = session.post(SH.SEARCH_FORM, data=data, timeout=TIMEOUT,
+                         verify=False, allow_redirects=True)
+    except requests.RequestException as e:
+        return {"行数": None, "总数": None, "说明": f"请求失败：{type(e).__name__}"}
+    page = r.content.decode("utf-8", errors="replace")
+    m = SH._TOTAL_RE.search(page)
+    return {"行数": len(SH._search_rows(page)),
+            "总数": int(m.group(1)) if m else None,
+            "字节": len(r.content),
+            "说明": ("提示页" if SH.NO_RESULT_MARK in page else
+                     "限流提示页" if SH.RATE_LIMIT_MARK in page else "结果页")}
+
+
+def scoped_filters(keyword: str, column: str, column2: str,
+                   session: requests.Session) -> dict:
+    """站内检索的栏目、发布日期区间、匹配域三个维度，全部走 tax_shui5.search_native 提交。
+
+    判据一律写成"这一档 vs 那一档"的自比，不硬编码某天的读数：
+    总数会随站点内容涨，档位之间的关系不会。
+    """
+    got: dict = {}
+
+    def run(key: str, **kw) -> dict:
+        time.sleep(SH.SEARCH_MIN_GAP)
+        got[key] = SH.search_native(keyword, size=1, session=session, **kw)
+        return got[key]
+
+    def total(key: str):
+        return got[key].get("total")
+
+    out: dict = {"关键词": keyword, "档位": {}}
+    run("broad")
+    run("title", match="title")
+    out["档位"]["匹配域"] = {
+        "三域（标题+关键词+摘要）": total("broad"), "只标题": total("title"),
+        "判据": ("只标题确实收窄" if (total("title") or 0) < (total("broad") or 0)
+                 else "只标题没有更窄：SHOW_BY_MATCH 与站点的 show 字段对不上了")}
+
+    c1, c2 = SH.classid_of(column), SH.classid_of(column2)
+    if not c1 or not c2:
+        out["档位"]["栏目"] = {"跳过": f"栏目表里没有 {column} 或 {column2}，"
+                                      "跑 python scripts/tax_shui5.py --update-columns"}
+    else:
+        run("c1", classid=c1)
+        run("c2", classid=c2)
+        run("c12", classid=f"{c1},{c2}")
+        both_sum = (total("c1") or 0) + (total("c2") or 0)
+        out["档位"]["栏目"] = {
+            "单栏1": total("c1"), "单栏2": total("c2"), "逗号两栏": total("c12"),
+            "判据": ("逗号是按栏求并集" if total("c12") == both_sum and both_sum
+                     else f"逗号两栏 {total('c12')} 与两单栏之和 {both_sum} 不等，"
+                          "逗号语义要重测")}
+        pipe = _raw_search(session, keyword, {"classid": f"{c1}|{c2}"})
+        bracket = _raw_search(session, keyword, {"classid[]": str(c1)})
+        out["档位"]["栏目写法"] = {
+            "竖线": pipe, "数组": bracket,
+            "判据": ("竖线只取第一段（与单栏1 同为 %s 条）、数组形态整页不认 —— "
+                     "所以只有逗号可用" % total("c1")
+                     if pipe["总数"] == total("c1") and not bracket["行数"]
+                     else "写法判定与发货代码的注释不一致，重看 classid_spec")}
+
+    run("to_only", date_to=time.strftime("%Y-%m-%d"))
+    run("from_only", date_from="2025-01-01")
+    run("pair", date_from="2025-01-01", date_to="2025-12-31")
+    out["档位"]["日期"] = {
+        "不限": total("broad"), "只给止": total("to_only"),
+        "只给起": total("from_only"), "成对": total("pair"),
+        "判据": ("只给起不过滤（读数与不限相同）→ date_from 单独无效这条还成立"
+                 if total("from_only") == total("broad")
+                 else "只给起这一档开始起作用了：starttime 单独无效的结论已过期")
+                + ("；只给止确实收窄、成对不宽于只给止"
+                   if (total("to_only") or 0) < (total("broad") or 0)
+                   and (total("pair") or 0) <= (total("to_only") or 0)
+                   else "；日期这一组的关系不对，starttime/endtime 要重测")}
+    out["档位"]["只给起的缺口有没有写出来"] = bool(got["from_only"].get("_filter_note"))
+    out["原始读数"] = {k: {"total": v.get("total"), "status": v.get("_status"),
+                            "note": v.get("_filter_note", "")}
+                       for k, v in got.items()}
+    return out
+
+
+# ── 10 栏目表与标签翻页：表里的值还跟页面一致吗 ───────────────────────────────
+def column_table_check(column: str, session: requests.Session, tag: str = "") -> dict:
+    """栏目表的 classid/页数/条数逐栏回读页面核对，再加两页重合与标签翻页。"""
+    row = SH.resolve_column(column)
+    if not row:
+        return {"跳过": f"栏目表里没有「{column}」"}
+    out: dict = {"栏目": column, "表里的值": {
+        "classid": row["classid"], "pages": row.get("pages"),
+        "records": row.get("records")}}
+    stem = f"{SITE}article/{row['dir']}/"
+    p1, e1 = SH._read_page(session, stem)
+    if e1:
+        return {"错误": f"栏目首页取不到：{e1}"}
+    ids = SH._COL_PAGE_LINK_RE.findall(p1)
+    live_id = max(set(ids), key=ids.count) if ids else None
+    ctrl = SH._col_control(p1)
+    out["页面回读"] = {"classid": live_id,
+                     "控件": f"共 {ctrl[0]} 页 {ctrl[1]} 条" if ctrl else "未读到",
+                     "行内栏目名": sorted({x.get("column") for x in SH._search_rows(p1)
+                                          if x.get("column")})[:4]}
+    out["判据"] = {
+        "表与页面同源": (f"classid {live_id} 与表一致、页数条数与控件一致"
+                        if str(live_id) == str(row["classid"])
+                        and ctrl == (row.get("pages"), row.get("records"))
+                        else "表和页面对不上了：栏目表过期，跑 --update-columns 重建"),
+        "父栏混子栏": len(out["页面回读"]["行内栏目名"]) > 1}
+    time.sleep(SH.SEARCH_MIN_GAP)
+    p2, e2 = SH._read_page(session, f"{stem}{row['classid']}_2.html")
+    a = {x["url"] for x in SH._search_rows(p1)}
+    b = {x["url"] for x in SH._search_rows(p2)} if not e2 else set()
+    out["两页重合"] = {"第1页行数": len(a), "第2页行数": len(b), "重合": len(a & b),
+                     "判据": ("div.xwt2 行判据翻页不漏不重" if not (a & b)
+                              else "第 1、2 页有 %d 行相同：行判据或分页形态变了"
+                           % len(a & b))}
+
+    home, e3 = SH._read_page(session, SITE)
+    if e3:
+        out["标签"] = {"跳过": f"首页取不到：{e3}"}
+        return out
+    tags = SH.tags_of(home)
+    if not tags:
+        out["标签"] = {"跳过": "首页读不出标签名（_TAG_HREF_RE 与 /e/tags/ 链接形态要重测）"}
+        return out
+    # 只看首页第一个标签会误判：那个标签若本身只有一页，第 2 页自然回空行，
+    # 读起来和"翻页参数失效"一模一样。逐个试到第一个能出第 2 页行为止。
+    tried = []
+    for t in ([tag] if tag else tags[:3]):
+        q = quote(t)
+        tp1, te1 = SH._read_page(session, f"{SH.TAG_RESULT}?tagname={q}")
+        time.sleep(SH.SEARCH_MIN_GAP)
+        tp2, te2 = SH._read_page(session, f"{SH.TAG_RESULT}?tagname={q}&page=2")
+        a = {x["url"] for x in SH._search_rows(tp1)} if not te1 else set()
+        b = {x["url"] for x in SH._search_rows(tp2)} if not te2 else set()
+        tried.append({"标签": t, "第1页行": len(a), "第2页行": len(b), "重合": len(a & b)})
+        if b:
+            break
+    hit = [x for x in tried if x["第2页行"]]
+    if hit:
+        judge = ("&page= 2 确实翻页（%s 第 2 页 %d 行、与首页重合 %d）"
+                 % (hit[0]["标签"], hit[0]["第2页行"], hit[0]["重合"]))
+    elif any(x["第1页行"] == 0 for x in tried):
+        judge = ("有标签第 1 页就 0 行：这个标签名站点不认（不存在或写法变了），"
+                 "翻页与否这一轮判不了")
+    else:
+        judge = ("试过的标签首页都有行、第 2 页全空——这些标签本身可能只有一页，"
+                 "也可能翻页真失效了；用 --tag <已知多页的标签> 指名复测")
+    out["标签"] = {"逐个试过": tried, "判据": judge}
+    return out
+
+
+def report(keyword: str, column: str, use_browser: bool,
+           column2: str = "深圳", tag: str = "") -> dict:
     out: dict = {"取样时刻": time.strftime("%Y-%m-%d %H:%M:%S"), "站点": SITE}
     out["1 挑战面（无 cookie）"] = challenge_survey()
     cookies: dict = {}
@@ -312,6 +487,16 @@ def report(keyword: str, column: str, use_browser: bool) -> dict:
         first = x["url"]
         break
     out["8 正文形态"] = article_shape(first, cookies) if first else {"跳过": "站内搜索没出结果"}
+    if cookies:
+        s = SH._browser_session(cookies)
+        try:
+            out["9 站内过滤参数"] = scoped_filters(keyword, column, column2, s)
+            out["10 栏目表与标签翻页"] = column_table_check(column, s, tag)
+        finally:
+            s.close()
+    else:
+        out["9 站内过滤参数"] = {"跳过": "无放行 cookie（--no-browser）"}
+        out["10 栏目表与标签翻页"] = {"跳过": "无放行 cookie（--no-browser）"}
     return out
 
 
@@ -340,11 +525,16 @@ def main():
     ap = argparse.ArgumentParser(description="税屋站点体检（只读，不调模型）")
     ap.add_argument("--keyword", default="研发费用加计扣除", help="两条检索通道共用的关键词")
     ap.add_argument("--column", default="ShiWuJiDu", help="拿来验翻页的栏目目录名")
+    ap.add_argument("--column2", default="深圳",
+                    help="逗号多选那一项用的第二个栏目（目录名/导航名/短标签/classid 都行）")
+    ap.add_argument("--tag", default="",
+                    help="指名复测的标签；不填就用首页前三个标签逐个试")
     ap.add_argument("--no-browser", action="store_true", help="不过 WAF，只跑挑战面")
     ap.add_argument("--json", action="store_true", help="整体输出 JSON")
     ns = ap.parse_args()
 
-    data = report(ns.keyword, ns.column, use_browser=not ns.no_browser)
+    data = report(ns.keyword, ns.column, use_browser=not ns.no_browser,
+                  column2=ns.column2, tag=ns.tag)
     if ns.json:
         print(json.dumps(data, ensure_ascii=False, indent=2))
         return

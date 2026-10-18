@@ -10,8 +10,10 @@ NPC 法规库里查不到的实操层内容，是四源之外的必要补充。
      - 360 的 site:shui5.cn（`tax_so360`）：不要凭据、不启浏览器，每行只有
        标题＋链接＋摘要，没有日期。
      - 站内原生检索（帝国 CMS 的 `POST /e/search/index.php`）：每行带日期、
-       摘要与所属栏目，页面还给总条数，但要先过一次 WAF（约 6 秒）。
-     默认 auto：先走 360，它被拦或 0 条时才换站内，避免每次检索都启浏览器。
+       摘要与所属栏目，页面还给总条数，还能把栏目、发布区间、匹配域三项下推到
+       服务端（边界见 search_native），但要先过一次 WAF（约 6 秒）。
+     默认 auto：先走 360，它被拦或 0 条时才换站内，避免每次检索都启浏览器；
+     给了栏目/区间/匹配域/取全时 auto 直接换站内，因为 360 那一路没有这些维度。
      2026-10-18 实测同一个词「研发费用加计扣除」两路首屏按文章 ID 归一后交集 0 条。
      注：首页可见的搜索框提交到 zhannei.baidu.com/cse/site，那是百度站点搜索，
      本机 IP 上极不稳定（实测 4 次仅 1 次返回结果），不作为通道。
@@ -22,6 +24,10 @@ NPC 法规库里查不到的实操层内容，是四源之外的必要补充。
        5/5 被拦），因为挑战链里有浏览器行为特征，补不出来。
      → 改用真浏览器跑一次挑战（见 tax_browser），拿到放行 cookie 后转交
        requests 逐篇读正文。实测浏览器过挑战 5.9~7.0 秒，之后每篇 0.2 秒级。
+  3. 边界：过 WAF 后 robots.txt 才读得到，里面 `User-agent: *` 禁 /d/ /e/class/
+     /e/config/ /e/data/ /e/enews/ /e/update/；文章附件正是挂在 /d/file/p/ 下
+     （2026-10-18 连读 12 篇，1 篇带两份 pdf，形如 /d/file/p/2026/08-05/<hash>.pdf），
+     所以本模块不下载附件不是"没做"，是站点禁止，任何时候不要改成去取。
 
 本模块的正文抓取顺序：
   浏览器过 WAF 拿 cookie → requests 连读（首选）
@@ -34,11 +40,30 @@ NPC 法规库里查不到的实操层内容，是四源之外的必要补充。
 取 $4、$5 都返回 200 与同一份 571 字内容，页码列表反而每次都多列一项。
 读到与已读正文重复的那一页即停：那说明页码已经越界，站点把请求钳回了已有内容。
 
+除检索之外的两条取数入口（同样要过一次 WAF，行容器同为 div.xwt2，
+所以行判据与检索结果页共用 `_search_rows`）：
+  栏目清单 `list_column`：地址是 `/article/<目录>/<classid>_<页>.html`，`?page=` 会被
+    忽略并返回第 1 页原样；页数条数读页面控件「共 X 页 Y 条记录」。47 个栏目的
+    目录名、classid、页数条数与行内栏目名存在 data/shui5_columns.json，由
+    `--update-columns` 逐栏读一次列表页重建——目录名猜不得：45 个拼音串里有
+    5 个被站点截断（`GuangDongShengCaiShuiFaGu`）、4 个是站点自己的拼法
+    （`NinBoShiFaGui` 宁波、`ShenZhengShiFaGui` 深圳），另有英文的 `Bulletin`
+    和数字号的 `category_181`（山西）。
+  标签清单 `list_tag`：地址是 `/e/tags/?tagname=<标签>`，翻页用 `&page=N`（实测第 2 页
+    与首页行集不重合）；标签页没有页数控件，只能一页一页读到空。标签跨栏目，
+    站点也没有可枚举的标签清单，标签名要从页面链接里取（`tags_of`）。
+
 Usage:
   python tax_shui5.py "研发费用加计扣除" --size 5
   python tax_shui5.py "高新技术企业认定" --size 5 --read   # 连正文一起取
   python tax_shui5.py "增值税起征点" --size 3 --json
   python tax_shui5.py "留抵退税" --channel native --size 10   # 只走站内检索
+  python tax_shui5.py "研发费用加计扣除" --match title --all   # 只匹配标题、按总数取全
+  python tax_shui5.py "增值税" --column 北京,深圳   # 限定栏目（自动换站内那一路）
+  python tax_shui5.py --list 实务解读 --pages 2     # 不检索，直接取栏目清单
+  python tax_shui5.py --tag 增值税法 --pages 2      # 不检索，按标签取清单
+  python tax_shui5.py --columns                     # 打印本地栏目表，不发请求
+  python tax_shui5.py --update-columns              # 重建栏目表并写盘（约 47 个请求）
 """
 
 import argparse
@@ -47,6 +72,7 @@ import re
 import sys
 import time
 from pathlib import Path
+from urllib.parse import quote, unquote
 
 import requests
 import urllib3
@@ -70,10 +96,20 @@ SEARCH_FORM = SHUI5_BASE + "e/search/index.php"
 SEARCH_RESULT = SHUI5_BASE + "e/search/result/index.php"
 SEARCH_FIELDS = {"tbname": "article", "show": "title,keyboard,smalltext",
                  "tempid": "2", "Submit": "站内搜税"}
+# `show` 决定哪些字段参与匹配，不是排版参数：同一个词「研发费用加计扣除」
+# 三域 433 条、只标题 150 条（2026-10-18 实测）。
+SHOW_BY_MATCH = {"broad": "title,keyboard,smalltext", "title": "title"}
 # 站点在提示页里明写的检索间隔，留 1 秒余量
 SEARCH_MIN_GAP = 3.0
 SEARCH_ROWS_PER_PAGE = 30
 SEARCH_MAX_PAGES = 6
+# --all 时的页数上限。433 条那一词 15 页取完（page0-13 各 30 条全新、page14 13 条，
+# 累计唯一数与页面总数相等）；上限防的是「增值税」那种 27,249 条的宽词，
+# 没有它取全会翻上千页。到了上限会在 _status 里写明只取了前若干条。
+SEARCH_ALL_MAX_PAGES = 20
+# 栏目列表页：分页形态是 <classid>_<页>.html，控件文案「共 178 页 6198 条记录」
+COLUMN_PAGES = SCRIPT_DIR.parent / "data" / "shui5_columns.json"
+TAG_RESULT = SHUI5_BASE + "e/tags/"
 # 续页上限：正文页码列表按篇给出，正常长文不到这个数；上限只防站点页码异常时把连读拖长
 MAX_CONTINUATION_PAGES = 12
 # 提示页的两种文案，实测各对应一件事：这一轮没命中 vs 请求太密
@@ -127,6 +163,17 @@ _ROW_C_RE = re.compile(r'<div class="xwt2_c">\s*<p class="p1">(.*?)</p>', re.I |
 _ROW_P3_RE = re.compile(r'<p class="p3">([^<]*)</p>', re.I)
 _ROW_P4_RE = re.compile(r'<p class="p4">.*?<a[^>]*>(.*?)</a>', re.I | re.S)
 _SEARCHID_RE = re.compile(r"searchid=(\d+)")
+
+# 栏目列表页的翻页控件同时给两件事：这一栏的 classid（链接形态 <classid>_<页>.html）
+# 与站点自己报的量（「共 178 页 6198 条记录」）。取 classid 只认控件里的链接，
+# 不从目录名猜——目录名与归属并不同源（见 build_column_table 的注释）。
+_COL_PAGE_LINK_RE = re.compile(r'href="[^"]*?/(\d+)_\d+\.html"', re.I)
+_COL_CTRL_RE = re.compile(r"共\s*(\d+)\s*页\s*(\d+)\s*条记录")
+# 标签链接一律是 /e/tags/?tagname=<已编码值>，首页与文章页都有
+_TAG_HREF_RE = re.compile(r'href="[^"]*?[?&]tagname=([^"&]+)"', re.I)
+# 首页主栏在 li.mainlevel 那一块；36 个地方栏与 7 个 /s/ 专栏不在里面，
+# 是首页其他位置的链接——只按 mainlevel 解析会读成"地方栏 0 个"。
+_MAINLEVEL_RE = re.compile(r'<li class="mainlevel"><a\s+href="([^"]+)"[^>]*>(.*?)</a></li>', re.S)
 
 
 def _to_text(fragment: str) -> str:
@@ -369,11 +416,24 @@ def _search_rows(page: str) -> list:
 
 
 def search_native(keyword: str, size: int = 5, session: requests.Session | None = None,
-                  gap: float = SEARCH_MIN_GAP) -> dict:
+                  gap: float = SEARCH_MIN_GAP, classid: str | int | None = None,
+                  date_from: str = "", date_to: str = "", match: str = "broad",
+                  fetch_all: bool = False) -> dict:
     """站内原生检索：POST 检索表单 → 302 落点 → 按 page 从 0 起翻页。
 
     这一路要一份放行 cookie（约 6 秒过一次 WAF），换来的是 360 给不出的三件事：
     每行带日期、带所属栏目，页面还给这一词的总条数（形如「420条关于 留抵退税 的搜索结果」）。
+
+    限定一律下推到服务端。三个过滤维度（栏目、发布日期区间、匹配域）的实测边界
+    （2026-10-18，逐项读数记在 `subskills/shui5/NOTE.md`）：
+      classid    栏目限定，取值见 data/shui5_columns.json；多个用逗号（`152,12673`
+                 与 `北京,深圳` 等价），竖线与 classid[] 形态站点不认；
+                 父栏覆盖子栏（同一个词限到 145 地方法规 170 条，首屏 30 行里
+                 4 行的行内栏目名是北京市法规）。
+      endtime    单独提交就过滤。
+      starttime  **单独提交不过滤**（27,249 条与不限时间完全相同），必须与 endtime 成对；
+                 只给 date_from 时这个缺口写进 _filter_note，不静默当成没限定。
+      show       匹配域，broad=标题+关键词+摘要，title=只标题（433 条 / 150 条）。
 
     提示页有两种，按文案分而不是按字节分（两者实测只差 31 字节）：
       「没有搜索到相关的内容」= 这一轮站内检索没命中，是 0 条；
@@ -384,18 +444,42 @@ def search_native(keyword: str, size: int = 5, session: requests.Session | None 
         size: 返回条数上限，超过一页时按 page 继续取
         session: 已过 WAF 的会话；传空则自己过一次
         gap: 翻页与重试之间的间隔秒数，不低于站点自己声明的 2 秒
+        classid: 栏目限定，传 classid、栏目名或目录名（查 data/shui5_columns.json 换算）；
+                 多个用逗号，每段各自换算，任一段查不到就整体报缺
+        date_from: 发布日期起（YYYY-MM-DD），须与 date_to 成对才起作用
+        date_to: 发布日期止（YYYY-MM-DD）
+        match: "broad"（默认，标题+关键词+摘要）或 "title"（只标题）
+        fetch_all: True 时按这一词的总条数翻到底，上限 SEARCH_ALL_MAX_PAGES 页
 
     Returns:
-        {"results","total","_status"}；total 是站点报的这一词总条数，取不到为 None。
-        _status 说明这一路本轮走到哪一步，供上层归因，不当成命中与否的判据。
+        {"results","total","_status","_filter_note"?,"_pages"?}；total 是站点报的
+        这一词总条数，取不到为 None。_status 说明这一路本轮走到哪一步，供上层归因，
+        不当成命中与否的判据。行的日期是税屋自己的发布日期，不是文件的成文或废止日期。
     """
     own = session is None
     if own:
         session, how = _pass_waf()
         if session is None:
             return {"results": [], "total": None, "_status": f"没走成：{how}"}
+    note = ""
+    if date_from and not date_to:
+        note = ("date_from 单独提交站点不过滤（starttime 单独无效是实测结论），"
+                "要限起始日期须同时给 date_to")
+    if classid and not str(classid).isdigit():
+        cid = classid_spec(classid)
+        if not cid:
+            return {"results": [], "total": None,
+                    "_status": f"没走成：栏目表 data/shui5_columns.json 里没有「{classid}」，"
+                               f"或其中某一段查不到"}
+        classid = cid
     try:
-        data = dict(SEARCH_FIELDS, keyboard=keyword)
+        data = dict(SEARCH_FIELDS, keyboard=keyword, show=SHOW_BY_MATCH[match])
+        if classid:
+            data["classid"] = str(classid)
+        if date_from:
+            data["starttime"] = date_from
+        if date_to:
+            data["endtime"] = date_to
         r = session.post(SEARCH_FORM, data=data, timeout=TIMEOUT_READ,
                          verify=False, allow_redirects=True)
         page = r.content.decode("utf-8", errors="replace")
@@ -411,8 +495,11 @@ def search_native(keyword: str, size: int = 5, session: requests.Session | None 
                 return {"results": [], "total": None,
                         "_status": "没走成：站点提示两次检索须间隔 2 秒以上，重发一次仍被限"}
         if NO_RESULT_MARK in page:
-            return {"results": [], "total": 0,
-                    "_status": "0 条：站点回「没有搜索到相关的内容」"}
+            out = {"results": [], "total": 0,
+                   "_status": "0 条：站点回「没有搜索到相关的内容」"}
+            if note:
+                out["_filter_note"] = note
+            return out
 
         m = _SEARCHID_RE.search(r.url)
         if not m:
@@ -425,23 +512,40 @@ def search_native(keyword: str, size: int = 5, session: requests.Session | None 
             total = int(t.group(1))
         rows = _search_rows(page)
         seen = {x["url"] for x in rows}
+        cap = SEARCH_MAX_PAGES
+        want = size
+        if fetch_all and total:
+            cap = min(-(-total // SEARCH_ROWS_PER_PAGE), SEARCH_ALL_MAX_PAGES)
+            # 取全不受 size 约束：size 只管"翻页翻到几条就停"，取全要按站点总数走，
+            # 否则 --all 配上默认 size=5 会在第一页就停，看着像取全了其实只有 5 条
+            want = min(total, cap * SEARCH_ROWS_PER_PAGE)
         # 落点页就是 page=0（实测两页首条与行数一致），继续从 1 翻到够数或到上限
         pn = 1
-        while len(rows) < size and pn <= SEARCH_MAX_PAGES:
+        read = 1
+        while len(rows) < want and pn <= cap:
             time.sleep(gap)
             rp = session.get(f"{SEARCH_RESULT}?page={pn}&searchid={sid}",
                              timeout=TIMEOUT_READ, verify=False)
             nxt = _search_rows(rp.content.decode("utf-8", "replace"))
             if not nxt:
                 break
+            read += 1
             for x in nxt:
                 if x["url"] not in seen:
                     seen.add(x["url"])
                     rows.append(x)
             pn += 1
-        return {"results": rows[:size], "total": total,
-                "_status": f"命中 {len(rows[:size])} 条"
-                           + (f"（这一词站内共 {total} 条）" if total else "")}
+        got = rows if fetch_all else rows[:size]
+        status = f"命中 {len(got)} 条"
+        if total is not None:
+            status += f"（这一词站内共 {total} 条"
+            if fetch_all and len(rows) < total:
+                status += f"，翻到上限 {cap} 页只取了 {len(rows)} 条"
+            status += "）"
+        out = {"results": got, "total": total, "_status": status, "_pages": read}
+        if note:
+            out["_filter_note"] = note
+        return out
     except requests.RequestException as e:
         return {"results": [], "total": None, "_status": f"没走成：请求失败：{e}"}
     finally:
@@ -450,7 +554,9 @@ def search_native(keyword: str, size: int = 5, session: requests.Session | None 
 
 
 def search_shui5(keyword: str, size: int = 5, read_body: bool = False,
-                 channel: str = "auto") -> dict:
+                 channel: str = "auto", column: str | int | None = None,
+                 date_from: str = "", date_to: str = "", match: str = "broad",
+                 fetch_all: bool = False) -> dict:
     """
     在税屋检索政策实务文章。
 
@@ -461,20 +567,39 @@ def search_shui5(keyword: str, size: int = 5, read_body: bool = False,
         channel: "auto"（默认）先走 360，它被拦或 0 条时才换站内原生检索；
                  "so360" 只走 360（不要凭据、不启浏览器）；
                  "native" 只走站内（每行带日期与栏目，但要过一次 WAF）。
+                 带限定参数时 auto 直接换成 native，_channels 里会写明这一轮没问过 360。
                  两条通道覆盖的是不同排序：2026-10-18 实测同一个词首屏交集 0 条，
                  所以"这一路 0 条"不能读成"另一路也是 0 条"。
+        column: 栏目限定（classid、目录名、导航名或首页短标签，多个用逗号）。
+                给了它就只走站内那一路——360 的 site: 检索没有栏目、时间与匹配域这些维度。
+        date_from / date_to: 发布日期区间，走站内那一路；只有 date_from 时起不到限定作用，
+                缺口写在结果的 _filter_note 里。
+        match: "broad"（默认）或 "title"（只在标题里匹配），走站内那一路。
+        fetch_all: 按站点报的总条数翻到底（上限 SEARCH_ALL_MAX_PAGES 页），走站内那一路。
 
     Returns:
         {"keyword","total","results","searched_at","source","_channel",
-         "_channels","_error"?}
+         "_channels","_filter_note"?,"_error"?}
         results 每项含 title/url/date/snippet（站内那一路另有 column）；
         read_body=True 时额外含 content 与 pages。
         _channels 逐条写明这一轮每条通道走到哪一步——上层据此归因，
         不必再猜"税屋 0 条"是税屋空的还是 360 连带的。
     """
-    channels = {"360": "未走（指定通道）", "站内": "未走（指定通道）"}
+    scoped = bool(column or date_from or date_to or match != "broad" or fetch_all)
     results: list = []
     used = ""
+    note = ""
+    channels = {"360": "未走（指定通道）", "站内": "未走（指定通道）"}
+    if scoped and channel == "auto":
+        # 换路是限定参数逼的，不是 360 连带的：这句要写清楚，否则读者以为
+        # "360 也没命中"，其实这一轮压根没问过它。
+        channel = "native"
+        channels["360"] = ("没问：这一轮要栏目/时间/匹配域/取全，"
+                           "这些维度只有站内那一路有")
+    elif scoped and channel == "so360":
+        # 指定了 360 又给了限定参数：360 那一路照跑，但限定加不上，只能报缺口
+        note = ("这一轮给了栏目/时间/匹配域/取全这类限定，但通道指定成 so360："
+                "这些维度只有站内那一路有，限定没加上")
 
     if channel in ("auto", "so360"):
         found = so360_search(keyword, site=SHUI5_SITE, size=size)
@@ -489,16 +614,17 @@ def search_shui5(keyword: str, size: int = 5, read_body: bool = False,
             channels["360"] = f"命中 {len(results)} 条" if results else "0 条"
         used = "360" if results else ""
 
+    nat = None
     if channel == "auto" and not results:
         nat = search_native(keyword, size=size)
-        channels["站内"] = nat["_status"]
-        results = nat["results"]
-        used = "站内" if results else ""
     elif channel == "native":
-        nat = search_native(keyword, size=size)
+        nat = search_native(keyword, size=size, classid=column, date_from=date_from,
+                            date_to=date_to, match=match, fetch_all=fetch_all)
+    if nat is not None:
         channels["站内"] = nat["_status"]
         results = nat["results"]
         used = "站内" if results else ""
+        note = nat.get("_filter_note", "")
 
     err = ""
     if not results:
@@ -536,9 +662,265 @@ def search_shui5(keyword: str, size: int = 5, read_body: bool = False,
     }
     if err:
         out["_error"] = err
+    if note:
+        out["_filter_note"] = note
     if how:
         out["_how"] = how
     return out
+
+
+def load_columns() -> list:
+    """读 data/shui5_columns.json。表不在就返回空列表——栏目只能从表里查，不作猜。"""
+    if not COLUMN_PAGES.exists():
+        return []
+    try:
+        return json.loads(COLUMN_PAGES.read_text(encoding="utf-8")).get("columns", [])
+    except (ValueError, OSError):
+        return []
+
+
+def resolve_column(name) -> dict | None:
+    """目录名、导航名、首页短标签、classid 或行内栏目名 → 表里那一行。
+
+    顺序：目录名（不分大小写）→ 导航名 → 短标签 → classid → 行内栏目名（只有唯一一栏命中才认）。
+    归属的判据是行里的 `column` 字段，不是目录名：山西的目录是 `category_181`，
+    而 `ShanXiShengCaiShuiFaGui` 这一栏的行名是陕西省法规，两个目录的文章链接集合重合 0 条。
+    """
+    rows = load_columns()
+    key = str(name or "").strip()
+    if not key or not rows:
+        return None
+    low = key.lower()
+    for r in rows:
+        if r["dir"].lower() == low:
+            return r
+    for field in ("nav", "label"):
+        for r in rows:
+            if r.get(field) == key:
+                return r
+    if key.isdigit():
+        for r in rows:
+            if str(r["classid"]) == key:
+                return r
+    same = [r for r in rows if key in (r.get("columns") or [])]
+    return same[0] if len(same) == 1 else None
+
+
+def classid_of(name) -> str:
+    r = resolve_column(name)
+    return str(r["classid"]) if r else ""
+
+
+def classid_spec(spec) -> str:
+    """把「152,12673」或「北京,深圳」这类写法换成站点认的逗号 classid 串。
+
+    站点只认逗号：竖线 `152|12673` 与数组 `classid[]=152` 都不起作用（2026-10-18 实测）。
+    任一段查不到就整体返回空串，由调用方报缺——半截限定会让结果看着像收窄了其实没有。
+    """
+    out = []
+    for part in str(spec or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        cid = part if part.isdigit() else classid_of(part)
+        if not cid:
+            return ""
+        out.append(cid)
+    return ",".join(out)
+
+
+def _col_control(page: str) -> tuple | None:
+    """列表页控件里的「共 X 页 Y 条记录」：读到回 (页数, 条数)，没有这个控件回 None。
+
+    不写成 `tuple[int, int] | None`：门禁 `TestTupleReturnContract` 按 `-> tuple[...]`
+    前缀扫，要求每个 return 都给同长元组字面量，回 None 即判违规。
+    """
+    c = _COL_CTRL_RE.search(re.sub(r"<[^>]+>", " ", page))
+    return (int(c.group(1)), int(c.group(2))) if c else None
+
+
+def list_column(column, pages: int = 1, session: requests.Session | None = None,
+                gap: float = SEARCH_MIN_GAP) -> dict:
+    """按栏目取清单：`/article/<目录>/<classid>_<页>.html`。
+
+    行容器与检索结果页同为 div.xwt2，所以 `_search_rows` 一份判据通吃这两类页面。
+    换成全页 a[title=] 取链接会把页头推荐区、侧栏与页脚的共有块也算进来——同一栏目
+    第 1、2 页那样取有 64 条重合，按 xwt2 行取重合 0 条（2026-10-18 实测）。
+    `?page=2` 那种猜法返回第 1 页原样（参数被忽略，不报错），所以翻页只能用控件里的
+    `<classid>_<页>.html` 形态。
+
+    Args:
+        column: 目录名、导航名、classid 或行内栏目名，查 data/shui5_columns.json
+        pages: 从第 1 页起连读几页；每页 30–35 行
+        session: 已过 WAF 的会话，多篇连读时传进来
+        gap: 页间隔
+
+    Returns:
+        {"results","_status","_column","_read_pages","_error"?}；行的 column 字段是
+        这篇真正所属的栏目，父栏（如 145 地方法规）的页面里会混着各子栏的名字。
+    """
+    row = resolve_column(column)
+    if not row:
+        return {"results": [], "_read_pages": 0,
+                "_status": f"没走成：栏目表里没有「{column}」；"
+                           f"表缺失或改版时跑 python scripts/tax_shui5.py --update-columns"}
+    own = session is None
+    if own:
+        session, how = _pass_waf()
+        if session is None:
+            return {"results": [], "_read_pages": 0, "_status": f"没走成：{how}"}
+    try:
+        stem = f"{SHUI5_BASE}article/{row['dir']}/"
+        rows, seen, errs, ctrl, read = [], set(), [], None, 0
+        for n in range(1, max(1, int(pages)) + 1):
+            if n > 1:
+                time.sleep(gap)
+            page, err = _read_page(session, stem if n == 1
+                                   else f"{stem}{row['classid']}_{n}.html")
+            if err:
+                errs.append(f"第 {n} 页：{err}")
+                break
+            read += 1
+            if ctrl is None:
+                ctrl = _col_control(page)
+            for x in _search_rows(page):
+                if x["url"] not in seen:
+                    seen.add(x["url"])
+                    rows.append(x)
+        out = {"results": rows, "_column": row, "_read_pages": read,
+               "_status": (f"命中 {len(rows)} 条（栏目 {row.get('nav') or row['dir']}，"
+                           + (f"共 {ctrl[0]} 页 {ctrl[1]} 条）"
+                              if ctrl else "控件未读到页数）"))}
+        if errs:
+            out["_error"] = "；".join(errs)
+        return out
+    finally:
+        if own:
+            session.close()
+
+
+def build_column_table(session: requests.Session | None = None,
+                       gap: float = SEARCH_MIN_GAP) -> dict:
+    """逐栏取一次列表页，重建栏目表：目录名、导航名、classid、页数条数与行内栏目名。
+
+    目录名与 classid 都只能从页面链接里取：47 个目录名里 45 个是拼音串，但拼音串里
+    5 个被站点截断（`GuangDongShengCaiShuiFaGu`、`XinJiangZiZhiQuCaiShuiFaG`）、
+    4 个按站点自己的拼法（`NinBoShiFaGui`、`DaiLianShiFaGui`、`ShenZhengShiFaGui`、
+    `XiaMenShiFaGui`），另外 `Bulletin` 是英文、`category_181` 是数字号；
+    按拼音拼会拼出站点上不存在的地址。
+    """
+    own = session is None
+    if own:
+        session, how = _pass_waf()
+        if session is None:
+            return {"columns": [], "_status": f"没走成：{how}"}
+    try:
+        home, err = _read_page(session, SHUI5_BASE)
+        if err:
+            return {"columns": [], "_status": f"没走成：首页取不到（{err}）"}
+        dirs = set()
+        for h in re.findall(r'href="([^"]+)"', home):
+            p = re.sub(r"^https?://[^/]+", "", h).split("?")[0]
+            if re.match(r"^/article/[^/]+/?$", p):
+                dirs.add(p.rstrip("/").split("/")[-1])
+        # 导航名只在 li.mainlevel 那一块（11 个），36 个地方栏的名字是首页其他位置
+        # 的锚文本，站点自己就把它们截了短（黑龙／内蒙／陕西），只当别名用
+        nav, label = {}, {}
+        for h, text in _MAINLEVEL_RE.findall(home):
+            p = re.sub(r"^https?://[^/]+", "", h).split("?")[0]
+            if re.match(r"^/article/[^/]+/?$", p):
+                nav[p.rstrip("/").split("/")[-1]] = _to_text(text)
+        for h, text in re.findall(r'<a\s+href="([^"]+)"[^>]*>(.*?)</a>', home, re.S):
+            p = re.sub(r"^https?://[^/]+", "", h).split("?")[0]
+            d = p.rstrip("/").split("/")[-1]
+            if d in dirs and _to_text(text) and d not in label:
+                label[d] = _to_text(text)
+        rows = []
+        for i, d in enumerate(sorted(dirs), 1):
+            if i > 1:
+                time.sleep(gap)
+            page, err = _read_page(session, f"{SHUI5_BASE}article/{d}/")
+            if err:
+                rows.append({"dir": d, "nav": nav.get(d, ""), "_error": err})
+                continue
+            ids = _COL_PAGE_LINK_RE.findall(page)
+            cols = sorted({x["column"] for x in _search_rows(page) if x.get("column")})
+            ctrl = _col_control(page)
+            rows.append({"dir": d, "nav": nav.get(d, ""), "label": label.get(d, ""),
+                         "classid": int(max(set(ids), key=ids.count)) if ids else None,
+                         "columns": cols,
+                         "pages": ctrl[0] if ctrl else None,
+                         "records": ctrl[1] if ctrl else None})
+        return {"built_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "source": SHUI5_BASE, "columns": rows,
+                "_status": f"取到 {len([r for r in rows if r.get('classid')])} / {len(rows)} 栏"}
+    finally:
+        if own:
+            session.close()
+
+
+def tags_of(page: str) -> list:
+    """页面里站点自己在用的标签名（已解码），按出现顺序去重。
+
+    标签名只能从页面链接里取：站点没有可枚举的标签清单，离线猜名只会落进空结果。
+    """
+    out, seen = [], set()
+    for raw in _TAG_HREF_RE.findall(page):
+        name = unquote(raw).strip()
+        if name and name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
+
+
+def list_tag(tag: str, pages: int = 1, session: requests.Session | None = None,
+             gap: float = SEARCH_MIN_GAP) -> dict:
+    """按标签取清单：`/e/tags/?tagname=<标签>`，翻页是 `&page=N`（从 2 起）。
+
+    标签页与检索结果页、栏目列表页同为 div.xwt2 行容器，所以行判据共用一份。
+    实测「增值税法」第 1 页与第 2 页各 33 行、首行日期从 2026-03-03 变成 2026-01-23，
+    确认可翻；标签页没有「共 X 页 Y 条记录」控件，页数只能一页一页读到空为止。
+    标签跨栏目但跨不跨得开看不准：「社保基数」首屏 33 行覆盖 26 个行内栏目名
+    （各省、市法规），「增值税法」首屏 33 行全在财税实务一栏。
+    所以第 2 页回空有两种成因——这个标签本身只有一页，或翻页失效，
+    判之前要先看第 1 页有没有行（probe_shui5 第 10 项按此逐个标签试）。
+    """
+    own = session is None
+    if own:
+        session, how = _pass_waf()
+        if session is None:
+            return {"results": [], "_read_pages": 0, "_status": f"没走成：{how}"}
+    try:
+        q = quote(tag.strip())
+        rows, seen, errs, read = [], set(), [], 0
+        for n in range(1, max(1, int(pages)) + 1):
+            if n > 1:
+                time.sleep(gap)
+            page, err = _read_page(session, f"{TAG_RESULT}?tagname={q}"
+                                          + ("" if n == 1 else f"&page={n}"))
+            if err:
+                errs.append(f"第 {n} 页：{err}")
+                break
+            if NO_RESULT_MARK in page:
+                errs.append(f"第 {n} 页：站点回「{NO_RESULT_MARK}」，这个标签名不存在")
+                break
+            got = _search_rows(page)
+            if not got:
+                errs.append(f"第 {n} 页：没有 xwt2 行")
+                break
+            read += 1
+            for x in got:
+                if x["url"] not in seen:
+                    seen.add(x["url"])
+                    rows.append(x)
+        out = {"results": rows, "_read_pages": read,
+               "_status": f"命中 {len(rows)} 条（标签 {tag.strip()}）"}
+        if errs:
+            out["_error"] = "；".join(errs)
+        return out
+    finally:
+        if own:
+            session.close()
 
 
 def read_articles(urls: list, read_interval: float = READ_INTERVAL) -> list:
@@ -627,30 +1009,8 @@ def _strip_site_suffix(title: str) -> str:
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
-def main():
-    p = argparse.ArgumentParser(description="税屋 (shui5.cn) 实务解读检索")
-    p.add_argument("keyword", help="检索词")
-    p.add_argument("--size", type=int, default=5)
-    p.add_argument("--read", action="store_true", help="同时取回正文（较慢）")
-    p.add_argument("--channel", choices=["auto", "so360", "native"], default="auto",
-                   help="auto=先 360、被拦或 0 条时换站内；so360=只走 360；"
-                        "native=只走站内原生检索（要过一次 WAF，每行带日期与栏目）")
-    p.add_argument("--json", action="store_true")
-    args = p.parse_args()
-
-    result = search_shui5(args.keyword, size=args.size, read_body=args.read,
-                          channel=args.channel)
-
-    if args.json:
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        return
-
-    print(f"税屋检索 \"{args.keyword}\" | {result['searched_at']}")
-    print("通道：" + "，".join(f"{k} {v}" for k, v in result["_channels"].items()))
-    if result.get("_error"):
-        print(f"注意：{result['_error']}")
-    print(f"共 {result['total']} 条\n")
-    for item in result["results"]:
+def _print_rows(rows: list, read_body: bool = False) -> None:
+    for item in rows:
         print(f"  {item['title'][:70]}")
         print(f"     {item['url']}")
         meta = " ".join(x for x in (item.get("date", ""), item.get("column", "")) if x)
@@ -665,6 +1025,108 @@ def main():
             if item.get("_pages_error"):
                 print(f"     {item['_pages_error']}")
         print()
+
+
+def _print_table(rows: list) -> None:
+    for r in rows:
+        print(f"  {r['dir']:34s} classid={str(r.get('classid')):>6} "
+              f"{str(r.get('pages')):>5}/{str(r.get('records')):<6} "
+              f"{r.get('nav') or r.get('label') or '':6s} "
+              f"{'、'.join(r.get('columns') or [])}")
+
+
+def main():
+    p = argparse.ArgumentParser(description="税屋 (shui5.cn) 检索、栏目清单与标签清单")
+    p.add_argument("keyword", nargs="?",
+                   help="检索词。用 --column / --tag 取清单时可以不填")
+    p.add_argument("--size", type=int, default=5)
+    p.add_argument("--read", action="store_true", help="同时取回正文（较慢）")
+    p.add_argument("--channel", choices=["auto", "so360", "native"], default="auto",
+                   help="auto=先 360、被拦或 0 条时换站内；so360=只走 360；"
+                        "native=只走站内原生检索（要过一次 WAF，每行带日期与栏目）。"
+                        "带 --column/--from/--to/--match title/--all 时这一路只能是站内")
+    p.add_argument("--column", help="检索时限定栏目：目录名、导航名或 classid，"
+                                    "多个用逗号（如 152,12673、北京,深圳 都行）。"
+                                    "站点只认逗号，竖线和 classid[] 写法不起作用")
+    p.add_argument("--list", metavar="栏目", help="不检索，改取该栏目的清单")
+    p.add_argument("--tag", help="不检索，改按站点标签取清单（标签名照抄页面链接里的值）")
+    p.add_argument("--pages", type=int, default=1, help="--list / --tag 连读几页，每页 30–35 行")
+    p.add_argument("--from", dest="date_from", metavar="YYYY-MM-DD",
+                   help="发布日期起。站点只在与 --to 成对时起作用")
+    p.add_argument("--to", dest="date_to", metavar="YYYY-MM-DD", help="发布日期止")
+    p.add_argument("--match", choices=["broad", "title"], default="broad",
+                   help="broad=标题+关键词+摘要，title=只在标题里匹配")
+    p.add_argument("--all", action="store_true",
+                   help=f"站内检索按总条数翻到底，上限 {SEARCH_ALL_MAX_PAGES} 页")
+    p.add_argument("--columns", action="store_true", help="打印 data 里的栏目表，不发请求")
+    p.add_argument("--update-columns", action="store_true",
+                   help="逐栏取一次列表页重建栏目表并写盘（47 栏约 47 个请求）")
+    p.add_argument("--json", action="store_true")
+    args = p.parse_args()
+
+    if args.update_columns:
+        table = build_column_table()
+        if args.json:
+            print(json.dumps(table, ensure_ascii=False, indent=2))
+            if not table.get("columns"):
+                sys.exit(1)
+            return
+        print(f"栏目表 | {table['_status']}")
+        _print_table(table["columns"])
+        if table.get("columns"):
+            COLUMN_PAGES.write_text(
+                json.dumps({"_built_at": table["built_at"], "_source": table["source"],
+                            "columns": table["columns"]},
+                           ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+            print(f"\n已写入 {COLUMN_PAGES}")
+        else:
+            print(f"没有重建：{table['_status']}")
+            sys.exit(1)
+        return
+
+    if args.columns:
+        rows = load_columns()
+        if args.json:
+            print(json.dumps(rows, ensure_ascii=False, indent=2))
+            return
+        print(f"栏目表 {len(rows)} 栏（{COLUMN_PAGES}）")
+        _print_table(rows)
+        return
+
+    if args.tag or args.list:
+        got = (list_tag(args.tag, pages=args.pages) if args.tag
+               else list_column(args.list, pages=args.pages))
+        if args.json:
+            print(json.dumps(got, ensure_ascii=False, indent=2))
+        else:
+            print(got["_status"])
+            if got.get("_error"):
+                print(f"注意：{got['_error']}")
+            _print_rows(got["results"])
+        if not got["results"]:
+            sys.exit(1)
+        return
+
+    if not args.keyword:
+        p.error("缺检索词（或改用 --column/--list/--tag/--columns）")
+
+    result = search_shui5(args.keyword, size=args.size, read_body=args.read,
+                          channel=args.channel, column=args.column,
+                          date_from=args.date_from, date_to=args.date_to,
+                          match=args.match, fetch_all=args.all)
+
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+
+    print(f"税屋检索 \"{args.keyword}\" | {result['searched_at']}")
+    print("通道：" + "，".join(f"{k} {v}" for k, v in result["_channels"].items()))
+    if result.get("_filter_note"):
+        print(f"提醒：{result['_filter_note']}")
+    if result.get("_error"):
+        print(f"注意：{result['_error']}")
+    print(f"共 {result['total']} 条\n")
+    _print_rows(result["results"], args.read)
 
 
 if __name__ == "__main__":

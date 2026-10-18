@@ -425,9 +425,21 @@ NPC 法规库与总局检索都不收。省级与市级文件（地方留成返�
 ```bash
 python scripts/tax_shui5.py "<关键词>" --size 5 --read    # 税屋：连正文一起取（推荐）
 python scripts/tax_shui5.py "<关键词>" --channel native --size 5   # 只走站内搜索，带日期/摘要/栏目
+python scripts/tax_shui5.py "<关键词>" --channel native --column 北京,深圳 --size 20  # 限定栏目
+python scripts/tax_shui5.py "<关键词>" --channel native --from 2025-01-01 --to 2025-12-31  # 区间要成对
+python scripts/tax_shui5.py "<关键词>" --channel native --match title --all  # 只匹配标题，按总数翻到底
+python scripts/tax_shui5.py --list 实务解读 --pages 2     # 不检索，按栏目读它的清单
+python scripts/tax_shui5.py --tag 增值税法 --pages 2      # 不检索，按站点标签读清单
+python scripts/tax_shui5.py --columns                     # 打印栏目表（目录名/classid/页数条数），不发请求
 python scripts/tax_wechat.py "<关键词>" --size 5 --read   # 公众号：连正文一起取
 python scripts/tax_browser.py --check                     # 探测本机已装浏览器，不下载
 ```
+
+栏目那一串参数（`--column` / `--from` / `--to` / `--match` / `--all`）只有站内那一路有，
+`--channel auto` 撞上它们时会自动换成站内并在 `_channels` 里写明"这一轮没问过 360"。
+`--list` / `--tag` 完全不检索，是把站点自己的组织方式（栏目、标签）当成入口用；
+两者取回的行与检索结果同形。`--column` 认目录名、导航名、首页短标签或 classid，
+多个用逗号，换算只查 `data/shui5_columns.json`，查不到就整体报缺而不发半截限定的命令。
 
 这一层回答的是"L1–L3 看不出来的那些事"：某个条件在实务中怎么认定、
 申报表怎么填、基层税务机关卡在哪一步、同类业务别人怎么处理、

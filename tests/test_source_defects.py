@@ -1706,6 +1706,201 @@ class TestShui5ChannelRouting(unittest.TestCase):
         self.assertIn("站内 没走成", r["_error"])
 
 
+def _xwt2_row(n, column="财税实务"):
+    """结果页/栏目页/标签页共用的那一行 HTML，编号进 URL 保证每行地址唯一。"""
+    return ('<div class="xwt2"><div class="xwt2_a">'
+            '<a href="https://www.shui5.cn/article/42/%d.html" title="标题%d">可见%d</a></div>'
+            '<div class="xwt2_c"><p class="p1">摘要%d</p></div>'
+            '<p class="p3">2026-08-%02d</p>'
+            '<p class="p4"><a href="/e/action/ListInfo/?classid=9">%s</a></p></div>'
+            % (n, n, n, n, n % 28 + 1, column))
+
+
+def _list_page(start, count, total):
+    return ("<div>%d条关于 增值税 的搜索结果</div>%s"
+            % (total, "".join(_xwt2_row(i) for i in range(start, start + count))))
+
+
+class TestShui5ScopedSearch(unittest.TestCase):
+    """限定参数那一组（栏目 / 区间 / 匹配域 / 取全）的换算、下推与归因。
+
+    用例只钉关系，不钉站点某天报的总数：逗号两栏 == 两单栏之和、只给起始 == 没限定、
+    取全翻到总数那一页为止——换词换天都成立，具体读数会过期。
+    """
+
+    TABLE = [
+        {"dir": "BeiJingShiCaiShuiFaGui", "nav": "", "label": "北京", "classid": 152,
+         "columns": ["北京市法规"], "pages": 178, "records": 6198},
+        {"dir": "ShenZhenShiCaiShuiFaGui", "nav": "", "label": "深圳", "classid": 12673,
+         "columns": ["深圳市法规"], "pages": 3, "records": 75},
+        {"dir": "category_181", "nav": "", "label": "山西", "classid": 181,
+         "columns": ["山西省法规"], "pages": 9, "records": 300},
+        {"dir": "ShanXiShengCaiShuiFaGui", "nav": "", "label": "陕西", "classid": 175,
+         "columns": ["陕西省法规"], "pages": 11, "records": 400},
+    ]
+    LANDING = SH.SEARCH_RESULT + "?page=0&searchid=999"
+
+    def setUp(self):
+        p = mock.patch.object(SH, "load_columns", return_value=self.TABLE)
+        p.start()
+        self.addCleanup(p.stop)
+
+    class _Form:
+        """把发出去的表单字段留下，页面按调用方给的清单依次回。"""
+
+        def __init__(self, first_page, landing, gets=None):
+            self.sent = []
+            self.first_page = first_page
+            self.landing = landing
+            self.gets = gets or {}
+            self.get_urls = []
+
+        def post(self, url, data=None, **kw):
+            self.sent.append(dict(data or {}))
+            return _Resp(self.first_page, url=self.landing)
+
+        def get(self, url, **kw):
+            self.get_urls.append(url)
+            return _Resp(self.gets[url])
+
+    def _native(self, total=61, **kw):
+        s = self._Form(_list_page(1, 30, total), self.LANDING)
+        return SH.search_native("增值税", size=kw.pop("size", 5), session=s, gap=0, **kw), s
+
+    def test_comma_spec_resolves_each_part_however_it_is_written(self):
+        self.assertEqual("152,12673", SH.classid_spec("北京,深圳"))
+        self.assertEqual("152,12673", SH.classid_spec("152,深圳市法规"))
+        self.assertEqual("152,12673", SH.classid_spec(
+            "BeiJingShiCaiShuiFaGui,ShenZhenShiCaiShuiFaGui"))
+
+    def test_pipe_and_bracket_forms_never_reach_the_site(self):
+        """站点只认逗号：竖线那一路实测只取第一段，classid[] 回空页，所以换算必须拒绝。"""
+        self.assertEqual("", SH.classid_spec("152|12673"))
+        self.assertEqual("", SH.classid_spec("北京,不存在的栏"))
+
+    def test_unresolvable_part_voids_the_whole_spec_and_nothing_is_posted(self):
+        s = self._Form(_list_page(1, 30, 61), self.LANDING)
+        r = SH.search_native("增值税", size=5, session=s, gap=0, classid="北京,不存在的栏")
+        self.assertTrue(r["_status"].startswith("没走成"), r["_status"])
+        self.assertIn("栏目表", r["_status"])
+        self.assertEqual([], s.sent, "半截限定不该发出去——那看着像收窄了其实没有")
+
+    def test_resolved_classid_and_the_other_three_dimensions_are_posted(self):
+        _, s = self._native(classid="北京,深圳", match="title",
+                            date_from="2025-01-01", date_to="2025-12-31")
+        sent = s.sent[0]
+        self.assertEqual("152,12673", sent["classid"])
+        self.assertEqual("title", sent["show"], "show 是匹配域，不是排版参数")
+        self.assertEqual("2025-01-01", sent["starttime"])
+        self.assertEqual("2025-12-31", sent["endtime"])
+
+    def test_date_from_alone_is_flagged_instead_of_read_as_a_narrowing(self):
+        r, s = self._native(date_from="2025-01-01")
+        self.assertEqual("2025-01-01", s.sent[0]["starttime"])
+        self.assertNotIn("endtime", s.sent[0])
+        self.assertIn("不过滤", r["_filter_note"], "站点单给 starttime 不收窄，这个缺口要写出来")
+
+    def test_unscoped_call_carries_no_filter_note(self):
+        r, _ = self._native()
+        self.assertNotIn("_filter_note", r)
+
+    def test_fetch_all_walks_to_the_total_the_page_reports(self):
+        total = 61
+        gets = {SH.SEARCH_RESULT + "?page=1&searchid=999": _list_page(31, 30, total),
+                SH.SEARCH_RESULT + "?page=2&searchid=999": _list_page(61, 1, total)}
+        s = self._Form(_list_page(1, 30, total), self.LANDING, gets)
+        r = SH.search_native("增值税", size=5, session=s, gap=0, fetch_all=True)
+        self.assertEqual(61, len(r["results"]), "取全按页面总数走，不受 size 约束")
+        self.assertEqual([SH.SEARCH_RESULT + "?page=1&searchid=999",
+                          SH.SEARCH_RESULT + "?page=2&searchid=999"], s.get_urls)
+
+    def test_fetch_all_names_the_cap_when_it_could_not_reach_the_total(self):
+        total = 61
+        gets = {SH.SEARCH_RESULT + "?page=1&searchid=999": _list_page(31, 30, total)}
+        s = self._Form(_list_page(1, 30, total), self.LANDING, gets)
+        with mock.patch.object(SH, "SEARCH_ALL_MAX_PAGES", 1):
+            r = SH.search_native("增值税", size=5, session=s, gap=0, fetch_all=True)
+        self.assertEqual(30, len(r["results"]))
+        self.assertIn("翻到上限 1 页只取了 30 条", r["_status"],
+                      "撞到上限时必须写明只取了多少，不能报成取全了")
+
+    def _route(self, so360, native, **kw):
+        calls = []
+
+        def fake_so360(keyword, site="", size=5):
+            calls.append("360")
+            return so360
+
+        def fake_native(keyword, size=5, **inner):
+            calls.append("站内")
+            self.inner = inner
+            return native
+
+        with mock.patch.object(SH, "so360_search", fake_so360), \
+             mock.patch.object(SH, "search_native", fake_native):
+            return SH.search_shui5("增值税", size=5, **kw), calls
+
+    def test_scoped_params_move_auto_off_360_and_say_why(self):
+        hit = {"results": [SH._row_dict("站内标题", P1, "2026-08-10", "摘要")],
+               "total": 1, "_status": "命中 1 条"}
+        r, calls = self._route({"total": 9, "results": [{"title": "t", "url": P1}]},
+                               hit, column="北京")
+        self.assertEqual(["站内"], calls, "360 那一路没有栏目维度，这一轮压根不该问它")
+        self.assertTrue(r["_channels"]["360"].startswith("没问"), r["_channels"]["360"])
+        self.assertNotEqual("未走（指定通道）", r["_channels"]["360"],
+                            "换路是限定参数逼的，不是调用方指定的")
+
+    def test_forced_so360_with_scoped_params_reports_that_they_did_not_apply(self):
+        r, calls = self._route({"total": 9,
+                                "results": [{"title": "t", "url": P1}]},
+                               {"results": [], "total": None, "_status": "没走成"},
+                               channel="so360", date_from="2025-01-01", date_to="2025-12-31")
+        self.assertEqual(["360"], calls)
+        self.assertIn("限定没加上", r["_filter_note"],
+                      "指定了 360 又给限定：结果看着像收窄了，其实一条都没下推")
+
+    def test_unscoped_auto_still_asks_360_first(self):
+        r, calls = self._route({"total": 1, "results": [{"title": "t", "url": P1}]},
+                               {"results": [], "total": None, "_status": "没走成"})
+        self.assertEqual(["360"], calls)
+        self.assertEqual("命中 1 条", r["_channels"]["360"])
+        self.assertNotIn("_filter_note", r)
+
+
+class TestShui5ColumnTable(unittest.TestCase):
+    """随仓库发货的栏目表：归属只认行里的 column 字段，表里不能有猜出来的值。"""
+
+    def test_every_shipped_row_is_resolvable_by_its_own_dir_and_classid(self):
+        rows = SH.load_columns()      # 读的是随仓库发货的 data/shui5_columns.json
+        self.assertTrue(len(rows) >= 40, "栏目表整表丢失时这一条要报红")
+        for r in rows:
+            self.assertIsInstance(r["classid"], int, r)
+            for key in ("dir", "classid"):
+                got = SH.resolve_column(r[key])
+                self.assertIsNotNone(got, f"{key}={r[key]} 查不到")
+                self.assertEqual(r["classid"], got["classid"], f"{key}={r[key]}")
+        self.assertEqual(len(rows), len({r["dir"] for r in rows}), "目录名不该重复")
+
+    def test_pinyin_dir_that_looks_like_shanxi_is_actually_shaanxi(self):
+        """目录名的拼音串与行内栏目名不同源：猜目录名会把陕西的栏当成山西的栏。"""
+        p = mock.patch.object(SH, "load_columns", return_value=TestShui5ScopedSearch.TABLE)
+        p.start()
+        self.addCleanup(p.stop)
+        self.assertEqual("陕西省法规", SH.resolve_column("ShanXiShengCaiShuiFaGui")["columns"][0])
+        self.assertEqual("山西省法规", SH.resolve_column("category_181")["columns"][0])
+
+    def test_shipped_table_keeps_those_two_rows_apart(self):
+        """同一条判据也要钉住随仓库发货的那份表，不然表被改错时上一条约查不出。"""
+        by_dir = {r["dir"]: r for r in SH.load_columns()}
+        self.assertEqual(["陕西省法规"], by_dir["ShanXiShengCaiShuiFaGui"]["columns"])
+        self.assertEqual(["山西省法规"], by_dir["category_181"]["columns"])
+
+    def test_unknown_column_is_refused_before_any_request(self):
+        r = SH.list_column("这个栏目名站点没有")
+        self.assertEqual([], r["results"])
+        self.assertIn("栏目表里没有", r["_status"])
+
+
 class TestAggregatorShui5Attribution(unittest.TestCase):
     """360 被拦时税屋的空算不算被连带，由这一轮站内那一路的回报决定，不再靠推断。"""
 
