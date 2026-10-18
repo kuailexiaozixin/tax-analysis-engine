@@ -22,7 +22,7 @@
 | 源缺陷 | 现在由谁保证 | 保证到什么程度 |
 |--------|--------------|----------------|
 | NPC 限流，并行必现 | `tax_search.npc_gate`（实现为 `tax_http.SerialGate`）：`%TEMP%\tax-analysis-engine-npc.lock` 跨进程文件锁 + 进程内 `threading.Lock` | 多个进程同时开跑会自己排队，不用再记"别并行"。**这句记录是什么时候量的、今天还成不成立，见[限流记录的实测台账](#限流记录的实测台账)** |
-| 360 被封 → 地方口径与税屋这一层是空的 | `tax_aggregator` 返回的 `gaps` 与 `degraded_note` | 缺了哪层、为什么缺、能不能拿别的源顶，都写成一句可直接照抄的话；网页端渲染成警示条，不再冒充普通的"0 条" |
+| 360 被封 → 地方口径这一层是空的，税屋只剩站内那一路 | `tax_aggregator` 返回的 `gaps` 与 `degraded_note` | 缺了哪层、为什么缺、能不能拿别的源顶，都写成一句可直接照抄的话；网页端渲染成警示条，不再冒充普通的"0 条" |
 | fgk 翻得越深相关性越差 | `tax_fgk` 第 2 页起标 `_reliability: medium`，并写上 `FGK_DEEP_NOTE`（`FGK_SHALLOW_PAGES = 1`） | 深页条目留在结果里参与分层，提醒就是那句写明"取自第几页、引用前要回上一级数据库核对上位法"的原文，不降权也不剔除 |
 | 公众号并发加压触发反爬 | `tax_wechat._sogou_get`：1 秒最小间隔 + 搜狗专用串行闸（`%TEMP%\tax-analysis-engine-sogou.lock`） | 打 `weixin.sogou.com` 的请求（检索、链接还原）统一进闸；离线并发用例断言同一时刻在跑的请求数峰值为 1 |
 | `_reliability: medium` 只能定位 | `tax_evidence.grade` / `_caveats` 解析该标记；`tax_aggregator` 把整源标记连同说明逐条带进聚合结果；`tax_formatter` 的两条渲染路径都会印出来 | 转成一条具体提醒，句子照抄条目自带的 `_reliability_note`，不参与 `pick_primary` 的排队；单源渲染路径吞掉这句就只剩一个角标，所以单源与多源归并两条路径都要先印警告 |
@@ -149,12 +149,17 @@
 
 ## 两个值得单独说明的细节
 
-- **税屋空结果归因到 360，不是税屋自己坏了**。`tax_shui5.search_shui5` 的链接全部来自
-  360 的 `site:shui5.cn` 检索，所以 360 挂了、税屋又 0 条时，程序给它单独记一条缺口
-  并标 `blocked_by: so360`；只有税屋自己报错（如 `WAF 挑战未通过`）时才归它自己。
-  这一条归因只在**当前只有一条检索通道**时成立：2026-10-18 实测税屋自己的站内搜索
-  （`POST /e/search/index.php`）可用，同一关键词与 360 的结果交集 0 条，是第二条路，
-  **尚未接入**。接入之后"税屋 0 条"就不再必然等于"360 挂了"，这条归因要同时改。
+- **税屋的空结果归因看它自己回报的 `_channels`，不再靠推断**。`tax_shui5.search_shui5`
+  有两路：360 的 `site:shui5.cn`（`channel="so360"`）与站内原生检索（`channel="native"`，
+  `POST /e/search/index.php`），默认 `auto` 先走 360，它被拦或 0 条才换站内。两条通道各按
+  自己的排序取数，2026-10-18 同一关键词「研发费用加计扣除」站内首屏 30 篇、360 首屏 10 篇，
+  按文章 ID 归一后**交集 0 篇**——所以"这一路 0 条"读不成"另一路也 0 条"。
+  `tax_aggregator._build_gaps` 按回报的 `站内` 状态分两种写法：这一轮站内那一路没走通
+  （`没走成`/`未走`）时，"360 被拦而税屋 0 条"才是被 360 连带的，标 `blocked_by: so360`；
+  那一路走通了却还是 0 条，就不标 `blocked_by`，缺口写成"两条通道各按自己的排序取数，
+  这一轮各 0 条只说明没取到，不代表税屋没有这个主题的解读"。盯它的是
+  `tests/test_source_defects.py` 的 `TestAggregatorShui5Attribution`。
+  走 360 那一路时行里没有日期，母技能 ④ 仍按取回条目补筛（`DATE_LOCAL_SOURCES`）。
   站点机制与实测数字在 `subskills/shui5/NOTE.md`。
 - **`low` 现在是一道闸门，不是一条现状**。仓库里真正会打标记的只有三处
   （`tax_search` 全文检索、`tax_fgk` 深页、`tax_aggregator` 源级传播），三处都只出

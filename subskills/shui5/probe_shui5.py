@@ -36,6 +36,8 @@ import urllib3
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR.parent.parent / "scripts"))
 
+import tax_shui5 as SH                       # noqa: E402
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 SITE = "https://www.shui5.cn/"
@@ -49,21 +51,11 @@ _QUIET = {"全部链接", "链接"}               # 打印时略去的长清单�
 # 挑战页判据：阿里云 WAF 的弹回页里同时带 arg1 与 renderData，正文页不带。
 IS_CHALLENGE = lambda page: "arg1" in page and "renderData" in page  # noqa: E731
 
-# 站内搜索用税屋自己那张表单的参数。tempid=1 只回计数不回列表，
-# show 只给 title 会掉进"信息提示"页——这两条都是实测踩出来的，改动前先看 NOTE.md。
-SEARCH_FORM = {"tbname": "article", "show": "title,keyboard,smalltext",
-               "tempid": "2", "Submit": "站内搜税"}
+# 检索表单、结果行形状、正文容器边界、两种提示页文案一律取发货代码（`tax_shui5`）：
+# 探针的意义是"复测文档里那些数字还成不成立"，判据本身不该在这儿另立一份。
+SEARCH_FORM = SH.SEARCH_FIELDS
+TOTAL_RE = SH._TOTAL_RE
 
-# 结果行：div.xwt2 里 xwt2_a 是标题链，xwt2_c 是摘要，xwt2_d 依次是 URL／日期／栏目
-ROW_RE = re.compile(r'<div class="xwt2">(.*?)<div class="xwt2_e">', re.S)
-ROW_TITLE_RE = re.compile(r'<div class="xwt2_a"><a\s+href="([^"]+)"\s+title="(.*?)"', re.S)
-ROW_SNIPPET_RE = re.compile(r'<div class="xwt2_c">.*?<p class="p1">(.*?)</p>', re.S)
-ROW_DATE_RE = re.compile(r'<p class="p3">(20\d\d-\d\d-\d\d)</p>')
-ROW_COLUMN_RE = re.compile(r'<p class="p4"><a[^>]*>(.*?)</a>', re.S)
-TOTAL_RE = re.compile(r'(\d+)\s*条关于')
-
-ARC_RE = re.compile(r'<div class="arcContent"[^>]*>(.*?)(?=<div class="(?:bot-share|left2b|blank20)|\Z)',
-                    re.S | re.I)
 NAV_RE = re.compile(r'<li class="mainlevel"><a\s+href="([^"]+)"[^>]*>(.*?)</a></li>', re.S)
 PAGEWRAP_RE = re.compile(r'class="pageWrap".*?<div class="pagelist[^"]*">(.*?)</div>', re.S)
 A_HREF_RE = re.compile(r'href=["\']([^"\']+)["\']')
@@ -169,28 +161,22 @@ def native_search(keyword: str, cookies: dict, line: int = 10) -> dict:
         out["字节"] = len(r.content)
         out["总数"] = (TOTAL_RE.search(to_text(page)).group(1)
                        if TOTAL_RE.search(to_text(page)) else "未取到")
-        rows = []
-        for frag in ROW_RE.findall(page):
-            t = ROW_TITLE_RE.search(frag)
-            if not t:
-                continue
-            sn = ROW_SNIPPET_RE.search(frag)
-            rows.append({
-                "标题": to_text(t.group(2)),
-                "url": t.group(1),
-                "日期": (ROW_DATE_RE.search(frag).group(1) if ROW_DATE_RE.search(frag) else ""),
-                "栏目": to_text(ROW_COLUMN_RE.search(frag).group(1))
-                        if ROW_COLUMN_RE.search(frag) else "",
-                "摘要": (to_text(sn.group(1))[:60] if sn else ""),
-            })
+        rows = SH._search_rows(page)
         out["结果行数"] = len(rows)
-        out["字段齐全行"] = sum(1 for x in rows if x["日期"] and x["栏目"] and x["摘要"])
+        out["字段齐全行"] = sum(1 for x in rows
+                               if x["date"] and x["column"] and x["snippet"])
         out["样例"] = rows[:3]
         out["全部链接"] = [x["url"] for x in rows]
         if IS_CHALLENGE(page):
-            out["错误"] = "WAF 挑战未通过（这一步需要 --browser 先放行）"
-        elif "信息提示" in page and not rows:
-            out["错误"] = "服务端回信息提示页：该关键词形态站内检索不接受（空格词最容易踩）"
+            out["错误"] = "WAF 挑战未通过（这一步要先过浏览器放行）"
+        elif SH.RATE_LIMIT_MARK in page:
+            out["错误"] = ("限流：站点要求两次检索之间隔 2 秒以上，本轮落进提示页「%s」"
+                          % SH.RATE_LIMIT_MARK)
+        elif SH.NO_RESULT_MARK in page and not rows:
+            out["错误"] = ("这一轮站内检索 0 条：站点回「%s」。空格词按 AND 收，词一窄整页"
+                          "就变成提示页；这是这一轮没取到，不是这一站没有内容" % SH.NO_RESULT_MARK)
+        elif not rows:
+            out["错误"] = "结果页里没有 div.xwt2 行：容器改版或落点不对"
     s.close()
     return out
 
@@ -275,16 +261,13 @@ def article_shape(url: str, cookies: dict) -> dict:
         out["错误"] = "WAF 挑战未通过"
         s.close()
         return out
-    m = ARC_RE.search(page)
-    body = to_text(m.group(1)) if m else ""
+    m = SH._ARC_RE.search(page)
+    body = SH._to_text(m.group(1)) if m else ""
     out["arcContent 命中"] = bool(m)
     out["第1页正文长"] = len(body)
-    tail = re.search(r"/(\d+)\.html", url)
-    pages = set()
-    if tail:
-        pages = {p for p in re.findall(r"/article/[0-9a-zA-Z]+/" + tail.group(1) + r"\$(\d+)\.html", page)}
-    out["后续页码"] = sorted(pages)[:6]
-    out["截断风险"] = "有后续页但脚本只取第 1 页" if pages else "无"
+    pages = SH._own_pages(page, SH._article_id(url))
+    out["后续页码"] = sorted(pages)
+    out["续页会读到"] = "按本篇 ID 跟读到末页（fetch_shui5）" if pages else "本篇单页"
     # 分享控件是否混进了正文（终止容器没命中时的典型征状）
     out["尾部混入分享控件"] = "分享至好友和朋友圈" in body or "点赞（）" in body
     t = re.search(r"时间：\s*(20\d\d-\d\d-\d\d)", page)

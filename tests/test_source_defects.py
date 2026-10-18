@@ -38,6 +38,7 @@ import tax_fgk as FGK        # noqa: E402
 import tax_formatter as FMT  # noqa: E402
 import tax_http              # noqa: E402
 import tax_search as T       # noqa: E402
+import tax_shui5 as SH       # noqa: E402
 import tax_wechat as W       # noqa: E402
 import tax_aggregator as AGG  # noqa: E402
 import tax_web_search as WS   # noqa: E402
@@ -1389,6 +1390,367 @@ class TestCitationCheckReachesTheAnswer(unittest.TestCase):
                          plan["citation_check"])
         note = ANS.compose(plan)["citation_note"]
         self.assertIn("没有取回税屋或公众号的文章", note)
+
+
+# ── ②'' 税屋：正文收口、续页读到末页、站内检索这一路 ──────────────────────
+# 下面三份 DOM 全部照 2026-10-18 实测的站点结构搭：
+#   文章页  <div class="arcContent"> 之后紧跟 <div class="left2e">（点赞＋分享＋扫码块），
+#           再往后才是 left2b 相关阅读、pagebreak 页码区
+#   结果页  每行 <div class="xwt2">，标题在 xwt2_a>a 的 title 属性里（带 <font> 高亮），
+#           摘要 xwt2_c>p.p1、日期 <p class="p3">、栏目 <p class="p4"><a>
+#   提示页  文案两种：「没有搜索到相关的内容」＝这一轮没命中，
+#           「系统限制的搜索时间间隔为 2 秒,请稍后再搜索」＝请求太密（两者只差 31 字节）
+class _Resp:
+    def __init__(self, html, url="", status=200):
+        self.content = html.encode("utf-8")
+        self.text = html
+        self.url = url
+        self.status_code = status
+
+
+def _article_page(body, own_pages=(), other_pages=(), with_share=True):
+    """搭一篇文章页。own_pages 是本篇 pagebreak 里列出的页码。"""
+    links = " ".join(
+        '<a href="https://www.shui5.cn/article/42/70138%s.html">%d</a>'
+        % (("" if n == 1 else "$%d" % n), n) for n in own_pages)
+    others = " ".join('<a href="https://www.shui5.cn/article/9/%d$2.html">x</a>' % i
+                      for i in other_pages)
+    share = ('<div class="left2e"><div class="diggnum">点赞（）</div>'
+             '<div class="showshare">微信 微博</div>'
+             '<div class="qrcode_wrap hidden">× 用微信扫码二维码 分享至好友和朋友圈</div></div>'
+             if with_share else "")
+    return ('<html><body><h1>测试文章</h1>'
+            '<div class="articleResource">时间：2026-08-10</div>'
+            '<div class="articleDes">这是摘要</div>'
+            '<div class="arcContent"><p>%s</p></div>'
+            '%s'
+            '<div class="left2b">相关阅读 %s</div>'
+            '<div class="pagebreak">本文章更多内容：%s</div>'
+            '</body></html>' % (body, share, others, links))
+
+
+class _ReadSession:
+    """按 URL 发页面的假会话；记下请求顺序，代码要了没准备的地址就直接 KeyError。"""
+
+    def __init__(self, pages):
+        self.pages = pages
+        self.requested = []
+        self.cookies = type("_C", (), {"set": lambda *a, **k: None})()
+
+    def get(self, url, **kwargs):
+        self.requested.append(url)
+        return self.pages[url]
+
+
+P1 = "https://www.shui5.cn/article/42/70138.html"
+
+
+def _pp(n):
+    return P1 if n == 1 else "https://www.shui5.cn/article/42/70138$%d.html" % n
+
+
+class TestShui5BodyBoundary(unittest.TestCase):
+    """P2：正文容器后面第一个兄弟容器是 left2e，旧边界没有它，抽样 12 篇尾部全混入。"""
+
+    def test_share_block_is_cut_off(self):
+        art = SH._parse_article(
+            _article_page("正文第一段", own_pages=(1, 2)), P1)
+        self.assertEqual("正文第一段", art["content"], repr(art["content"]))
+        for noise in ("点赞", "分享至好友和朋友圈", "相关阅读", "本文章更多内容"):
+            self.assertNotIn(noise, art["content"])
+
+    def test_old_boundary_names_still_work_as_backups(self):
+        """站点改版把 left2e 换掉时，left2b / blank20 还该收得住。"""
+        page = ('<div class="arcContent"><p>正文</p></div>'
+                '<div class="blank20"></div><div class="left2b">别的</div>')
+        self.assertEqual("正文", SH._parse_article(page, P1)["content"])
+
+    def test_meta_and_title_still_parsed_after_the_change(self):
+        art = SH._parse_article(_article_page("正文", own_pages=(1,)), P1)
+        self.assertEqual("测试文章", art["title"])
+        self.assertEqual("2026-08-10", art["date"])
+        self.assertEqual("这是摘要", art["summary"])
+
+
+class TestShui5ContinuationPages(unittest.TestCase):
+    """P1：长文按本篇 ID 枚举续页读到末页；越界页被站点钳回已有内容，不靠 404 试探。"""
+
+    def _fetch(self, pages, **kw):
+        sess = _ReadSession(pages)
+        return SH.fetch_shui5(P1, session=sess, page_interval=0, **kw), sess
+
+    def test_reads_every_page_listed_for_this_article(self):
+        sess_pages = {
+            _pp(1): _Resp(_article_page("第一段", own_pages=(1, 2, 3))),
+            _pp(2): _Resp(_article_page("第二段", own_pages=(1, 2, 3))),
+            _pp(3): _Resp(_article_page("第三段", own_pages=(1, 2, 3))),
+        }
+        art, sess = self._fetch(sess_pages)
+        self.assertEqual(3, art["pages"])
+        self.assertEqual("第一段\n第二段\n第三段", art["content"])
+        self.assertEqual([_pp(1), _pp(2), _pp(3)], sess.requested,
+                          "页码只到 3，不该再去要 $4")
+        self.assertNotIn("_pages_error", art)
+
+    def test_clamped_page_beyond_the_end_is_never_appended(self):
+        """实测 $4、$5 回 200 与同一份正文：文本重复即到底，不拼第二份、不计页数。"""
+        sess_pages = {
+            _pp(1): _Resp(_article_page("第一段", own_pages=(1, 2, 3))),
+            _pp(2): _Resp(_article_page("第二段", own_pages=(2, 3, 4))),
+            _pp(3): _Resp(_article_page("第三段", own_pages=(3, 4))),
+            _pp(4): _Resp(_article_page("第三段", own_pages=(4, 5))),  # 钳回第三段
+        }
+        art, sess = self._fetch(sess_pages)
+        self.assertEqual(3, art["pages"], art)
+        self.assertEqual(1, art["content"].count("第三段"), art["content"])
+        self.assertEqual([_pp(1), _pp(2), _pp(3), _pp(4)], sess.requested)
+
+    def test_other_articles_page_links_do_not_make_a_single_page_article_multi_page(self):
+        """相关阅读里混着别人文章的 $2 链接：按链接形态数会把单页文章判成分页文章。"""
+        art, sess = self._fetch({_pp(1): _Resp(
+            _article_page("只有第一段", own_pages=(1,), other_pages=(111, 222)))})
+        self.assertEqual(1, art["pages"])
+        self.assertEqual([_pp(1)], sess.requested)
+        self.assertEqual("只有第一段", art["content"])
+
+    def test_window_style_page_list_expands_while_reading(self):
+        """页码区只列相邻几页时，读一页就把新页码并进队列，不能停在第 2 页。"""
+        sess_pages = {
+            _pp(1): _Resp(_article_page("第一段", own_pages=(1, 2))),
+            _pp(2): _Resp(_article_page("第二段", own_pages=(2, 3))),
+            _pp(3): _Resp(_article_page("第三段", own_pages=(3,))),
+        }
+        art, _ = self._fetch(sess_pages)
+        self.assertEqual(3, art["pages"], art)
+        self.assertEqual("第一段\n第二段\n第三段", art["content"])
+
+    def test_a_page_that_cannot_be_read_stops_and_says_where(self):
+        """中间某一页取不到：正文停在已读部分并留原因，不能整篇当没有。"""
+        sess_pages = {
+            _pp(1): _Resp(_article_page("第一段", own_pages=(1, 2, 3))),
+            _pp(2): _Resp("", status=404),
+        }
+        art, sess = self._fetch(sess_pages)
+        self.assertEqual("第一段", art["content"])
+        self.assertEqual(1, art["pages"])
+        self.assertIn("第 2 页取不到", art["_pages_error"])
+        self.assertIn("正文止于第 1 页", art["_pages_error"])
+        self.assertNotIn(_pp(3), sess.requested)
+
+    def test_page_cap_stops_the_loop(self):
+        sess_pages = {_pp(n): _Resp(_article_page("第%d段" % n,
+                                                  own_pages=tuple(range(1, 9))))
+                      for n in range(1, 9)}
+        art, sess = self._fetch(sess_pages, max_pages=3)
+        self.assertEqual(3, art["pages"])
+        self.assertEqual(3, len(sess.requested))
+
+
+class TestShui5NativeSearch(unittest.TestCase):
+    """P0：站内原生检索——行解析、总数、两种提示页、翻页去重。"""
+
+    RESULT_URL = SH.SEARCH_RESULT + "?page=0&searchid=12345"
+
+    def _row(self, n, url=None, column="税收问答"):
+        return ('<div class="xwt2">'
+                '<div class="xwt2_a"><a href="%s" title="留抵<font color=\'red\'>退税</font>口径%d"'
+                '>\u53ef\u89c1\u6587\u672c%d</a></div>'
+                '<div class="xwt2_c"><p class="p1">摘要%d<font color=\'red\'>词</font></p></div>'
+                '<div class="xwt2_d"><p class="p1">来源</p></div>'
+                '<p class="p3">2026-08-%02d</p>'
+                '<p class="p4"><a href="/e/action/ListInfo/?classid=9">%s</a></p>'
+                '</div>' % (url or "https://www.shui5.cn/article/42/%d.html" % (100 + n),
+                            n, n, n, n + 1, column))
+
+    def _result_page(self, rows, total=420):
+        return ("<div>%d条关于 留抵退税 的搜索结果</div>%s" % (total, "".join(rows)))
+
+    def test_rows_carry_date_column_and_clean_title(self):
+        rows = SH._search_rows(self._result_page([self._row(1), self._row(2)]))
+        self.assertEqual(2, len(rows))
+        self.assertEqual("留抵退税口径1", rows[0]["title"], rows[0]["title"])
+        self.assertEqual("2026-08-02", rows[0]["date"])
+        self.assertEqual("税收问答", rows[0]["column"])
+        self.assertEqual("摘要1词", rows[0]["snippet"])
+        self.assertEqual("https://www.shui5.cn/article/42/101.html", rows[0]["url"])
+        # 两条通道共用行形状：360 那一路给的键，站内这路也必须全有
+        self.assertEqual({"title", "url", "date", "snippet", "source",
+                          "source_label", "column"}, set(rows[0]))
+
+    def test_total_count_sentence_is_read(self):
+        t = SH._TOTAL_RE.search("420条关于 留抵退税 的搜索结果")
+        self.assertEqual("420", t.group(1))
+
+    def _search(self, pages, size=5, keyword="留抵退税"):
+        """pages: 依次回给 post 的页面；get 按 URL 取。"""
+
+        class S:
+            def __init__(self, posts, gets, landing):
+                self.posts, self.gets, self.landing = list(posts), gets, landing
+                self.post_urls = []
+                self.get_urls = []
+
+            def post(self, url, **kwargs):
+                self.post_urls.append(url)
+                return _Resp(self.posts.pop(0), url=self.landing)
+
+            def get(self, url, **kwargs):
+                self.get_urls.append(url)
+                return _Resp(self.gets[url])
+
+        s = S(pages.get("posts", []), pages.get("gets", {}), self.RESULT_URL)
+        return SH.search_native(keyword, size=size, session=s, gap=0), s
+
+    def test_no_result_marker_means_zero_rows_not_a_failed_channel(self):
+        r, _ = self._search({"posts": ["<div>%s</div>" % SH.NO_RESULT_MARK], "gets": {}})
+        self.assertEqual([], r["results"])
+        self.assertEqual(0, r["total"])
+        self.assertTrue(r["_status"].startswith("0 条"), r["_status"])
+
+    def test_rate_limit_marker_retries_once_and_can_still_come_back_empty(self):
+        limit = "<div>%s,请稍后再搜索</div>" % SH.RATE_LIMIT_MARK
+        r, s = self._search({"posts": [limit, "<div>%s</div>" % SH.NO_RESULT_MARK],
+                             "gets": {}})
+        self.assertEqual(2, len(s.post_urls), "限流只该重发一次")
+        self.assertEqual(0, r["total"])
+        self.assertTrue(r["_status"].startswith("0 条"), r["_status"])
+
+    def test_still_limited_after_the_retry_is_reported_as_not_walked(self):
+        limit = "<div>%s,请稍后再搜索</div>" % SH.RATE_LIMIT_MARK
+        r, s = self._search({"posts": [limit, limit], "gets": {}})
+        self.assertTrue(r["_status"].startswith("没走成"), r["_status"])
+        self.assertIsNone(r["total"], "限流轮不能报成 0 条")
+
+    def test_waf_challenge_is_reported_as_not_walked(self):
+        page = ('<textarea id="renderData">{"arg1":"%s"}</textarea>' % ("A" * 40))
+        r, _ = self._search({"posts": [page], "gets": {}})
+        self.assertTrue(r["_status"].startswith("没走成"), r["_status"])
+        self.assertIn("WAF", r["_status"])
+
+    def test_pages_are_walked_and_duplicates_dropped(self):
+        posts = [self._result_page([self._row(1)], total=3)]
+        gets = {SH.SEARCH_RESULT + "?page=1&searchid=12345":
+                self._result_page([self._row(2), self._row(1)]),   # 第 1 条重复
+                SH.SEARCH_RESULT + "?page=2&searchid=12345":
+                self._result_page([self._row(3)])}
+        r, s = self._search({"posts": posts, "gets": gets}, size=3)
+        self.assertEqual(["留抵退税口径1", "留抵退税口径2", "留抵退税口径3"],
+                         [x["title"] for x in r["results"]],
+                         "翻页要接着落点页往后取，重复的那条不能算新结果")
+        # 落点页本身就是 page=0，往后从 1 起翻——再请求一次 0 会把首屏那行当新结果重复收
+        self.assertEqual([SH.SEARCH_RESULT + "?page=1&searchid=12345",
+                          SH.SEARCH_RESULT + "?page=2&searchid=12345"], s.get_urls)
+        self.assertEqual(3, r["total"], "站点报的总条数原样带出")
+        self.assertIn("这一词站内共 3 条", r["_status"])
+
+
+class TestShui5ChannelRouting(unittest.TestCase):
+    """auto 先走 360、它没取到才启浏览器；两条通道各 0 条是"没有"，不是"没取到"。"""
+
+    def _run(self, so360, native, channel="auto"):
+        calls = []
+
+        def fake_so360(keyword, site="", size=5):
+            calls.append("360")
+            return so360
+
+        def fake_native(keyword, size=5, **kw):
+            calls.append("站内")
+            return native
+
+        with mock.patch.object(SH, "so360_search", fake_so360), \
+             mock.patch.object(SH, "search_native", fake_native):
+            return SH.search_shui5("留抵退税", size=5, channel=channel), calls
+
+    def test_hit_from_360_does_not_start_a_browser(self):
+        r, calls = self._run({"total": 1,
+                              "results": [{"title": "留抵退税实务税 屋——第一时间传递财税政策法规",
+                                           "url": P1, "snippet": "摘要"}]},
+                             {"results": [], "total": None, "_status": "没走成：无浏览器"})
+        self.assertEqual(["360"], calls)
+        self.assertEqual("360", r["_channel"])
+        self.assertEqual("未走（指定通道）", r["_channels"]["站内"])
+        self.assertEqual("留抵退税实务", r["results"][0]["title"], "标语后缀要剥掉")
+
+    def test_blocked_360_falls_through_to_native(self):
+        r, calls = self._run({"_error": "360 被拦截（访问异常出错）", "results": []},
+                             {"results": [SH._row_dict("站内标题", P1, "2026-08-10", "摘要")],
+                              "total": 1, "_status": "命中 1 条"})
+        self.assertEqual(["360", "站内"], calls)
+        self.assertEqual("站内", r["_channel"])
+        self.assertEqual(1, r["total"])
+        self.assertNotIn("_error", r, "换通道换到了就不该报整体失败")
+
+    def test_forced_channels_each_touch_only_their_own_source(self):
+        _, calls = self._run({"total": 0, "results": []},
+                             {"results": [], "total": None, "_status": "没走成"},
+                             channel="so360")
+        self.assertEqual(["360"], calls)
+        _, calls = self._run({"total": 1, "results": [{"title": "t", "url": P1}]},
+                             {"results": [], "total": None, "_status": "没走成"},
+                             channel="native")
+        self.assertEqual(["站内"], calls)
+
+    def test_both_channels_genuinely_empty_is_not_an_error(self):
+        r, _ = self._run({"total": 0, "results": []},
+                         {"results": [], "total": 0, "_status": "0 条：站点回「没有搜索到相关的内容」"})
+        self.assertEqual(0, r["total"])
+        self.assertNotIn("_error", r, "两条都跑通、各 0 条＝这一轮没命中，不是取数失败")
+        self.assertEqual("", r["_channel"])
+
+    def test_both_channels_failing_says_which_and_why(self):
+        r, _ = self._run({"_error": "360 被拦截", "results": []},
+                         {"results": [], "total": None, "_status": "没走成：无浏览器，改纯 HTTP 直连"})
+        self.assertIn("两条检索通道都没取到", r["_error"])
+        self.assertIn("360 被拦", r["_error"])
+        self.assertIn("站内 没走成", r["_error"])
+
+
+class TestAggregatorShui5Attribution(unittest.TestCase):
+    """360 被拦时税屋的空算不算被连带，由这一轮站内那一路的回报决定，不再靠推断。"""
+
+    def _agg(self, channels):
+        ok = lambda n: {"total": n, "results": [{"title": "财税〔2025〕1号",
+                                                "url": "https://x.test/a"}] if n else []}
+        shui5 = {"total": 0, "results": [], "_channels": channels}
+        with mock.patch.object(AGG, "search_tax", return_value=ok(1)), \
+             mock.patch.object(AGG, "search_chinatax", return_value=ok(1)), \
+             mock.patch.object(AGG, "so360_search",
+                               return_value={"_error": "360 被拦截", "results": []}), \
+             mock.patch.object(AGG, "search_shui5", return_value=shui5), \
+             mock.patch.object(AGG, "search_wechat", return_value=ok(0)):
+            return AGG.aggregate_search("测试词", size=5)
+
+    def _shui5_gap(self, r):
+        g = [x for x in r["gaps"] if x["source"] == "shui5"]
+        self.assertEqual(1, len(g), r["gaps"])
+        return g[0]
+
+    def test_native_ran_but_empty_is_own_not_inherited(self):
+        g = self._shui5_gap(self._agg({"360": "被拦：360 被拦截",
+                                       "站内": "0 条：站点回「没有搜索到相关的内容」"}))
+        self.assertNotIn("blocked_by", g, "站内那一路跑通了，就不能再甩给 360")
+        self.assertIn("站内原生检索这一轮也没命中", g["reason"])
+
+    def test_native_not_walked_keeps_the_inheritance(self):
+        g = self._shui5_gap(self._agg({"360": "被拦：360 被拦截",
+                                       "站内": "没走成：无浏览器，改纯 HTTP 直连"}))
+        self.assertEqual("so360", g["blocked_by"])
+        self.assertIn("不代表税屋没有内容", g["impact"])
+        self.assertIn("只走了 360 的 site:shui5.cn 那一路", g["reason"])
+
+    def test_channel_report_absent_falls_back_to_inheritance(self):
+        """没带 _channels 的旧结果（打桩、缓存）仍按老判据走，不因为新字段缺失就改口。"""
+        ok = lambda n: {"total": n, "results": [{"title": "t", "url": "https://x.test/a"}]
+                        if n else []}
+        with mock.patch.object(AGG, "search_tax", return_value=ok(1)), \
+             mock.patch.object(AGG, "search_chinatax", return_value=ok(1)), \
+             mock.patch.object(AGG, "so360_search",
+                               return_value={"_error": "360 被拦截", "results": []}), \
+             mock.patch.object(AGG, "search_shui5", return_value=ok(0)), \
+             mock.patch.object(AGG, "search_wechat", return_value=ok(0)):
+            g = self._shui5_gap(AGG.aggregate_search("测试词", size=5))
+        self.assertEqual("so360", g["blocked_by"])
 
 
 # ── 用例自身的能力自检：规则不能永远绿 ─────────────────────────────────────

@@ -94,7 +94,7 @@
 | **离线目录同步器** | `tax_sync.py` | 两种同步外壳。**`Synchronizer`**（单资源直链 diff）：`locate()` 现抓直链 → 与 `state.json` 记录的 URL 比对 → 变了才下载 → 下载内容少于 `MIN_CONTENT_BYTES` 判异常页不覆盖旧产物 → 内容 SHA1 未变不白烧构建 → 构建回调返回的 `版本日期` 采纳进 state（现用于 `subskills/tax-preference`）。**`ListSynchronizer`**（分页列表集合 diff）：`fetch_page(page)` 按 `total` 爬全 → 对每行 `sig_fields`（如 url+时效性+文号+标题）算集合 SHA1 → 任一字段变（含时效性翻转）才重建；`--check` 只探首页比 total；空集合与爬不满 total（`max_pages` 截断）都判异常不覆盖。下载/请求只走 `tax_http` |
 | **政策文件库清单源** | `tax_gov_list.py` | chinatax.gov.cn `getFileListByCodeId`（plain HTTP POST，无 cookie、不调模型）分栏目分页清单：每行规范化出 发文字号/效力等级/**时效性**/成文日期/税费类型/官方 url。同步复用 `tax_sync.ListSynchronizer`；`lookup`/`stats` 离线查；`seed-cache` 把文号（按 `tax_terms.doc_number_of` 归一）→ 官方 url（过 `tax_cited.is_official`）批量种进文号缓存，让 `locate_cited_document` 离线命中零网络；`missing` 反向列出清单里有官方 url、文号却未进缓存的待补条目（纯离线，只认官方域） |
 | **文号链接缓存** | `tax_cited.py` | `is_official(url)`：只认 `chinatax.gov.cn` 及任意子域（用 `urlparse().hostname` 比后缀，防"官方域塞进路径"的假链接），拒商业站；`get/put_cited_link`：文号→已核实官方链接的持久缓存（`~/.cache/.../cited_links.json`），非官方域一律不落。`tax_answer.locate_cited_document` 命中缓存时零网络、`_from_cache=True` |
-| **实务解读** | `tax_shui5.py` | 税屋：360 检索 + 浏览器过 WAF 后 HTTP 连读。站点的取数机制（没凭据时任何地址都回同一份 23,682 字节挑战页、放行 cookie 是 `acw_sc__v2` 约 60 分钟、长文有 `$N` 续页、栏目分页用 `<classid>_<页>.html`、站内原生搜索可用而未接）**下沉到 `subskills/shui5/`**，含复测探针 `probe_shui5.py` |
+| **实务解读** | `tax_shui5.py` | 税屋：两条检索通道（`--channel so360`／`native`，默认 `auto` 先 360、被拦或 0 条才换站内）+ 浏览器过 WAF 后 HTTP 连读；长文按本篇 ID 跟 `$N` 续页读到末页，中间页取不到时写 `_pages_error`。站点的取数机制（没凭据时任何地址都回同一份 23,682 字节挑战页、放行 cookie 是 `acw_sc__v2` 约 60 分钟、站内搜索表单与两种提示页、正文收口在 `left2e`、栏目分页用 `<classid>_<页>.html`）**下沉到 `subskills/shui5/`**，含复测探针 `probe_shui5.py` |
 | **实务解读** | `tax_wechat.py` | 微信公众号：搜狗微信 + 移动 UA |
 | **多源聚合** | `tax_aggregator.py` | 五源并发、Jaccard 去重、权威度排序、源级失败上抛、跨源时间序 |
 | **输出格式化** | `tax_formatter.py` | **检索路**的渲染器：stdin 收 `tax_search` / `tax_aggregator` 的原始 JSON，stdout 出四段式 Markdown。主线不经过它——主线的答案骨架是 `tax_answer.compose` 产出、`tax_answer._print_answer` 打印，两处模板不共用。`--intent` 是检索路自己的五档意图（`tax_search.INTENTS`），只决定标题措辞，与主线九类题型（`tax_analyze.QUESTION_TYPES`）不能互换，键集合由 `test_routing_terms.py` 钉住。命令行形态：`python scripts/tax_formatter.py --intent policy_lookup < result.json`（加 `--mode aggregated` 走多源归并；stdin 的字段要求见「命令行搜索」） |
@@ -129,7 +129,7 @@
 | **测试** | `test_http_layer.py` | 统一请求层守门：AST 扫全项目、除白名单外禁止绕过 `tax_http` 的裸请求（含别名写法）、参数只透传不补全、`verify` 必填、取数失败那句错误说明的整形（丢链接与 `(Caused by ...)`、压平折行、截断不切词） |
 | **测试** | `test_frontend_province_ui.py` | 前端省份控件契约：控件长在"官方解读"页而非搜索栏、高级筛选恰为 6 组、搜索请求不带 `province`、结果头不再显示省市标签、前端站点清单与 `tax_server.search_interpretations` 的默认 sources 逐字一致（读文件断言，不开浏览器） |
 | **测试** | `test_frontend_aging_control.py` | 前端时效控件值域契约：`AGING_S5` 五档与后端 `tax_web_search.AGING_VALUES` 逐项一致、`AGING_FROM_NPC` 换出的文本必落在值域内、`syncFilterControls` 不再 `disabled`、拼 option 的两项数组不许写成空项（真浏览器里读到过 `undefined` 选项）、`filterStatus` 赋值只走 `setNpcStatus`、`doSearch` 按 `s5` 分流 `status`/`aging`（读文件断言，不开浏览器） |
-| **测试** | `test_source_defects.py` | 源缺陷回归：fgk 深页标 `medium`、聚合缺口归因（税屋空归到 360）、网页渲染 `degraded_note`、定级层认 `_reliability`（low 出局 / 全 low 拒挑主依据 / 无标记口径不变）、渲染层不吞标记（单源也会印出"可能偏题"）、搜狗串行闸与最小间隔（并发峰值 == 1）、NPC 下载单一路径收口、**返回值契约**（AST 扫全项目：声明 `-> tuple[A, B]` 的函数不许 `return` 单值） |
+| **测试** | `test_source_defects.py` | 源缺陷回归：fgk 深页标 `medium`、聚合缺口归因（税屋两条检索通道各自的状态决定要不要标 `blocked_by: so360`）、税屋正文收口与 `$N` 续页读法、站内搜索行形状与两种提示页、网页渲染 `degraded_note`、定级层认 `_reliability`（low 出局 / 全 low 拒挑主依据 / 无标记口径不变）、渲染层不吞标记（单源也会印出"可能偏题"）、搜狗串行闸与最小间隔（并发峰值 == 1）、NPC 下载单一路径收口、**返回值契约**（AST 扫全项目：声明 `-> tuple[A, B]` 的函数不许 `return` 单值） |
 | **门禁** | `check_doc_cli.py` | 文档-代码契约，两类检查：**命令级**（同行里点了脚本名的命令行，逐参数比对代码的参数表）+ **片段级**（孤立的 `` `--a --b` `` 必须能落在某一个脚本上），挡住"文档写了、代码没有"与"参数挂错脚本" |
 | **测试** | `test_check_doc_cli.py` | 文档契约规则自检：构造样例钉住片段级检查既能报出坏片段、也不误报好片段。规则一旦改对就永远绿，没有自检就无法证明它还在工作 |
 | **门禁入口** | `run_all.py` | 统一测试入口：默认跑离线组，`--online` 加联网组；退出码可直接接 CI（根目录 `run_tests.bat` 双击即跑） |
@@ -315,7 +315,7 @@ GET /api/text/ff808181927b083b0193fd65a0eb02cb
 | **mof.gov.cn** | 财政部公告、财税联合发文 | ⭐⭐⭐⭐ | 实时 | 360 `site:` 搜索 |
 | **fgk.chinatax.gov.cn** | 税务总局法规库结构化内容。国际税收、转让定价、税务行政处罚的依据都在这里 | ⭐⭐⭐⭐ | 实时 | search5 JSON API 翻页（每页固定 10 条）+ 详情页 |
 | **gov.cn** | 国务院政策发布、答记者问 | ⭐⭐⭐⭐⭐ | 实时 | 360 `site:` 搜索 |
-| **税屋 shui5.cn** | 实务解读、专栏、答疑（正文可取） | ⭐⭐⭐ | 实时 | 360 检索 + 浏览器过 WAF 后连读；站点机制与实测台账在 `subskills/shui5/` |
+| **税屋 shui5.cn** | 实务解读、专栏、答疑（正文可取） | ⭐⭐⭐ | 实时 | 两条检索通道（360 `site:` 与站内原生）+ 浏览器过 WAF 后连读；站点机制与实测台账在 `subskills/shui5/` |
 | **微信公众号** | 实务解读、申报实操 | ⭐⭐ | 实时 | 搜狗微信 + 移动 UA |
 | **bbs.auditdog.cn**（子技能 chenyiwei-bbs） | 陈版主实务答疑、监管处罚案例、准则衍生问答，附带企业会计准则原文。补的是专业口径那一层，不答税法 | 专业口径 ⭐⭐⭐⭐；税收依据 无 | 上游每日更新（子技能文档记载，未实测） | 公开 REST API，`curl` 直连，无 key；操作手册在 `subskills/chenyiwei-bbs/` |
 | **docs.maoyanqing.com**（子技能 maodocs） | 审计文库 MaoDocs：企业/政府/小企业会计准则、注协审计准则、企业内控规范、资产评估准则、证监会监管规则适用指引的**逐条原文全文**。补专业口径原文，不答税法 | 专业口径 ⭐⭐⭐⭐；税收依据 无 | 实时（sitemap lastmod 至 2026-09-28） | 纯标准库直连静态站，无 WAF、无浏览器、无 key；脚本与手册在 `subskills/maodocs/` |
@@ -519,9 +519,9 @@ tax-analysis-engine/
 │   │   ├── NOTE.md                 # 技能说明：目录结构、硬约束（无系统数据库、政策时效检查、模板路径基准）
 │   │   └── references/             # 评分规则·扣除指南·稽查应对·政策文件库(30)·加计书(10)·IPO书(22)·内控模板(34)
 │   ├── shui5/
-│   │   ├── SKILL.md                # 税屋站点子技能：WAF 凭据哪枚有效、两条检索通道、栏目地图与分页、正文形态与失真、三条改进方案
-│   │   ├── NOTE.md                 # 2026-10-18 实测台账（挑战页 23,682 字节、acw_sc__v2 约 60 分钟、站内搜索表单与条数读数）、缺陷登记、外部探针工具链入口与限速
-│   │   └── probe_shui5.py          # 复测探针：挑战面/凭据/站内检索/360/栏目地图/栏目分页/正文形态；只读、约 15 请求、cookie 不落盘、不调模型
+│   │   ├── SKILL.md                # 税屋站点子技能：WAF 凭据哪枚有效、两条检索通道怎么选、栏目地图与分页、正文收口与续页读法、未收的改进与取舍
+│   │   ├── NOTE.md                 # 2026-10-18 实测台账（挑战页 23,682 字节、acw_sc__v2 约 60 分钟、两条通道首屏交集 0 篇、正文逐页字数）、已收进代码的缺陷登记、外部探针工具链入口与限速
+│   │   └── probe_shui5.py          # 复测探针八项：挑战面/凭据/站内检索/360/两路首屏交集/栏目地图/栏目分页/正文形态；只读、约 15–20 请求、cookie 不落盘、不调模型；判据直接引 `tax_shui5`，不另立一份
 │   ├── szse-lawrules/
 │       ├── SKILL.md                # 深交所法律规则目录检索（查询式：build 建索引后离线 query）
 │       ├── NOTE.md                 # 来源、两种渲染形态、实测校正（t 编号不表版次、业务规则需浏览器、多为 PDF 附件）

@@ -424,6 +424,7 @@ NPC 法规库与总局检索都不收。省级与市级文件（地方留成返�
 
 ```bash
 python scripts/tax_shui5.py "<关键词>" --size 5 --read    # 税屋：连正文一起取（推荐）
+python scripts/tax_shui5.py "<关键词>" --channel native --size 5   # 只走站内搜索，带日期/摘要/栏目
 python scripts/tax_wechat.py "<关键词>" --size 5 --read   # 公众号：连正文一起取
 python scripts/tax_browser.py --check                     # 探测本机已装浏览器，不下载
 ```

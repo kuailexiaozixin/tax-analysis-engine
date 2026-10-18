@@ -12,9 +12,9 @@ Data source priority (按权威性排序):
 第 4、5 两源默认开启：二者补的是前三个源查不到的实操层内容。权威性低于
 法规原文，输出里以 _authority_rank 排在后面。
 
-税屋当前只能取链接、正文取不到（阿里云 WAF 不认可算出的 cookie，详见
-tax_shui5 模块说明），它在检索这一步仍然有用——检索本身稳定，能告诉你"这个话题
-税屋上有几篇实务文章"，正文再另找渠道。
+税屋的检索有两路（360 的 site:shui5.cn 与站内原生检索），正文要先过一次阿里云
+WAF：默认这一路只取链接（不要凭据），要正文时由 tax_shui5 启本机浏览器过一次
+挑战再连读。两路覆盖的是不同排序，一路 0 条不能读成另一路也 0 条。
 
 AnySearch 已移除：本机不存在其 CLI（~/.claude/skills/anysearch/scripts 下
 没有 anysearch_cli.py），原实现永远静默返回空列表。
@@ -67,7 +67,8 @@ SOURCE_LABELS = {
 SOURCE_IMPACT = {
     "npc": "全国性法律法规层（法律/行政法规/司法解释）缺失，没有别的源能覆盖它",
     "chinatax": "总局公告、部门规章与官方解读层缺失",
-    "so360": "地方口径层与税屋的链接发现层缺失（税屋靠 360 的 site:shui5.cn 检索取链接）",
+    "so360": "地方口径层缺失，税屋的检索也少了一路（税屋另有站内原生检索，"
+             "见 tax_shui5.search_shui5 的 channel 判据）",
     "shui5": "税屋的实务解读层缺失",
     "wechat": "微信公众号的实务解读层缺失",
 }
@@ -144,14 +145,17 @@ def _date_scope_note(date_from: str, date_to: str, sources: list,
     return f"日期区间 {rng}：" + "；".join(parts) + "。"
 
 
-def _build_gaps(sources: list, errors: dict, source_summary: dict) -> list:
+def _build_gaps(sources: list, errors: dict, source_summary: dict,
+                 shui5_channels: dict | None = None) -> list:
     """把源级失败翻译成"缺了哪一层 + 怎么处理"，供上层照抄，不用自己推断。
 
-    两条判定：
+    三条判定：
       1. 该源自己报了错（被拦、接口异常）→ 记一条缺口；
-      2. 税屋的链接靠 360 的 site:shui5.cn 检索取得，所以 360 被拦而税屋又
-         0 条时，税屋那条空结果不是"税屋没有内容"，是被 360 连带的——必须
-         标成 blocked_by，否则会被读成"该主题没有实务解读"。
+      2. 税屋有两头检索（360 的 site:shui5.cn 与站内原生检索，见
+         `tax_shui5.search_shui5`）。只有这一轮**没走站内那一路**时，
+         "360 被拦而税屋 0 条"才是被 360 连带的，标 blocked_by；
+      3. 站内那一路走通了却还是 0 条，就不能再甩给 360——那是两条通道
+         各自这一轮没命中，归到税屋自己身上。
     """
     gaps = []
     for src in sources:
@@ -164,17 +168,32 @@ def _build_gaps(sources: list, errors: dict, source_summary: dict) -> list:
                 "do_not_substitute": True,
             })
 
+    ch = shui5_channels or {}
+    native_status = ch.get("站内", "")
+    # "命中/0 条" 才算这一路真跑过；"没走成/未走" 都还是没走到
+    native_ran = native_status.startswith(("命中", "0 条"))
     if ("so360" in errors and "shui5" in sources
             and not source_summary.get("shui5")
             and not any(g["source"] == "shui5" for g in gaps)):
-        gaps.append({
-            "source": "shui5",
-            "label": SOURCE_LABELS.get("shui5", "shui5"),
-            "reason": "360 被拦，而税屋链接是靠 360 的 site:shui5.cn 检索取得的",
-            "impact": "税屋这一层的空结果是被 360 连带的，不代表税屋没有内容",
-            "blocked_by": "so360",
-            "do_not_substitute": True,
-        })
+        if native_ran:
+            gaps.append({
+                "source": "shui5",
+                "label": SOURCE_LABELS.get("shui5", "shui5"),
+                "reason": f"360 被拦，站内原生检索这一轮也没命中（{native_status}）",
+                "impact": "两条通道各按自己的排序取数，这一轮各 0 条只说明没取到，"
+                          "不代表税屋没有这个主题的解读",
+                "do_not_substitute": True,
+            })
+        else:
+            gaps.append({
+                "source": "shui5",
+                "label": SOURCE_LABELS.get("shui5", "shui5"),
+                "reason": "360 被拦，而这一轮税屋只走了 360 的 site:shui5.cn 那一路"
+                          f"（站内那一路：{native_status or '本轮未走'}）",
+                "impact": "税屋这一层的空结果是被 360 连带的，不代表税屋没有内容",
+                "blocked_by": "so360",
+                "do_not_substitute": True,
+            })
     return gaps
 
 
@@ -380,7 +399,8 @@ def aggregate_search(keyword: str, *,
         s: len(results[s].get("results", [])) if results.get(s) else 0
         for s in sources
     }
-    gaps = _build_gaps(sources, errors, source_summary)
+    gaps = _build_gaps(sources, errors, source_summary,
+                       (results.get("shui5") or {}).get("_channels"))
     out = {
         "keyword": keyword,
         "total_sources": len(sources),
