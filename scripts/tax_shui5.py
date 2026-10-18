@@ -63,7 +63,7 @@ Usage:
   python tax_shui5.py --list 实务解读 --pages 2     # 不检索，直接取栏目清单
   python tax_shui5.py --tag 增值税法 --pages 2      # 不检索，按标签取清单
   python tax_shui5.py --columns                     # 打印本地栏目表，不发请求
-  python tax_shui5.py --update-columns              # 重建栏目表并写盘（约 47 个请求）
+  python tax_shui5.py --update-columns              # 重建栏目表并写盘（首页+每栏一次，48 个请求）
 """
 
 import argparse
@@ -1060,7 +1060,7 @@ def main():
                    help=f"站内检索按总条数翻到底，上限 {SEARCH_ALL_MAX_PAGES} 页")
     p.add_argument("--columns", action="store_true", help="打印 data 里的栏目表，不发请求")
     p.add_argument("--update-columns", action="store_true",
-                   help="逐栏取一次列表页重建栏目表并写盘（47 栏约 47 个请求）")
+                   help="重建栏目表并写盘：首页一次 + 每栏一次 = 48 个请求")
     p.add_argument("--json", action="store_true")
     args = p.parse_args()
 
