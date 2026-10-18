@@ -431,6 +431,7 @@ python scripts/tax_shui5.py "<关键词>" --channel native --match title --all  
 python scripts/tax_shui5.py --list 实务解读 --pages 2     # 不检索，按栏目读它的清单
 python scripts/tax_shui5.py --tag 增值税法 --pages 2      # 不检索，按站点标签读清单
 python scripts/tax_shui5.py --columns                     # 打印栏目表（目录名/classid/页数条数），不发请求
+python scripts/tax_shui5.py --find-doc "财税[2019]13号"   # 只有一枚文号时回站内定位（默认交 20 条候选）
 python scripts/tax_wechat.py "<关键词>" --size 5 --read   # 公众号：连正文一起取
 python scripts/tax_browser.py --check                     # 探测本机已装浏览器，不下载
 ```

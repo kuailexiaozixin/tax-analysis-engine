@@ -1547,7 +1547,7 @@ class TestShui5ContinuationPages(unittest.TestCase):
 
 
 class TestShui5NativeSearch(unittest.TestCase):
-    """P0：站内原生检索——行解析、总数、两种提示页、翻页去重。"""
+    """P0：站内原生检索——行解析、总数、两份提示页、翻页去重。"""
 
     RESULT_URL = SH.SEARCH_RESULT + "?page=0&searchid=12345"
 
@@ -1946,6 +1946,245 @@ class TestAggregatorShui5Attribution(unittest.TestCase):
              mock.patch.object(AGG, "search_wechat", return_value=ok(0)):
             g = self._shui5_gap(AGG.aggregate_search("测试词", size=5))
         self.assertEqual("so360", g["blocked_by"])
+
+
+class TestShui5DocNumberLookup(unittest.TestCase):
+    """--find-doc 的查询阶梯。税屋标题里的文号一律写半角方括号，
+    官方那种六角括号要换过去再查，否则站内 0 条会被读成"税屋没有这份文件"。
+    阶梯各档的实测读数（2026-10-18，站内标题匹配）：`财税[2019]13号` 7 条、
+    `财税〔2019〕13号` 0 条、`财税[2016]36号` 20 条、`财税〔2016〕36号` 4 条。
+    """
+
+    def setUp(self):
+        self.calls = []
+        # 阶梯档与档之间按 SEARCH_MIN_GAP 隔开发，用例里不等
+        p = mock.patch.object(SH.time, "sleep")
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _run(self, doc, hits=None, session=object()):
+        """hits: 第几档命中（None 表示逐档走完都空）。session 传 None 走自己过 WAF 那一路。"""
+        def fake(q, size=5, session=None, match="title", **kw):
+            self.calls.append(q)
+            hit = (hits == len(self.calls))
+            return {"results": [SH._row_dict("命中：" + q, P1, "2019-01-17", "摘要")]
+                    if hit else [],
+                    "total": 1 if hit else 0,
+                    "_status": "命中 1 条" if hit else "0 条：站点回「没有搜索到相关的内容」"}
+
+        with mock.patch.object(SH, "search_native", fake):
+            return SH.find_by_doc_number(doc, session=session)
+
+    def test_full_width_is_asked_in_half_width_first(self):
+        r = self._run("财税〔2019〕13号", hits=1)
+        self.assertEqual(["财税[2019]13号"], self.calls, "第一档就该是半角形态")
+        self.assertEqual("财税[2019]13号", r["_query"])
+        self.assertEqual(1, len(r["_queries_tried"]), "命中了不再往后试")
+
+    def test_spaces_in_the_number_go_but_agency_spaces_stay(self):
+        """站点按整串匹配，编号里多一个空格就是另一条查询；机关名之间那个空格是文号的一部分。"""
+        self._run("财税〔 2019 〕 13 号", hits=1)
+        self.assertEqual(["财税[2019]13号"], self.calls)
+        self.calls.clear()
+        self._run("财政部 税务总局公告2019年第13号", hits=1)
+        self.assertEqual(["财政部 税务总局公告2019年第13号"], self.calls)
+        self.calls.clear()
+        self._run("财税 〔2019〕13号", hits=1)
+        self.assertEqual(["财税[2019]13号"], self.calls,
+                         "括号前面带空格也要整形——靠的就是字符类里那一枚开括号，"
+                         "去掉它这一串只能整串提交")
+
+    def test_the_ladder_ends_with_the_number_without_the_issuer(self):
+        r = self._run("税总发[1999]999号")
+        self.assertEqual(["税总发[1999]999号", "税总发〔1999〕999号", "[1999]999号"],
+                         self.calls)
+        self.assertTrue(r["_status"].startswith("0 条"),
+                        "跑通的阶梯不能报成没走成——聚合侧靠这一句分辨税屋空还是被连带")
+        for q in self.calls:
+            self.assertIn(q, r["_caveat"], "0 条要把试过的写法都交出去")
+        self.assertIn("不代表税屋没有这份文件", r["_caveat"])
+
+    def test_announcement_form_skips_the_full_width_stage(self):
+        """没有方括号就没有全角形态可试，第二档直接去掉机关名只留「2019年第13号」。"""
+        r = self._run("财政部 税务总局公告2019年第13号", hits=2)
+        self.assertEqual(["财政部 税务总局公告2019年第13号", "2019年第13号"], self.calls)
+        self.assertEqual(2, len(r["_queries_tried"]))
+        self.assertIn("与给进来的写法不同", r["_caveat"], "改过查询串要说明")
+
+    def test_a_half_width_hit_is_not_reported_as_rewritten(self):
+        r = self._run("财税[2016]36号", hits=1)
+        self.assertNotIn("写法不同", r["_caveat"])
+        self.assertIn("子串匹配", r["_caveat"], "候选里混着地方同号文件与解读文章，这条提醒常驻")
+
+    def test_garbage_input_is_asked_once_as_given(self):
+        """落不进「编号」那一段的串（如整句正文）按原样提交一次，不编出写法来。"""
+        r = self._run("执行至2024年4月15日，令第108号")
+        self.assertEqual(["执行至2024年4月15日，令第108号"], r["_queries_tried"])
+        self.assertNotIn("〔", r["_caveat"], "换不出全角形态，就不能在提醒里报出这一档")
+
+    def test_empty_input_asks_the_site_nothing(self):
+        r = self._run("   ")
+        self.assertEqual([], self.calls)
+        self.assertIn("没给文号", r["_status"])
+
+    def test_no_browser_sends_no_search(self):
+        with mock.patch.object(SH, "_pass_waf",
+                               return_value=(None, "无浏览器，改纯 HTTP 直连")):
+            r = self._run("财税[2016]36号", session=None)
+        self.assertEqual([], self.calls)
+        self.assertTrue(r["_status"].startswith("没走成"), r["_status"])
+
+    def test_size_defaults_to_twenty_candidates(self):
+        seen = []
+
+        def fake(q, size=5, session=None, match="title", **kw):
+            seen.append((q, size, match))
+            return {"results": [SH._row_dict("t", P1, "", "摘要")], "total": 1,
+                    "_status": "命中 1 条"}
+
+        with mock.patch.object(SH, "search_native", fake):
+            SH.find_by_doc_number("财税[2019]13号", session=object())
+        self.assertEqual([("财税[2019]13号", 20, "title")], seen,
+                         "文号定位要交候选，只给 5 条会把中央那份挤掉")
+
+
+class TestShui5StatusMark(unittest.TestCase):
+    """行标题尾部的站点时效标记，取值 2026-10-18 检索标记词的标题读数定为五种。"""
+
+    def test_mark_splits_out_and_title_stays_as_the_page(self):
+        row = SH._row_dict("财税[2019]13号 关于实施小微企业普惠性税收减免政策的通知[全文失效]",
+                           P1, "2019-01-17", "摘要")
+        self.assertEqual("全文失效", row["status_mark"])
+        self.assertIn("[全文失效]", row["title"], "剥掉标记会让标题与页面不一致")
+
+    def test_unmarked_row_does_not_carry_the_key(self):
+        row = SH._row_dict("留抵退税口径", P1, "2026-08-10", "摘要")
+        self.assertNotIn("status_mark", row)
+
+    def test_all_five_shipped_values_are_read(self):
+        for v in ("条款失效", "全文失效", "条款废止", "全文废止", "条款修订"):
+            self.assertEqual(v, SH._row_dict("某办法[%s]" % v, P1, "", "")["status_mark"])
+
+    def test_full_width_brackets_would_still_be_read(self):
+        """取样到的带标记标题一律半角；站点改用全角时不至于静默漏读。"""
+        self.assertEqual("条款修订",
+                         SH._row_dict("某办法〔条款修订〕", P1, "", "")["status_mark"])
+
+    def test_the_word_alone_without_brackets_is_not_a_mark(self):
+        """「全文失效」出现在标题正文里（如目录类文章的名目）不算站点标记。"""
+        self.assertNotIn("status_mark",
+                         SH._row_dict("全文失效和废止部分文件的通知", P1, "", ""))
+
+    def test_result_page_rows_carry_the_mark(self):
+        page = ('<div class="xwt2"><div class="xwt2_a">'
+                '<a href="https://www.shui5.cn/article/42/101.html" title='
+                '"湖南省水资源费改税试点实施办法[条款废止]">可见</a></div>'
+                '<div class="xwt2_c"><p class="p1">摘要</p></div>'
+                '<div class="xwt2_d"><p class="p1">来源</p></div>'
+                '<p class="p3">2019-11-30</p>'
+                '<p class="p4"><a href="/e/action/ListInfo/?classid=9">税收法规</a></p></div>')
+        rows = SH._search_rows(page)
+        self.assertEqual("条款废止", rows[0]["status_mark"])
+
+
+class TestShui5RepealNote(unittest.TestCase):
+    """正文开头的「税屋提示——」批注。批注后面紧跟的就是文件正文，正文里也有文号，
+    按整段读会把正文文号混进依据——按「。」切句、只留与时效有关的那几句。
+    这里的分句都取 2026-10-18 实测过的真实批注。
+    """
+
+    GANSU = ("税屋提示——依据甘人社通[2026]86号 甘肃省人力资源和社会保障厅关于宣布"
+             "失效和废止部分文件的通知，自2026年3月5日起本法规全文失效。 "
+             "各市州人力资源和社会保障局、财政局： 为深入贯彻党中央、国务院和省委、"
+             "省政府稳就业决策部署，根据《关于继续实施失业保险促进就业政策的通知》"
+             "（人社部发〔2024〕45号）")
+    CAIJIN = ("税屋提示——依据财金[2026]1号 财政部中国人民银行 金融监管总局关于优化实施"
+              "个人消费贷款财政贴息政策有关事项的通知，本通知部分条款修订。 "
+              "各省、自治区、直辖市、计划单列市财政厅(局)： 为贯彻落实党中央、国务院"
+              "关于大力提振消费的决策部署，现印发。")
+    ORDER108 = ("税屋提示——依据国家市场监督管理总局令第108号 国家市场监督管理总局关于"
+                "修改《个体工商户年度报告办法》等四部规章的决定，自2025年12月25日起，"
+                "本法规将第十一条、第十二条、第十三条、第十四条合并，作为第十一条，"
+                "修改为：“被列入经营异常名录的企业，符合下列条件之一的，可以依法向其"
+                "登记地市场监督管理部门申请移出经营异常名录： “(一)因未按照规定报送"
+                "并公示年度报告被列入经营异常名录，已经补报未报年份的年度报告并公示； "
+                "“(二)因未按")
+    TAIZHOU = ("税屋提示——依据国家税务总局台州市税务局公告2025年第1号 关于公布全文有效、"
+               "全文失效废止、部分条款失效废止和部分条款修改的税务规范性文件目录的公告 ，"
+               "自2025年8月15日本法规第五条已修订。 为进一步规范全市存量房交易纳税申报行为，"
+               "现予以发布，自2025年9月1日起施行。 闽商务规〔2024〕1104号")
+    TWO_ITEMS = ("税屋提示—— 1.依据闽商务规[2024]10号 福建省商务厅 福建省发展和改革委员会 "
+                 "福建省财政厅关于调整优化消费品以旧换新政策的公告，本法规部分条款修订优化，"
+                 "优化详情可查看闽商务规[2024]10号。 2.依据福建省商务厅 福建省发展和改革委员会 "
+                 "福建省财政厅关于调整消费品以旧换新部分政策的公告，本法规部分条款修订。 "
+                 "各市、县(区)人民政府： 《福建省加力支持消费品以旧换新实施方案》"
+                 "（发改环资〔2024〕1104号）")
+
+    def test_single_sentence_with_end_date(self):
+        self.assertEqual(
+            "依据甘人社通[2026]86号 甘肃省人力资源和社会保障厅关于宣布失效和废止部分文件的"
+            "通知，自2026年3月5日起本法规全文失效",
+            SH._repeal_note(self.GANSU))
+
+    def test_note_without_an_end_date_is_still_kept(self):
+        """不带止期那种（本通知部分条款修订）也要收下，不能因为没有日期就丢。"""
+        self.assertEqual(
+            "依据财金[2026]1号 财政部中国人民银行 金融监管总局关于优化实施个人消费贷款"
+            "财政贴息政策有关事项的通知，本通知部分条款修订",
+            SH._repeal_note(self.CAIJIN))
+
+    def test_numbered_items_are_both_kept(self):
+        note = SH._repeal_note(self.TWO_ITEMS)
+        self.assertTrue(note.startswith("1.依据闽商务规[2024]10号"), note[:40])
+        self.assertIn("2.依据福建省商务厅", note)
+        self.assertNotIn("各市、县", note)
+        self.assertNotIn("实施方案", note.split("2.依据")[1])
+
+    def test_numbered_date_clause_needs_the_head_pattern(self):
+        """取样那 11 篇的分句都带「依据」或「本法规/本通知」，这一形不是量出来的，
+        钉的是判据本身：只讲「自YYYY年起」又带序号的那一句，靠 `_TIP_KEEP_RE`
+        的「序号 + 自YYYY年」那一路留下；后面 `or "本法规" in seg` 那一路顶不上。
+        """
+        note = SH._repeal_note(
+            "税屋提示—— 1.自2026年1月1日起《××办法》第三条废止。 "
+            "2.本《办法》附件二同时作废。 各市财政局： 现印发给你们。")
+        self.assertEqual("1.自2026年1月1日起《××办法》第三条废止", note)
+
+    def test_body_doc_number_does_not_leak_into_the_basis(self):
+        """台州那篇的正文里另有闽商务规〔2024〕1104号，不能算进这一条的依据。"""
+        note = SH._repeal_note(self.TAIZHOU)
+        self.assertEqual(["2025年第1号"], SH.doc_numbers(SH._to_full_brackets(note)))
+        self.assertNotIn("1104", note)
+
+    def test_basis_reading_after_bracket_swap(self):
+        """税屋写成半角，tax_terms 认的是六角；不换括号一枚也抽不到。"""
+        note = SH._repeal_note(self.GANSU)
+        self.assertEqual([], SH.doc_numbers(note), "按原文（半角）抽不到")
+        self.assertEqual(["〔2026〕86号"], SH.doc_numbers(SH._to_full_brackets(note)))
+
+    def test_regulation_order_number_yields_no_basis(self):
+        """批注引用的是规章令号（令第108号），不在文号形态里：这一段只能交出提醒文字。"""
+        self.assertTrue(SH._repeal_note(self.ORDER108))
+        self.assertEqual([], SH.doc_numbers(
+            SH._to_full_brackets(SH._repeal_note(self.ORDER108))))
+
+    def test_quoted_clause_is_capped_by_the_window(self):
+        self.assertLessEqual(len(SH._repeal_note(self.ORDER108)), SH._TIP_MAX)
+
+    def test_no_anchor_and_non_validity_tip_both_return_empty(self):
+        self.assertEqual("", SH._repeal_note(
+            "各市州人力资源和社会保障局： 根据财税〔2019〕13号文件规定，自2026年1月1日起执行。"))
+        self.assertEqual("", SH._repeal_note("税屋提示：本文由用户上传，仅供参考。"))
+
+    def test_parse_article_carries_note_and_basis(self):
+        art = SH._parse_article(_article_page(self.GANSU, own_pages=(1,)), P1)
+        self.assertTrue(art["repeal_note"].startswith("依据甘人社通"))
+        self.assertEqual(["〔2026〕86号"], art["repeal_basis"])
+
+    def test_parse_article_omits_both_keys_without_a_note(self):
+        art = SH._parse_article(_article_page("正文第一段，没有批注。", own_pages=(1,)), P1)
+        self.assertNotIn("repeal_note", art)
+        self.assertNotIn("repeal_basis", art)
 
 
 # ── 用例自身的能力自检：规则不能永远绿 ─────────────────────────────────────

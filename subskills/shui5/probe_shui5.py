@@ -56,7 +56,7 @@ _QUIET = {"全部链接", "链接"}               # 打印时略去的长清单�
 # 挑战页判据：阿里云 WAF 的弹回页里同时带 arg1 与 renderData，正文页不带。
 IS_CHALLENGE = lambda page: "arg1" in page and "renderData" in page  # noqa: E731
 
-# 检索表单、结果行形状、正文容器边界、两种提示页文案一律取发货代码（`tax_shui5`）：
+# 检索表单、结果行形状、正文容器边界、两份提示页文案一律取发货代码（`tax_shui5`）：
 # 探针的意义是"复测文档里那些数字还成不成立"，判据本身不该在这儿另立一份。
 SEARCH_FORM = SH.SEARCH_FIELDS
 TOTAL_RE = SH._TOTAL_RE
@@ -178,8 +178,10 @@ def native_search(keyword: str, cookies: dict, line: int = 10) -> dict:
             out["错误"] = ("限流：站点要求两次检索之间隔 2 秒以上，本轮落进提示页「%s」"
                           % SH.RATE_LIMIT_MARK)
         elif SH.NO_RESULT_MARK in page and not rows:
-            out["错误"] = ("这一轮站内检索 0 条：站点回「%s」。空格词按 AND 收，词一窄整页"
-                          "就变成提示页；这是这一轮没取到，不是这一站没有内容" % SH.NO_RESULT_MARK)
+            out["错误"] = ("这一轮站内检索 0 条：站点回「%s」。这一页有两种成因——这一轮"
+                          "确实没命中的文章，或提交的参数站点不接受（tempid、tbname 换值就落在这里），"
+                          "按发出去的参数表反查；都不是\"这一站没有内容\"（词按整串匹配，一个概念一个词）"
+                          % SH.NO_RESULT_MARK)
         elif not rows:
             out["错误"] = "结果页里没有 div.xwt2 行：容器改版或落点不对"
     s.close()

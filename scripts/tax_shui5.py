@@ -62,6 +62,7 @@ Usage:
   python tax_shui5.py "增值税" --column 北京,深圳   # 限定栏目（自动换站内那一路）
   python tax_shui5.py --list 实务解读 --pages 2     # 不检索，直接取栏目清单
   python tax_shui5.py --tag 增值税法 --pages 2      # 不检索，按标签取清单
+  python tax_shui5.py --find-doc "财税[2019]13号"   # 按文号回站内定位，候选全部交出
   python tax_shui5.py --columns                     # 打印本地栏目表，不发请求
   python tax_shui5.py --update-columns              # 重建栏目表并写盘（首页+每栏一次，48 个请求）
 """
@@ -81,6 +82,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from tax_so360 import so360_search
+from tax_terms import doc_numbers
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -92,6 +94,12 @@ READ_INTERVAL = 2.0
 TIMEOUT_READ = 30
 
 # 站内原生检索（帝国 CMS）。表单字段是结果页自己带出来的，2026-10-18 实测照抄可用。
+# 站点认的入参只有四个：keyboard、classid（多值只用逗号形态）、starttime+endtime
+# （须成对）、show（只用下面 SHOW_BY_MATCH 的两个值）。line、orderby、exact、searchid
+# 提交进去被直接忽略：同词同限定下换这三枚任一枚，落点页的字节数、md5 与 searchid
+# 都与默认档一字不差——服务端没换查询，不是只换了排版。show 里多写一个站点没有的域
+# （subtitle）同样按默认三域返回。tempid 或 tbname 换成别的值则不接受，落点是提示页
+# 而不是报错。默认排序已经是发布日期倒序，没有可调排序的余地。
 SEARCH_FORM = SHUI5_BASE + "e/search/index.php"
 SEARCH_RESULT = SHUI5_BASE + "e/search/result/index.php"
 SEARCH_FIELDS = {"tbname": "article", "show": "title,keyboard,smalltext",
@@ -112,7 +120,8 @@ COLUMN_PAGES = SCRIPT_DIR.parent / "data" / "shui5_columns.json"
 TAG_RESULT = SHUI5_BASE + "e/tags/"
 # 续页上限：正文页码列表按篇给出，正常长文不到这个数；上限只防站点页码异常时把连读拖长
 MAX_CONTINUATION_PAGES = 12
-# 提示页的两种文案，实测各对应一件事：这一轮没命中 vs 请求太密
+# 提示页的两份文案。RATE_LIMIT_MARK 一件事对应一份页；NO_RESULT_MARK 那一份
+# 有两种成因（真零命中 / 参数不被接受），落点都是 /e/search/index.php，不 302。
 NO_RESULT_MARK = "没有搜索到相关的内容"
 RATE_LIMIT_MARK = "系统限制的搜索时间间隔"
 
@@ -148,6 +157,33 @@ _META_DES_RE = re.compile(r'<div class="articleDes">(.*?)</div>', re.S | re.I)
 _TIME_RE = re.compile(r"时间：\s*([0-9]{4}-[0-9]{2}-[0-9]{2})")
 _TAG_RE = re.compile(r"<[^>]+>")
 _PARA_RE = re.compile(r"</(?:p|div|li|tr|h[1-6])\s*>|<br\s*/?>", re.I)
+
+# 结果页/栏目页/标签页行标题尾部的时效标记，值域按 2026-10-18 检索标记词的标题读数
+# 定为五种：条款失效、全文失效、条款废止、全文废止、条款修订。站点写成半角方括号
+# （取样到的带标记标题一律如此，`财税[2019]13号 …[全文失效]`），全角也一并收下，
+# 站点改用全角时不至于静默漏读；全角形态本轮没在页面上取到。
+_STATUS_MARK_RE = re.compile(r"[\[〔]\s*(条款失效|全文失效|条款废止|全文废止|条款修订)\s*[\]〕]")
+
+# 文号里「编号」那一段：〔2019〕13号、[2019]13号、2019年第13号 三种写法都在这里。
+# 用在 --find-doc 的输入整形上——只把这一段内部与左侧的空白去掉，机关名之间的
+# 空格留着（站点按整串匹配，多一个空格就是另一条查询）。四类括号都要进字符集，
+# 漏了六角括号〔〕，「财税〔 2019 〕 13 号」这种带空格的写法就只能整串提交，
+# 命中的是站内根本不存在的形态。这一段要求四位年号在前、编号加「号」在后：
+# 规章令号「令第108号」没有四位年号，落不进来；「2024年4月15日」在「年」后面
+# 接不上一枚「号」，同样落不进来，两处都不会被误动。
+_DOC_SPAN_RE = re.compile(r"\s*[\[(［【〔]?\s*\d{4}\s*[年\])］】〕]?\s*第?"
+                          r"\s*[0-9一二三四五六七八九十百]+\s*号")
+
+# 正文里站点自加的效力批注「税屋提示——」。出现与否随文件走：标题带时效标记的
+# 13 篇取样全有批注，不带标记的 40 篇一篇也没有（逐轮读数与取样口径记在
+# subskills/shui5/NOTE.md「栏目与正文形态」）。
+# 批注后面紧跟的就是文件正文，正文里也有文号，所以按整段读会多收——按「。」切句，
+# 只留与时效有关的那几句。个别批注把修改后的条文整段引了进来，句号落在引文内部，
+# 这一类由窗口上限收口；完整文字本来就在 content 里，这一段只作定位。
+_TIP_ANCHOR = "税屋提示"
+_TIP_MAX = 300
+_TIP_HEAD_RE = re.compile(r"^税屋提示[—\-–\s]*")
+_TIP_KEEP_RE = re.compile(r"^(?:\d+\.\s*)?(?:依据|本法规|本通知|自\s*\d{4}年)")
 
 # 续页：只用本篇 ID 出现在 pagebreak 里的地址，不按"页面上有没有 $N 形态的链接"数——
 # 相关阅读区混着别人文章的续页链接，按形态数会把单页文章也判成分页文章。
@@ -208,6 +244,40 @@ def _make_session() -> requests.Session:
     return s
 
 
+def _repeal_note(content: str) -> str:
+    """从正文里抠出「税屋提示——」批注中与时效有关的分句，没有批注返回空串。
+
+    分句判据：以「依据」「本法规」「本通知」「自YYYY年」开头（可以带 `1.` 这样的序号），
+    或句中出现「本法规/本通知」。不满足的是批注后面那篇文件自己的正文。
+    实测过的四种句形都能收下：单句 `依据××，自2026年3月5日起本法规全文失效。`、
+    不带止期的 `依据××，本通知部分条款修订。`、带序号的多句 `1.依据××。 2.依据××。`、
+    以及 `依据××令第108号 …自2025年12月25日起，本法规将第十一条…修改为…`。
+    """
+    i = content.find(_TIP_ANCHOR)
+    if i < 0:
+        return ""
+    kept = []
+    for piece in content[i:i + _TIP_MAX].split("。"):
+        seg = re.sub(r"\s+", " ", _TIP_HEAD_RE.sub("", piece.strip()).strip())
+        if not seg:
+            continue
+        if _TIP_KEEP_RE.match(seg) or "本法规" in seg or "本通知" in seg:
+            kept.append(seg)
+    return "。".join(kept)
+
+
+def _to_full_brackets(text: str) -> str:
+    """把半角方括号里包住四位年号的那一段换成六角括号。
+
+    税屋标题与正文里的文号写成 `财税[2019]13号`，而 `tax_terms.doc_numbers` 认的是
+    官方那种 `〔〕`，直接喂过去一枚也抽不到（2026-10-18 取样 11 篇带「税屋提示」的
+    文章：按原文抽到 1 枚，换括号后抽到 4 枚；抽不到的那 7 篇里 6 篇批注写的是
+    「××令第108号」这类规章令号、1 篇写的是不带编号的公告名，都不在文号形态里）。
+    只换包着四位数字的那对括号，别处的方括号不动。
+    """
+    return re.sub(r"[\[［【]\s*(\d{4})\s*[\]］】]", r"〔\1〕", text or "")
+
+
 def _parse_article(page: str, url: str) -> dict:
     """从已放行的 HTML 里切出标题、日期、摘要、正文。"""
     out = {"url": url}
@@ -231,6 +301,13 @@ def _parse_article(page: str, url: str) -> dict:
     out["content"] = _to_text(m.group(1))
     if not out["content"]:
         out["_error"] = "正文容器为空"
+        return out
+    note = _repeal_note(out["content"])
+    if note:
+        out["repeal_note"] = note
+        basis = doc_numbers(_to_full_brackets(note))
+        if basis:
+            out["repeal_basis"] = basis
     return out
 
 
@@ -375,7 +452,11 @@ def fetch_shui5(url: str, session: requests.Session | None = None,
 
 
 def _row_dict(title: str, url: str, date: str, snippet: str, column: str = "") -> dict:
-    """两条检索通道共用的行形状，保证下游（去重、排序、界面）不分辨来源。"""
+    """两条检索通道共用的行形状，保证下游（去重、排序、界面）不分辨来源。
+
+    标题里的时效标记另起一个 `status_mark` 键，但没有标记的行不加这个键，
+    标记文本仍原样留在 title 里——剥掉它会让标题与页面不一致。
+    """
     row = {
         "title": title,
         "url": url,
@@ -386,6 +467,9 @@ def _row_dict(title: str, url: str, date: str, snippet: str, column: str = "") -
     }
     if column:
         row["column"] = column
+    mark = _STATUS_MARK_RE.search(title)
+    if mark:
+        row["status_mark"] = mark.group(1)
     return row
 
 
@@ -435,12 +519,25 @@ def search_native(keyword: str, size: int = 5, session: requests.Session | None 
                  只给 date_from 时这个缺口写进 _filter_note，不静默当成没限定。
       show       匹配域，broad=标题+关键词+摘要，title=只标题（433 条 / 150 条）。
 
-    提示页有两种，按文案分而不是按字节分（两者实测只差 31 字节）：
-      「没有搜索到相关的内容」= 这一轮站内检索没命中，是 0 条；
-      「系统限制的搜索时间间隔为 2 秒」= 请求太密，等过间隔重发一次。
+    这一路只认四个入参：keyboard、classid、starttime+endtime、show。line、orderby、
+    exact、searchid 提交进去站点直接忽略（换任一枚，落点页与默认档 md5 相同、
+    searchid 也复用同一枚），默认排序已经是发布日期倒序，所以没有可调的排序参数。
+    同一查询（词与限定完全相同）跨浏览器会话复用同一个 searchid，
+    落点与翻页地址因此可复现。
+
+    提示页两份，按文案判，不按页面大小判：
+      「没有搜索到相关的内容」有两种成因，落在同一份页面上分不开（2026-10-18 实测：
+      tempid=3、tbname=news、以及两个真的零命中词，读到的页面都是 1,222 字节、
+      md5 相同）：这一轮站内检索没命中，或者提交的参数站点不接受。
+      本函数只发白名单里的形态，收到它按 0 条记账；站点改版让白名单失效时，
+      这一档会整片报成 0 条，归因时先核对参数是否还被接受。
+      「系统限制的搜索时间间隔为 2 秒」= 请求太密，等过间隔重发一次（1,253 字节）。
+    两份提示页都停在 /e/search/index.php，不做 302，所以没有 searchid 可翻。
 
     Args:
-        keyword: 检索词。多词之间站点按 AND 收，词一窄就整页变成提示页，短词更稳。
+        keyword: 检索词。空格分隔的多个词不是 AND，站点按整串匹配：「法理阐释」1 条、
+                 「法理阐释 增值税留抵退税」0 条，「留抵退税」420 条、「留抵 退税」0 条。
+                 一个概念一个词，拆成空格串会把有内容的词读成 0 条。
         size: 返回条数上限，超过一页时按 page 继续取
         session: 已过 WAF 的会话；传空则自己过一次
         gap: 翻页与重试之间的间隔秒数，不低于站点自己声明的 2 秒
@@ -581,7 +678,9 @@ def search_shui5(keyword: str, size: int = 5, read_body: bool = False,
         {"keyword","total","results","searched_at","source","_channel",
          "_channels","_filter_note"?,"_error"?}
         results 每项含 title/url/date/snippet（站内那一路另有 column）；
-        read_body=True 时额外含 content 与 pages。
+        标题尾部带站点时效标记的那一行另有 status_mark，取值见 _STATUS_MARK_RE。
+        read_body=True 时额外含 content 与 pages；正文开头带「税屋提示——」批注的
+        那一篇另有 repeal_note。
         _channels 逐条写明这一轮每条通道走到哪一步——上层据此归因，
         不必再猜"税屋 0 条"是税屋空的还是 360 连带的。
     """
@@ -644,6 +743,10 @@ def search_shui5(keyword: str, size: int = 5, read_body: bool = False,
             row["date"] = art.get("date", "") or row["date"]
             if art.get("summary"):
                 row["summary"] = art["summary"]
+            if art.get("repeal_note"):
+                row["repeal_note"] = art["repeal_note"]
+            if art.get("repeal_basis"):
+                row["repeal_basis"] = art["repeal_basis"]
             if art.get("_error"):
                 row["_error"] = art["_error"]
             if art.get("_pages_error"):
@@ -667,6 +770,86 @@ def search_shui5(keyword: str, size: int = 5, read_body: bool = False,
     if how:
         out["_how"] = how
     return out
+
+
+def find_by_doc_number(doc_number: str, session: requests.Session | None = None,
+                       size: int = 20) -> dict:
+    """按文号回站内定位税屋那几篇：候选全部交出，不替读者挑一条。
+
+    括号形态是这个功能的主要坑。2026-10-18 实测同一枚文号两种写法各查一次：
+    `财税[2019]13号`（半角方括号）7 条、`财税〔2019〕13号`（全角六角括号）0 条；
+    `财税[2016]36号` 20 条、`财税〔2016〕36号` 4 条——税屋标题里的文号一律写半角，
+    官方文本那种六角括号只在少数文章里出现。所以查询串先换半角，0 条再退回全角试一次。
+    两种都空才去掉机关名只留「[年]序号」那一截，这一档连机关都不匹配了，
+    命中里必然混着同号不同机关的文件，读数里写明。
+
+    即便用完整文号查，站点做的是子串匹配：`财税[2019]13号` 那 7 条里只有 1 条
+    是财政部与税务总局发的那份，另外 5 条是沪财税、湘财税、闽财税、桂财税、藏财税
+    各自同号的地方文件，还有 1 篇是解读文章。标题、发文机关与栏目要逐条看，
+    不能拿第一条当答案。
+
+    只在标题里匹配（match="title"）：正文里援引了这枚文号的文章不算这篇的候选。
+
+    Args:
+        doc_number: 文号，全角半角都接受；编号那一段内部与左侧的空白会被去掉，
+                    机关名之间的空格按原样提交，不做拆分
+        session: 已过 WAF 的会话；传空则自己过一次（约 6 秒）
+        size: 最多交出几条候选
+
+    Returns:
+        {"doc_number","_query","_queries_tried","results","total","_status","_caveat"?}；
+        _query 是这一轮真正提交的查询串，走不通时 results 为空并在 _status 里写明停在哪一步。
+    """
+    # 编号内部与两侧的空白去掉，机关名之间的空格原样保留：站点按整串匹配，
+    # 拆掉「财政部 税务总局公告2019年第13号」中间那个空格就换成另一条查询串了。
+    raw = _DOC_SPAN_RE.sub(lambda m: re.sub(r"\s+", "", m.group(0)),
+                           (doc_number or "").strip())
+    if not raw:
+        return {"doc_number": doc_number, "_query": "", "_queries_tried": [],
+                "results": [], "total": None, "_status": "没走成：没给文号"}
+    ascii_form = raw
+    for a, b in (("〔", "["), ("〕", "]"), ("［", "["), ("］", "]"),
+                 ("【", "["), ("】", "]")):
+        ascii_form = ascii_form.replace(a, b)
+    full_form = ascii_form.replace("[", "〔").replace("]", "〕")
+    queries = [ascii_form]
+    if full_form != ascii_form:
+        queries.append(full_form)
+    # 第三档：去掉机关名，只留「[2019]13号」或「2019年第39号」
+    core = re.search(r"\d{4}年第[0-9一二三四五六七八九十百]+号|\[\d{4}\]第?[0-9一二三四五六七八九十百]+号",
+                     re.sub(r"\s+", "", ascii_form))
+    if core and core.group(0) not in queries:
+        queries.append(core.group(0))
+
+    own = session is None
+    if own:
+        session, how = _pass_waf()
+        if session is None:
+            return {"doc_number": doc_number, "_query": queries[0], "_queries_tried": [],
+                    "results": [], "total": None, "_status": f"没走成：{how}"}
+    last = {"results": [], "total": None, "_status": "没走成", "_queries_tried": []}
+    try:
+        for q in queries:
+            if last["_queries_tried"]:
+                time.sleep(SEARCH_MIN_GAP)
+            last = search_native(q, size=size, session=session, match="title")
+            last["doc_number"] = doc_number
+            last["_query"] = q
+            last["_queries_tried"] = queries[:queries.index(q) + 1]
+            if last["results"]:
+                last["_caveat"] = ("站点按子串匹配标题：候选里可能有地方机关在文号前加自家简称的"
+                                   "同号文件，也可能有只是提到这枚文号的解读文章，"
+                                   "按发文机关与标题逐条认定")
+                if q != raw:
+                    last["_caveat"] += f"；这一轮提交的查询串是「{q}」，与给进来的写法不同"
+                return last
+        last["_caveat"] = ("这些写法（%s）在站内标题里都 0 条。"
+                           "这不代表税屋没有这份文件——可能标题里根本不带这枚文号"
+                           % "、".join(queries))
+        return last
+    finally:
+        if own:
+            session.close()
 
 
 def load_columns() -> list:
@@ -1039,7 +1222,9 @@ def main():
     p = argparse.ArgumentParser(description="税屋 (shui5.cn) 检索、栏目清单与标签清单")
     p.add_argument("keyword", nargs="?",
                    help="检索词。用 --column / --tag 取清单时可以不填")
-    p.add_argument("--size", type=int, default=5)
+    p.add_argument("--size", type=int, default=None,
+                   help="返回条数上限，默认 5；--find-doc 那一档默认 20，"
+                        "因为同一枚文号的候选常常不止五条")
     p.add_argument("--read", action="store_true", help="同时取回正文（较慢）")
     p.add_argument("--channel", choices=["auto", "so360", "native"], default="auto",
                    help="auto=先 360、被拦或 0 条时换站内；so360=只走 360；"
@@ -1058,6 +1243,9 @@ def main():
                    help="broad=标题+关键词+摘要，title=只在标题里匹配")
     p.add_argument("--all", action="store_true",
                    help=f"站内检索按总条数翻到底，上限 {SEARCH_ALL_MAX_PAGES} 页")
+    p.add_argument("--find-doc", metavar="文号",
+                   help="不检索关键词，改按文号回站内定位：半角/全角括号与带不带空格都接受，"
+                        "候选全部交出（站点按子串匹配，同号不同机关会一起回来）")
     p.add_argument("--columns", action="store_true", help="打印 data 里的栏目表，不发请求")
     p.add_argument("--update-columns", action="store_true",
                    help="重建栏目表并写盘：首页一次 + 每栏一次 = 48 个请求")
@@ -1093,6 +1281,21 @@ def main():
         _print_table(rows)
         return
 
+    size = args.size if args.size is not None else (20 if args.find_doc else 5)
+
+    if args.find_doc:
+        got = find_by_doc_number(args.find_doc, size=size)
+        if args.json:
+            print(json.dumps(got, ensure_ascii=False, indent=2))
+        else:
+            print(f"文号「{got['doc_number']}」| 提交串「{got['_query']}」| {got['_status']}")
+            if got.get("_caveat"):
+                print(f"注意：{got['_caveat']}")
+            _print_rows(got["results"])
+        if not got["results"]:
+            sys.exit(1)
+        return
+
     if args.tag or args.list:
         got = (list_tag(args.tag, pages=args.pages) if args.tag
                else list_column(args.list, pages=args.pages))
@@ -1108,9 +1311,9 @@ def main():
         return
 
     if not args.keyword:
-        p.error("缺检索词（或改用 --column/--list/--tag/--columns）")
+        p.error("缺检索词（或改用 --column/--list/--tag/--find-doc/--columns）")
 
-    result = search_shui5(args.keyword, size=args.size, read_body=args.read,
+    result = search_shui5(args.keyword, size=size, read_body=args.read,
                           channel=args.channel, column=args.column,
                           date_from=args.date_from, date_to=args.date_to,
                           match=args.match, fetch_all=args.all)
