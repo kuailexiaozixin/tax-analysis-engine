@@ -530,7 +530,8 @@ def search_native(keyword: str, size: int = 5, session: requests.Session | None 
       tempid=3、tbname=news、以及两个真的零命中词，读到的页面都是 1,222 字节、
       md5 相同）：这一轮站内检索没命中，或者提交的参数站点不接受。
       本函数只发白名单里的形态，收到它按 0 条记账；站点改版让白名单失效时，
-      这一档会整片报成 0 条，归因时先核对参数是否还被接受。
+      这一档会整片报成 0 条，所以 `_status` 里把"两种成因分不开"这句一起交出去，
+      上层归因时不用翻文档也不会把参数问题读成"这一站没有内容"。
       「系统限制的搜索时间间隔为 2 秒」= 请求太密，等过间隔重发一次（1,253 字节）。
     两份提示页都停在 /e/search/index.php，不做 302，所以没有 searchid 可翻。
 
@@ -593,7 +594,8 @@ def search_native(keyword: str, size: int = 5, session: requests.Session | None 
                         "_status": "没走成：站点提示两次检索须间隔 2 秒以上，重发一次仍被限"}
         if NO_RESULT_MARK in page:
             out = {"results": [], "total": 0,
-                   "_status": "0 条：站点回「没有搜索到相关的内容」"}
+                   "_status": "0 条：站点回「没有搜索到相关的内容」，这一页两种成因分不开"
+                              "（站内确实没有 / 这一档参数站点不接受）"}
             if note:
                 out["_filter_note"] = note
             return out
@@ -1046,6 +1048,9 @@ def tags_of(page: str) -> list:
     """页面里站点自己在用的标签名（已解码），按出现顺序去重。
 
     标签名只能从页面链接里取：站点没有可枚举的标签清单，离线猜名只会落进空结果。
+    取的对象是栏目页与标签页。文章页上那一对是页面模板的固定导航（2026-10-18 四篇
+    取样回同一对，链接位置比正文容器起点早 5,949–6,482 字符），不是"本篇打了哪些标签"，
+    别拿它当相关文章的入口——按标签取文章用 list_tag。
     """
     out, seen = [], set()
     for raw in _TAG_HREF_RE.findall(page):

@@ -1607,6 +1607,13 @@ class TestShui5NativeSearch(unittest.TestCase):
         self.assertEqual(0, r["total"])
         self.assertTrue(r["_status"].startswith("0 条"), r["_status"])
 
+    def test_zero_hit_status_hands_both_causes_to_the_caller(self):
+        r, _ = self._search({"posts": ["<div>%s</div>" % SH.NO_RESULT_MARK], "gets": {}})
+        self.assertIn("两种成因分不开", r["_status"],
+                      "同一份页面既是真零命中也可能是参数被拒，归因要随读数交出去")
+        self.assertIn("站内确实没有", r["_status"])
+        self.assertIn("不接受", r["_status"])
+
     def test_rate_limit_marker_retries_once_and_can_still_come_back_empty(self):
         limit = "<div>%s,请稍后再搜索</div>" % SH.RATE_LIMIT_MARK
         r, s = self._search({"posts": [limit, "<div>%s</div>" % SH.NO_RESULT_MARK],
