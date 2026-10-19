@@ -440,7 +440,7 @@ python scripts/tax_shui5.py --find-doc "财税[2019]13号"   # 只有一枚文�
 python scripts/tax_ctax.py "<关键词>" --size 5 --read       # 中国税网：连正文一起取（无凭据、不启浏览器）
 python scripts/tax_ctax.py "<关键词>" --column 政策解读 --size 10   # 限定一栏（栏目名或 nodeID，只认叶节点）
 python scripts/tax_ctax.py "<关键词>" --from 2025-01-01 --to 2025-12-31  # 两枚各自独立，单给一侧照常收
-python scripts/tax_ctax.py "<关键词>" --match title --all --max-rows 500  # 只匹配标题，按 foundNum 翻到底
+python scripts/tax_ctax.py "<关键词>" --match title --all --max-rows 500  # 只匹配标题，翻到底但最多取 500 行
 python scripts/tax_ctax.py --find-doc "财政部 税务总局公告2026年第29号"   # 按文号定位并把一稿多栏并成一条
 python scripts/tax_ctax.py --list 税案通报 --pages 2         # 不检索，按栏目列表页读清单（只铺到第 10 页）
 python scripts/tax_ctax.py --columns                        # 打印本地栏目表，不发请求
@@ -478,6 +478,10 @@ JSON 接口 `GET /xy/Search.do`，无 WAF、不校验 UA、不需要凭据，也
 `_filter_note`；`channel=0` 在这一层等于不提交那一枚、拿到网站与触屏的并集，只有站点不认的
 值才打到那份 37 字节的空结构。三种越界的回法（HTTP 500、静默按缺省、回空结构）逐档记在
 `subskills/ctaxnews/NOTE.md`，取数前判据在 `subskills/ctaxnews/SKILL.md`。
+`match`、`channel`、`size`、`max_rows`、`--pages` 这五枚的取值域在本层是**发出之前**判的：
+越界的写法不回半份数据，`_status` 直接写「没走成」并带上那一枚的值域；`--size` 收的是合并同稿后的
+**篇**数、`--max-rows` 收的是站点给的**行**数，两枚都只收紧，谁小谁生效，翻到底时撞到行数上限会在
+`_status` 写明「已到 max_rows=N 行的上限」。
 两条硬边界：一篇稿挂几栏就出几行且 `articleid` 各不相同，`dedup_rows` 按「标题＋发布日期＋文号」
 并成一条，所以收满按并完的篇数算；2023-02 改版前的行地址缺一段目录，正文永久取不到，
 `_address_state` 只看段数就能判定，这类行只当题录（`_url_state` 写明原因，不重试）。
@@ -651,8 +655,8 @@ NPC 验到 16 路并发、三趟共 104 次请求，下面那三种形态一个�
 | 税屋正文取不到 | 每条结果带 `_error` | 确认 `--check` 是否探到浏览器；仍失败改用公众号。**先分清是没凭据还是站点上没这篇**：没凭据时任何地址都回同一份挑战页，判据与凭据寿命见 `subskills/shui5/SKILL.md` |
 | 360 读超时 | 程序已重试 | 重跑一次；再失败改用更短的关键词 |
 | 总局清单为空却报告了命中数 | `_empty_reason` 分两种成因：写"已翻过末页"就是翻页参数越界，按已取回的清单下结论即可；写"该页在末页之内却没给条目清单"就是这一轮没取到清单，换检索词再取一轮才有结论 | 两种都不等于"库里没有这份文件"，答案里不得据空清单说无此规定 |
-| 中国税网返回"没走成" | `_status` 以「没走成」开头的是**请求被拦在发出之前**：栏目名不在 `data/ctax_columns.json`、或与表里多行重名（`column_lookup` 的 `ambiguous`/`missing`，会把候选一并列出）、或空词没带栏目、或日期不是 `yyyy-mm-dd`。绕过命令行直接给 `_search_once` 传越界值时，站点那一路回 500，`_status` 末尾带 HTTP 码与字节数并写明"不是限流" | 换限定条件重发，别把它当成"站内没有"；站内确实没命中时 `_status` 写的是「0 条：这一词（连同本轮限定）在站内没有命中」，两句不是一回事 |
-| 中国税网取到的条数明显比预期少 | `_status` 写「取到 N 条，这一词共 M 条；已到页数上限」就是没翻到底（`SEARCH_MAX_PAGES` × `SEARCH_PAGE_SIZE`），写「合并同一篇挂多栏的行 K 行」则是一篇稿挂了几栏出几行被并成一条 | 前者加 `--all --max-rows`，后者是正常合并、不是丢数据；两种都不读成"这一词只有这些" |
+| 中国税网返回"没走成" | `_status` 以「没走成」开头的是**请求被拦在发出之前**：栏目名不在 `data/ctax_columns.json`、或与表里多行重名（`column_lookup` 的 `ambiguous`/`missing`，会把候选一并列出）、或空词没带栏目、或日期不是 `yyyy-mm-dd`、或 `match` 不在 `MATCH_POSITIONS` 的四枚里、或 `channel` 不在 0/1/2 里、或不收满时 `size` 不是正整数、或 `max_rows` 为负、或 `--list` 的 `--pages` 非正。绕过命令行直接给 `_search_once` 传越界值时，站点那一路回 500，`_status` 末尾带 HTTP 码与字节数并写明"不是限流" | 换限定条件重发，别把它当成"站内没有"；站内确实没命中时 `_status` 写的是「0 条：这一词（连同本轮限定）在站内没有命中」，两句不是一回事 |
+| 中国税网取到的条数明显比预期少 | `_status` 写「取到 N 条，这一词共 M 条；已到页数上限」就是没翻到底（`SEARCH_MAX_PAGES` × `SEARCH_PAGE_SIZE`），写「已到 max_rows=N 行的上限」就是先撞到 `--max-rows` 那枚行数预算，写「合并同一篇挂多栏的行 K 行」则是一篇稿挂了几栏出几行被并成一条 | 第一种加 `--all`（要控制花费就配 `--max-rows`），第二种是 `--max-rows` 给的预算用完了、想多要就加大它或去掉，第三种是正常合并、不是丢数据；三种都不读成"这一词只有这些" |
 | 中国税网正文取不到 | 该行带 `_url_state`，写的是地址缺一段目录（2023-02 前的老行，回 500 与一份 572 字节错误页） | 只用题录字段（标题／发布日期／文号／发文机关），正文回官方库或改版后的转载件；**不重试**，这一站错误地址回 500 不是 404，重试没有意义还占间隔 |
 | 全部为空 | 五源无结果 | 放宽关键词、换源、告知用户并建议 12366 |
 | 子技能限流 | HTTP 429 | 等一分钟再试；准则条文一次取全篇（`ref/{slug}`），别为凑证据面猛刷搜索 |

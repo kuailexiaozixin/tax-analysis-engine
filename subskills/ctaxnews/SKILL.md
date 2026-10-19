@@ -51,6 +51,15 @@ description: |
 （同一枚「增值税」实测：只给起始 2,537 行、只给截止 45,739 行、成对取 2025 全年 1,405 行），
 `search_ctax` 也只在参数有值时才提交那一枚。
 
+**取值域在本层先判，判过才发**。`search_ctax` 交出「没走成」的六种写法都是零请求退出：
+空词没限栏目、日期非 `yyyy-mm-dd`、`match` 不在 `MATCH_POSITIONS` 那四枚里、`channel` 不在
+0/1/2 里、不收满时 `size` 不是正整数、`max_rows` 为负；`--list` 那一路再多一枚，`pages` 非正也不发。
+两处拦停的理由不同：拼错的 `match` 过去会换成 `q` 发出去，取回的是全文那一摞，读数看着像
+"标题限定生效了"；越界的 `channel` 过去会打到站点那份 37 字节空结构，那句与"这一词没命中"
+长得一样。`--size` 收的是合并同稿后的**篇**数，`--max-rows` 收的是站点给的**行**数，
+两枚都只收紧（取小的那一份），翻到底撞到行数上限时 `_status` 写「已到 max_rows=N 行的上限」，
+不写"这一词只有这些"。
+
 **第三步 栏目限定只认叶节点，查不到或有重名就整体报缺**。`nodeID` 给父节点回 0 条而它下面
 确实挂着文章（实测父 24 回 0、其子叶 8215 回 23），这一条写在 `_filter_note` 里，
 不静默当成"这一栏没有内容"。栏目名换算成 nodeID 只查 `data/ctax_columns.json`，
@@ -102,7 +111,7 @@ python scripts/tax_ctax.py "研发费用加计扣除" --size 5 --json          #
 python scripts/tax_ctax.py "增值税" --match title --size 20           # 只匹配标题
 python scripts/tax_ctax.py "留抵退税" --column 政策解读 --size 10      # 限定一栏（名称或 nodeID）
 python scripts/tax_ctax.py "增值税" --column 63 --from 2025-01-01 --to 2025-12-31
-python scripts/tax_ctax.py "留抵退税" --all --max-rows 500            # 按 foundNum 翻页，上限见 SEARCH_MAX_PAGES
+python scripts/tax_ctax.py "留抵退税" --all --max-rows 500            # 按 foundNum 翻页，先到 500 行收口
 python scripts/tax_ctax.py --find-doc "财政部 税务总局公告2026年第29号"   # 按文号定位并合并同稿多栏
 python scripts/tax_ctax.py --list 税案通报 --pages 2                  # 不检索，按栏目列表页取清单
 python scripts/tax_ctax.py --columns                                # 打印本地栏目表，不发请求
@@ -113,8 +122,9 @@ python subskills/ctaxnews/probe_ctaxnews.py --items 3,5 --keyword 留抵退税  
 ```
 
 命令行与函数同一份判据。`--channel 0` 在本层等于不提交这一枚，拿到的是网站与触屏的并集；
-`--channel 3` 这种站点不认的值才打到那一份 37 字节的空结构，`_status` 里读成 0 条——
-这一条写在 `NOTE.md`，不要当成"这一词没命中"。
+`--channel 3` 这类站点不认的值现在发不出去（`_status` 以「没走成」开头，零请求），
+那一份 37 字节的空结构只在直接给 `_search_once` 传越界值时才拿得到——站点侧的这一档记在
+`NOTE.md`，读的时候不要把它当成"这一词没命中"。
 
 ## 栏目表与整栏行数
 
@@ -153,8 +163,8 @@ python subskills/ctaxnews/probe_ctaxnews.py --items 3,5 --keyword 留抵退税  
 2. **不给地方规定的原文替代**：省局原文在母技能 ③ L3 那一路，税网的地方税收法规栏是转载与解读，
    引地方规定仍要回官方站点核对原文。
 3. **不给整站全量**：栏目页只铺 10 页；检索取全的上限是 `SEARCH_MAX_PAGES` 页 ×
-   `SEARCH_PAGE_SIZE` 行，撞到上限时 `_status` 写明只取了多少行、总条数是多少，
-   不把"取到的这一段"读成"这一词只有这些"。
+   `SEARCH_PAGE_SIZE` 行，给了 `--max-rows` 时先到那一枚行数就收口。两种都只在 `_status`
+   写明取了多少行、总条数是多少与撞到的是哪一枚上限，不把"取到的这一段"读成"这一词只有这些"。
 4. **不给 2023-02 之前的正文**：那一年的行地址缺栏目目录段，取不到（取样 2,617 行里 1,834 行如此）。
    题录字段仍可取，正文回官方库或后来的转载件。
 5. **不给触屏端**：`channel=2` 那一路只有 18 行 2019 年的微信转载，且地址全部取不到，

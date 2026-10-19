@@ -2383,6 +2383,67 @@ class TestCtaxSearchContract(_CtaxOffline):
         self.assertIn("HTTP 500", r["_status"])
         self.assertIn("不是限流", r["_status"])
 
+    @staticmethod
+    def _wide_pages(count):
+        """备 count 页、每页 SEARCH_PAGE_SIZE 行且行行不同篇的清单，foundNum 给一份取不完的数。"""
+        pages = []
+        for p in range(count):
+            rows = [_ctax_row_json(title="第%d页第%d行" % (p, i),
+                                   articleid=str(300000 + p * 1000 + i), subtitle="")
+                    for i in range(CT.SEARCH_PAGE_SIZE)]
+            pages.append(_CtaxResp(_ctax_json(rows, found=100000)))
+        return pages
+
+    def test_fetch_all_stops_at_max_rows(self):
+        """--max-rows 写的是行数上限，翻到底那一档过去只认页数，40 发交回 2000 行。"""
+        s = _CtaxSession({CTAX_SEARCH: self._wide_pages(6)})
+        r = CT.search_ctax("增值税", fetch_all=True, max_rows=60, session=s)
+        self.assertEqual([1, 2], [q["pageNo"] for q in s.sent_params])
+        self.assertEqual(60, len(r["results"]))
+        self.assertIn("max_rows=60 行的上限", r["_status"])
+        self.assertIn("不是这一词只有这些", r["_status"])
+
+    def test_max_rows_only_tightens_and_never_expands_size(self):
+        s = _CtaxSession({CTAX_SEARCH: self._wide_pages(6)})
+        r = CT.search_ctax("增值税", size=1, max_rows=120, session=s)
+        self.assertEqual(1, len(s.requested))
+        self.assertEqual(1, len(r["results"]), "max_rows 不能反过来把 size 顶开")
+
+    def test_channel_outside_the_sites_domain_is_refused(self):
+        """站点给 3、负数回一份 37 字节空结构，那句读数跟"这一词没命中"长得一样。"""
+        for ch in (3, 20, -1):
+            s = _CtaxSession({})
+            r = CT.search_ctax("增值税", size=1, channel=ch, session=s)
+            self.assertEqual([], s.requested, "越界的 channel 不该发出去")
+            self.assertTrue(r["_status"].startswith("没走成"), r["_status"])
+            self.assertIn("37 字节", r["_status"])
+
+    def test_match_outside_the_four_slots_is_refused(self):
+        """拼错的 match 过去会换成 q 发出去，交回的读数是全文那一路的，看着像限定生效了。"""
+        for m in ("titel", "Tile", ""):
+            s = _CtaxSession({})
+            r = CT.search_ctax("增值税", size=1, match=m, session=s)
+            self.assertEqual([], s.requested)
+            self.assertTrue(r["_status"].startswith("没走成"), r["_status"])
+            self.assertIn("四枚", r["_status"])
+
+    def test_non_positive_size_is_refused_unless_paging_to_the_end(self):
+        s = _CtaxSession({})
+        for size in (0, -1):
+            r = CT.search_ctax("增值税", size=size, session=s)
+            self.assertEqual([], s.requested, "size=0 过去白发一次请求再交回空清单")
+            self.assertIn("一篇也不要", r["_status"])
+        # 翻到底这一档不看 size：find_by_doc_number 按 size=0 加 max_rows 走
+        s2 = _CtaxSession({CTAX_SEARCH: _CtaxResp(_ctax_json([_ctax_row_json()], found=1))})
+        CT.search_ctax("增值税", size=0, fetch_all=True, session=s2)
+        self.assertEqual(1, len(s2.requested))
+
+    def test_negative_max_rows_is_refused(self):
+        s = _CtaxSession({})
+        r = CT.search_ctax("增值税", fetch_all=True, max_rows=-1, session=s)
+        self.assertEqual([], s.requested)
+        self.assertIn("负数", r["_status"])
+
 
 class TestCtaxColumnScope(_CtaxOffline):
     """栏目限定的三种判据：唯一命中、重名、表里没有。后两种都不发出请求。"""
@@ -2798,6 +2859,15 @@ class TestCtaxColumnPageRows(unittest.TestCase):
         self.assertEqual(1, len(rows))
         self.assertTrue(sliced)
         self.assertEqual("案情摘要两行", rows[0]["snippet"])
+
+    def test_pages_below_one_is_refused_instead_of_reading_one_page(self):
+        """--pages 0 与负数过去落到 max(pages, 1)，交回的清单不在请求里。"""
+        for pages in (0, -1):
+            s = _CtaxSession({})
+            r = CT.list_column("63", pages=pages, session=s)
+            self.assertEqual([], s.requested)
+            self.assertTrue(r["_status"].startswith("没走成"), r["_status"])
+            self.assertIn("一页也不要", r["_status"])
 
 
 class TestCtaxSubSkillDocHooks(unittest.TestCase):

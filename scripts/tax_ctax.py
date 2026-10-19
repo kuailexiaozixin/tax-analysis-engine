@@ -89,6 +89,14 @@ CHANNEL_WEB = 1
 CHANNEL_TOUCH = 2
 SITE_ID = 2
 PAGE_SIZE_MAX = 5000
+# 匹配域靠"提交哪一枚位置参数"表达，不给 q 加限定。站点认 q/title/content/keyword/author
+# 五枚、各只单用；本层的 content 走 q=（全文档），站点那枚 content= 只匹配正文、比 q 窄，
+# 本层没接，两档差异的计数记在 NOTE.md「Search.do 的参数值域」。
+MATCH_POSITIONS = {"content": "q", "title": "title",
+                   "keyword": "keyword", "author": "author"}
+# 本层的 0 = 不提交这一枚（拿到两端并集）；站点侧 0、3、20、-1 四枚实测回同一份
+# 37 字节空结构（逐字节读数见 NOTE.md「触屏端与整站规模」）。
+CHANNELS_ACCEPTED = (CHANNEL_WEB, CHANNEL_TOUCH)
 SEARCH_PAGE_SIZE = 50
 # 检索连翻的页数上限。--all 按 foundNum 翻到底，防的是「增值税」那种 46,871 条的宽词。
 SEARCH_MAX_PAGES = 40
@@ -294,10 +302,15 @@ def search_ctax(keyword: str, size: int = 5, *, node=None, date_from: str = "",
                 而该栏发布年份实际只铺到 2020-2025，那个 0 是真的没有，不是过滤失效）。
       match     提交哪一枚位置参数：content→`q`（全文，默认）、title→只匹配标题、
                 keyword→只匹配站点的关键词字段、author→只匹配 author（那一段装的是
-                成文日期，实际用处有限）。取值越界不报错，站点把它当缺省。
+                成文日期，实际用处有限）。这四枚之外的取值不发出去——本层过去会静默
+                回落到 q，那份读数看着像"限定生效了"其实没有，所以拦在发出之前。
       channel   1=网站（默认）。2=触屏端只有 18 行 2019 年的微信转载且地址全失效，
-                取不到正文；不传 channel 是两端的并集（同一枚词 46,889 = 网站 46,871 + 触屏 18）。
-      fetch_all 按站点报的 foundNum 翻到底，上限 max_rows 或 SEARCH_MAX_PAGES 页。
+                取不到正文；0 是不提交这一枚，拿到两端的并集（同一枚词 46,889 = 网站 46,871 + 触屏 18）。
+                这三枚之外的值不发出去：站点回一份 37 字节的空结构，读起来跟"这一词没命中"一样。
+      size      取回多少**篇**（按 dedup_rows 合并后的篇数收，不是站点给的行数）。
+                不翻到底时必须是正整数，0 与负数不发请求。
+      fetch_all 按站点报的 foundNum 翻到底；给了 max_rows 先到 max_rows 行收口，
+                否则到 SEARCH_MAX_PAGES 页。这一档不看 size，所以 max_rows 之外不必给正数。
 
     返回 {"results","total","_status","_pages","_filter_note"?,"_error"?}；
     total 是站点报的这一词总条数。检索词的写法只有一条要注意：`q` 按整串匹配、
@@ -331,6 +344,23 @@ def search_ctax(keyword: str, size: int = 5, *, node=None, date_from: str = "",
             return {"results": [], "total": None,
                     "_status": f"没走成：{label}日期「{d}」不是 yyyy-mm-dd 形态，"
                                f"站点这一档越界直接回 HTTP 500"}
+    if match not in MATCH_POSITIONS:
+        return {"results": [], "total": None,
+                "_status": f"没走成：match「{match}」不在站点认的四枚里"
+                           f"（{'、'.join(MATCH_POSITIONS)}）；本层不把它换成 q 发出去，"
+                           f"那看着像限定了匹配域、其实取的是全文"}
+    if channel not in CHANNELS_ACCEPTED and channel != 0:
+        return {"results": [], "total": None,
+                "_status": f"没走成：channel={channel} 站点不认（只收 {CHANNEL_WEB}=网站、"
+                           f"{CHANNEL_TOUCH}=触屏端，本层的 0 = 不提交、取两端并集）；"
+                           f"越界值回一份 37 字节空结构，读起来跟这一词没命中一样"}
+    if max_rows < 0:
+        return {"results": [], "total": None,
+                "_status": f"没走成：max_rows={max_rows} 是负数（0 = 不设行数上限）"}
+    if not fetch_all and size < 1:
+        return {"results": [], "total": None,
+                "_status": f"没走成：size={size}，收满按篇数算，这个值一篇也不要；"
+                           f"要按 foundNum 翻到底请给 fetch_all=True"}
 
     params = {"pageNo": 1, "pageSize": SEARCH_PAGE_SIZE,
               "sort": SORT_ONLY, "siteID": SITE_ID}
@@ -341,8 +371,7 @@ def search_ctax(keyword: str, size: int = 5, *, node=None, date_from: str = "",
     # 所以只匹配标题时必须只发 title=，不能 q= 与 title= 一起发。
     # 站点的 content= 比 q= 窄（同一枚「出口退税」q= 9,804、content= 9,746），本层不接：
     # match=content 走的是 q（全文档），差异读数与取样口径记在 NOTE.md。
-    pos = {"content": "q", "title": "title", "keyword": "keyword", "author": "author"}
-    params[pos.get(match, "q")] = keyword or ""
+    params[MATCH_POSITIONS[match]] = keyword or ""
     if channel:
         # 0 在本层当作"不限"：省掉这一枚是两端并集；站点侧直接给 channel=0 回空结构，
         # 把那个空结构当成"这一词没命中"是这一站最容易踩的读法。
@@ -354,12 +383,16 @@ def search_ctax(keyword: str, size: int = 5, *, node=None, date_from: str = "",
     if node_id:
         params["nodeID"] = str(node_id)
 
-    want = max_rows or size
-    # 翻页上限不按 want 换算行数：收满的是"篇"，一稿多发会把一页里的行合成几篇，
-    # 预先按行数算会让小的 want 只翻一页就交出不够篇数的结果。
+    # 两枚上限各管一头：size 收的是"篇"（一稿多发会把一页里的行合成几篇，
+    # 只按行数收会让 --size 5 实际只回 2 篇），max_rows 收的是站点给的"行"。
+    # 取小的那一份：max_rows 只能收紧，不能反过来抢过 size 多给行。
+    want = size if not max_rows else min(size, max_rows)
+    cap_rows = max_rows
+    # 翻页上限不按 want 换算页数：按篇收满要有几页算几页，预先按行数算会让小的 want
+    # 只翻一页就交出不够篇数的结果。
     # 正常一词仍在一到两次请求内退出（收满即 break，取到 total 也 break）。
     cap_pages = SEARCH_MAX_PAGES
-    got, pages_read, total, status = [], 0, None, ""
+    got, pages_read, total, status, stopped_by = [], 0, None, "", ""
     page = 1
     while page <= cap_pages:
         params["pageNo"] = page
@@ -377,8 +410,12 @@ def search_ctax(keyword: str, size: int = 5, *, node=None, date_from: str = "",
             break
         got += [_row_from_json(a) for a in rows]
         page += 1
-        # 收满的是"不同的篇数"而不是行数：一篇挂三栏就出三行，
-        # 只按行数收会让 --size 5 实际只回 2 篇。
+        # 行数上限按整页取到再裁到那一行，多取的一页不留下——cut 点是"要这么多行"
+        # 这句的字面要求；同一篇挂在 cut 点之后的栏目行会跟着裁掉，所以合并数只算留下的。
+        if cap_rows and len(got) >= cap_rows:
+            got = got[:cap_rows]
+            stopped_by = f"max_rows={cap_rows} 行的"
+            break
         if not fetch_all and len(dedup_rows(got)) >= want:
             break
         if total is not None and len(got) >= int(total):
@@ -389,7 +426,10 @@ def search_ctax(keyword: str, size: int = 5, *, node=None, date_from: str = "",
     if not fetch_all:
         uniq = uniq[:want]
     if not status:
-        if fetch_all and total is not None and len(got) < int(total):
+        if stopped_by and total is not None and len(got) < int(total):
+            status = (f"取到 {len(got)} 行、交回 {len(uniq)} 篇，这一词共 {total} 条；"
+                      f"已到 {stopped_by}上限，不是这一词只有这些")
+        elif fetch_all and total is not None and len(got) < int(total):
             status = (f"取到 {len(got)} 条，这一词共 {total} 条；已到页数上限 "
                       f"{cap_pages} 页（SEARCH_MAX_PAGES），不是这一词只有这些")
         elif total is not None and len(got) == 0:
@@ -667,6 +707,11 @@ def list_column(column, pages: int = 1, session: requests.Session | None = None)
     父栏目页（如 /policy/node_24.html）整页只有子栏入口，0 行写在 _status 里，
     不静默报"这一栏是空的"。
     """
+    if pages < 1:
+        # 不收 max(pages, 1) 那一类回落：把"一页也不要"改成"取一页"，
+        # 交出去的清单就不在请求里了。
+        return {"results": [], "_status": f"没走成：pages={pages}，这个值一页也不要",
+                "_error": "bad pages"}
     if str(column).isdigit():
         node_id = str(column)
     else:
@@ -692,7 +737,7 @@ def list_column(column, pages: int = 1, session: requests.Session | None = None)
     unsliced, read, off_set_total = [], 0, 0
     allow = None
     col_name = (get_column(node_id) or {}).get("name") or f"node_{node_id}"
-    for p in range(1, max(1, pages) + 1):
+    for p in range(1, pages + 1):
         if p > COLUMN_PAGE_MAX:
             errs.append(f"第 {p} 页超出站点铺出的页数（栏目页最多 {COLUMN_PAGE_MAX} 页）")
             break
@@ -945,16 +990,20 @@ def _nav_from_page(page: str) -> tuple:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="中国税网 (ctaxnews.com.cn) 取数")
     ap.add_argument("keyword", nargs="?", default="", help="检索词（一个概念一枚词，站点不分词）")
-    ap.add_argument("--size", type=int, default=5, help="取回多少行（默认 5）")
+    ap.add_argument("--size", type=int, default=5,
+                    help="取回多少篇（按合并同稿后的篇数算，默认 5；正整数）")
     ap.add_argument("--all", action="store_true", help="按站点报的总条数翻到底")
-    ap.add_argument("--max-rows", type=int, default=0, help="配合 --all 的行数上限")
+    ap.add_argument("--max-rows", type=int, default=0,
+                    help="行数上限：只收紧不放大（与 --size 取小的那一份），"
+                         "配合 --all 决定翻到几页就停")
     ap.add_argument("--column", default="", help="限定栏目（栏目名或 nodeID，只认叶节点）")
     ap.add_argument("--from", dest="date_from", default="", help="发布日期起 yyyy-mm-dd")
     ap.add_argument("--to", dest="date_to", default="", help="发布日期止 yyyy-mm-dd")
-    ap.add_argument("--match", choices=["content", "title", "keyword", "author"], default="content",
+    ap.add_argument("--match", choices=list(MATCH_POSITIONS), default="content",
                     help="匹配域：全文（默认）或只标题")
     ap.add_argument("--channel", type=int, default=CHANNEL_WEB,
-                    help="1=网站（默认）；2=触屏端只有 2019 年转载且地址已失效")
+                    help="1=网站（默认）；2=触屏端只有 2019 年转载且地址已失效；"
+                         "0=不提交这一枚、取两端并集；其余值不发请求")
     ap.add_argument("--read", action="store_true", help="逐篇取回正文")
     ap.add_argument("--json", action="store_true", help="输出 JSON")
     ap.add_argument("--find-doc", metavar="文号", help="按文号回站内定位（合并同稿多栏）")
