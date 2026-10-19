@@ -2755,8 +2755,9 @@ class TestCtaxGradingDoesNotGuardThisRoute(unittest.TestCase):
 
 
 class TestCtaxColumnPageRows(unittest.TestCase):
-    """栏目页的列表容器至少有五种形态，行只按地址形状取；
-    切不出本栏标题时整页都算本栏，靠目录段与本栏检索集两道过滤扣外来行。"""
+    """取行只按地址形状，不认列表容器的类名（站点实测有三枚类名，见 NOTE.md
+    「栏目页的行形态」）；切不出本栏标题时整页都算本栏，
+    靠目录段与本栏检索集两道过滤扣外来行。"""
 
     @staticmethod
     def _href(d, ym, dd, aid):
@@ -2769,14 +2770,18 @@ class TestCtaxColumnPageRows(unittest.TestCase):
 
     def _page(self, own=(), extra=(), header=True):
         """extra 那几行放进 layout-380 里面，是侧栏推荐位；
-        own 那几行是本栏列表，其中目录段不对的属于"留在段内的外来行"。"""
+        own 那几行是本栏列表，其中目录段不对的属于"留在段内的外来行"。
+        外壳类名 `tabList` 是合成的：站点这一批 14 份栏目页副本里它 0 处命中
+        （见 NOTE.md「栏目页的行形态」），故意挑一枚站点没发过的名字，
+        才能验出 `_page_rows` 根本不读类名。"""
         head = '<div class="column-header-1">税案通报</div>' if header else ""
         return ('<html><body>%s<ul class="tabList">%s</ul>'
                 '<div class="layout-380">侧栏推荐%s</div></body></html>'
                 % (head, "".join(own), "".join(extra)))
 
     def test_rows_come_from_the_href_shape_not_a_container_class(self):
-        """这一页只有 <ul class="tabList">，没有 div.newsList-item：只认后者的话读出 0 行。"""
+        """这一页的行包在合成类名 `ul.tabList` 里，没有 div.newsList-item：
+        按类名取行的话读出 0 行，按地址形状取照样交回 2 行。"""
         page = self._page(own=[self._li("sswfaj", "2026-06", "22", "111", "某案通报"),
                                self._li("sswfaj", "2026-05", "08", "222", "另一案通报")])
         rows, off_col, sliced, off_set = CT._page_rows(page, "sswfaj", "税案通报")
@@ -2803,7 +2808,10 @@ class TestCtaxColumnPageRows(unittest.TestCase):
         self.assertTrue(sliced)
 
     def test_unsliced_page_is_judged_by_the_search_set(self):
-        """专题页与 tab 页切不出本栏标题，行的归属只能由本栏检索集判。"""
+        """页面没有 column-header-1 时切不出本栏段，行的归属只能由本栏检索集判。
+        实测走这一支的三栏：按别的栏铺块的落地页 node_13、
+        只铺一块相关文号列表的短页 node_8030、父栏目页 node_24；
+        专题页 node_8131 有本栏标题，不在此列。"""
         page = self._page(header=True,
                           own=[self._li("sswfaj", "2026-06", "22", "111", "在册的"),
                                self._li("sswfaj", "2026-06", "21", "222", "不在册的")])
@@ -2902,8 +2910,38 @@ class TestCtaxSubSkillDocHooks(unittest.TestCase):
         self.assertEqual(sorted(cost), sorted(table), "表的行与探针的项不成同一集合")
         for n in cost:
             self.assertEqual(cost[n], table[n], "第 %d 项的请求数对不上" % n)
-        self.assertEqual(178, sum(cost.values()), "NOTE.md 第 11 行的全项数")
-        self.assertEqual(60, sum(cost.values()) - cost[10], "NOTE.md 第 11 行的 --fast 数")
+        total, fast = sum(cost.values()), sum(cost.values()) - cost[10]
+        self.assertEqual(209, total, "探针的 COST 合计与文档那两个数不等，先核对哪一侧改了")
+        self.assertEqual(107, fast, "去掉第 10 项（栏目表重建）之后的合计对不上")
+        # 同一对合计复述在六处文字里：NOTE 的复测入口那一行、表下面那一行、单轮耗时那一行，
+        # 子技能 SKILL 命令行那两条注释，README 目录树那一行，台账登记那一行。
+        # 这六处都在用例够得着的路径上——改了表不改它们，读者按文字发请求就会数错。
+        entry = [ln for ln in text.splitlines() if "复测入口" in ln]
+        self.assertEqual(1, len(entry), "NOTE.md 里复测入口那一行不唯一")
+        self.assertEqual([total, fast],
+                         [int(x) for x in re.findall(r"(\d+) 次", entry[0])],
+                         "NOTE.md 复测入口那一行的两个数与表不等")
+        below = [ln for ln in block[1].splitlines() if ln.startswith("全项")]
+        self.assertEqual(1, len(below), "表下面那行合计不唯一")
+        self.assertEqual([total, fast],
+                         [int(x) for x in re.findall(r"(\d+) 次", below[0])][:2],
+                         "表下面那行的两个数与表不等")
+        skill = (self.DOC_DIR / "SKILL.md").read_text(encoding="utf-8").splitlines()
+        for label, hit, want in (("全项复测", "全项复测", total),
+                                 ("--fast", "--fast", fast)):
+            ln = [l for l in skill if hit in l and "次" in l]
+            self.assertEqual(1, len(ln), "SKILL.md 里 %s 那一行不唯一" % label)
+            self.assertEqual(want, int(re.search(r"(\d+) 次", ln[0]).group(1)),
+                             "SKILL.md %s 那行的请求数与表不等" % label)
+        for rel, phrase in ((self.DOC_DIR / "NOTE.md", "`--fast` 一轮 %d 次请求" % fast),
+                            (self.DOC_DIR / "NOTE.md", "全项一轮 %d 次" % total),
+                            (ROOT / "README.md",
+                             "全项声明 %d 次请求、`--fast` %d 次" % (total, fast)),
+                            (ROOT / "references" / "source_defects.md",
+                             "（全项 %d、去掉第 10 项后 %d）" % (total, fast))):
+            n = rel.read_text(encoding="utf-8").count(phrase)
+            self.assertEqual(1, n, "%s 里 %r 要与表相等且只出现一次，实际 %d 次"
+                             % (rel.name, phrase, n))
 
     def test_the_route_stays_out_of_the_five_source_aggregator(self):
         """这一路只挂 ③ 的 L4，不混进 ④ 的五源：多一枚默认源会让日期那一维度半接线。"""
