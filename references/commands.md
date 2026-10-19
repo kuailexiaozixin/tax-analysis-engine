@@ -437,6 +437,13 @@ python scripts/tax_shui5.py --list 实务解读 --pages 2     # 不检索，按�
 python scripts/tax_shui5.py --tag 增值税法 --pages 2      # 不检索，按站点标签读清单
 python scripts/tax_shui5.py --columns                     # 打印栏目表（目录名/classid/页数条数），不发请求
 python scripts/tax_shui5.py --find-doc "财税[2019]13号"   # 只有一枚文号时回站内定位（默认交 20 条候选）
+python scripts/tax_ctax.py "<关键词>" --size 5 --read       # 中国税网：连正文一起取（无凭据、不启浏览器）
+python scripts/tax_ctax.py "<关键词>" --column 政策解读 --size 10   # 限定一栏（栏目名或 nodeID，只认叶节点）
+python scripts/tax_ctax.py "<关键词>" --from 2025-01-01 --to 2025-12-31  # 两枚各自独立，单给一侧照常收
+python scripts/tax_ctax.py "<关键词>" --match title --all --max-rows 500  # 只匹配标题，按 foundNum 翻到底
+python scripts/tax_ctax.py --find-doc "财政部 税务总局公告2026年第29号"   # 按文号定位并把一稿多栏并成一条
+python scripts/tax_ctax.py --list 税案通报 --pages 2         # 不检索，按栏目列表页读清单（只铺到第 10 页）
+python scripts/tax_ctax.py --columns                        # 打印本地栏目表，不发请求
 python scripts/tax_wechat.py "<关键词>" --size 5 --read   # 公众号：连正文一起取
 python scripts/tax_browser.py --check                     # 探测本机已装浏览器，不下载
 ```
@@ -461,6 +468,24 @@ HTTP 都是 200，所以"请求成功"不等于"取到内容"。程序的处理�
 它跑一次挑战，把放行 cookie 交给普通 HTTP 客户端连读多篇——**一个浏览器内核都不安装**，
 Edge 不可用时依次换其他已装浏览器。浏览器过不了时退回纯 HTTP 直连，再退回 Jina Reader，
 两级都失败会在每条结果上写明 `_error`。
+
+中国税网（`scripts/tax_ctax.py`，中国税务报社的媒体站）走的是另一套取数：检索是一个开放
+JSON 接口 `GET /xy/Search.do`，无 WAF、不校验 UA、不需要凭据，也不启浏览器。这一路要认的
+失败形态和税屋正相反——税屋是"请求成功但回的是另一份页面"，税网是**参数越界不回错误码**：
+翻页只认 `pageNo`（`start`/`page`/`pageNum`/`p`/`offset`/`currentPage` 六枚别名一律被忽略，
+提交它们等于反复取第一页）；匹配域靠"提交哪一枚参数名"表达，`q` 与 `title` 同发时 `q` 会把
+`title` 盖掉；栏目限定只认叶节点，给父节点回 0 条而它下面确实挂着文章，这一句会写进
+`_filter_note`；`channel=0` 在这一层等于不提交那一枚、拿到网站与触屏的并集，只有站点不认的
+值才打到那份 37 字节的空结构。三种越界的回法（HTTP 500、静默按缺省、回空结构）逐档记在
+`subskills/ctaxnews/NOTE.md`，取数前判据在 `subskills/ctaxnews/SKILL.md`。
+两条硬边界：一篇稿挂几栏就出几行且 `articleid` 各不相同，`dedup_rows` 按「标题＋发布日期＋文号」
+并成一条，所以收满按并完的篇数算；2023-02 改版前的行地址缺一段目录，正文永久取不到，
+`_address_state` 只看段数就能判定，这类行只当题录（`_url_state` 写明原因，不重试）。
+这一路不进 ④ 的五源聚合。定级那一步也不会替它把关：`tax_evidence.rank_of` 先按标题形态判，
+转载件的标题就是原文件那份标题，所以「财政部 税务总局公告2026年第29号」这样一行会判成
+`normative`、角色成 `direct`，而 `PRACTICE_SOURCES` 那六枚来源标记里没有 `ctaxnews.com.cn`，
+标题不带"解读"二字的行也落不进 `interpretation`。**读成：这一路的地址只作定位与线索，
+依据链里的 url 要回官方库那份文件**。
 
 微信公众号走搜狗，只用 `type=2` 检索文章；还原跳转链接必须与检索共用同一会话
 （依赖检索时拿到的 `SNUID`/`SUID` cookie），否则会被判成爬虫并跳到
@@ -568,6 +593,10 @@ python scripts/tax_web_search.py "<关键词>" --size 10
 python scripts/tax_shui5.py "<关键词>" --size 5 --read
 python scripts/tax_wechat.py "<关键词>" --size 5 --read
 
+# 中国税网 — 报社登载的政策转载、解读与税案通报（不进五源聚合，判据见 subskills/ctaxnews/）
+python scripts/tax_ctax.py "<关键词>" --size 5 --read
+python scripts/tax_ctax.py --find-doc "<文号>"
+
 # 360 站内搜索 — 省局与地方文件
 python scripts/tax_so360.py "<关键词>" --site chinatax.gov.cn --size 10
 
@@ -622,6 +651,9 @@ NPC 验到 16 路并发、三趟共 104 次请求，下面那三种形态一个�
 | 税屋正文取不到 | 每条结果带 `_error` | 确认 `--check` 是否探到浏览器；仍失败改用公众号。**先分清是没凭据还是站点上没这篇**：没凭据时任何地址都回同一份挑战页，判据与凭据寿命见 `subskills/shui5/SKILL.md` |
 | 360 读超时 | 程序已重试 | 重跑一次；再失败改用更短的关键词 |
 | 总局清单为空却报告了命中数 | `_empty_reason` 分两种成因：写"已翻过末页"就是翻页参数越界，按已取回的清单下结论即可；写"该页在末页之内却没给条目清单"就是这一轮没取到清单，换检索词再取一轮才有结论 | 两种都不等于"库里没有这份文件"，答案里不得据空清单说无此规定 |
+| 中国税网返回"没走成" | `_status` 以「没走成」开头的是**请求被拦在发出之前**：栏目名不在 `data/ctax_columns.json`、或与表里多行重名（`column_lookup` 的 `ambiguous`/`missing`，会把候选一并列出）、或空词没带栏目、或日期不是 `yyyy-mm-dd`。绕过命令行直接给 `_search_once` 传越界值时，站点那一路回 500，`_status` 末尾带 HTTP 码与字节数并写明"不是限流" | 换限定条件重发，别把它当成"站内没有"；站内确实没命中时 `_status` 写的是「0 条：这一词（连同本轮限定）在站内没有命中」，两句不是一回事 |
+| 中国税网取到的条数明显比预期少 | `_status` 写「取到 N 条，这一词共 M 条；已到页数上限」就是没翻到底（`SEARCH_MAX_PAGES` × `SEARCH_PAGE_SIZE`），写「合并同一篇挂多栏的行 K 行」则是一篇稿挂了几栏出几行被并成一条 | 前者加 `--all --max-rows`，后者是正常合并、不是丢数据；两种都不读成"这一词只有这些" |
+| 中国税网正文取不到 | 该行带 `_url_state`，写的是地址缺一段目录（2023-02 前的老行，回 500 与一份 572 字节错误页） | 只用题录字段（标题／发布日期／文号／发文机关），正文回官方库或改版后的转载件；**不重试**，这一站错误地址回 500 不是 404，重试没有意义还占间隔 |
 | 全部为空 | 五源无结果 | 放宽关键词、换源、告知用户并建议 12366 |
 | 子技能限流 | HTTP 429 | 等一分钟再试；准则条文一次取全篇（`ref/{slug}`），别为凑证据面猛刷搜索 |
 | 子技能词太短 | HTTP 400 | 检索词补足两字以上，或改用 `by-tag` 按标签取名 |

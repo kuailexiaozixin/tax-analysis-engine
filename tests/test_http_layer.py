@@ -32,14 +32,18 @@ import tax_http  # noqa: E402
 
 # 允许自己发请求的模块：
 #   tax_http.py    —— 统一出口本身
-#   其余四个        —— 各自维护 requests.Session（WAF 挑战、cookie 恢复、二次
-#                      跳转），请求形状与统一层不同，强行合并只会把特例塞进来
+#   其余五个        —— 各自维护 requests.Session（WAF 挑战、cookie 恢复、二次
+#                      跳转；tax_ctax.py 是另一种：整张栏目表的重建与按 foundNum
+#                      翻到底要在一条连接上连发几十到上百次请求，正文页又不带
+#                      charset、要拿到 Response 才能补编码），请求形状与统一层
+#                      不同，强行合并只会把特例塞进来
 ALLOWED_BARE = {
     "tax_http.py",
     "tax_shui5.py",
     "tax_so360.py",
     "tax_wechat.py",
     "tax_web_search.py",
+    "tax_ctax.py",
 }
 
 # 视为"直接发请求"的 requests 属性名

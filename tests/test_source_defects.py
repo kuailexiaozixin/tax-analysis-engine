@@ -18,6 +18,7 @@
 import ast
 import contextlib
 import io
+import json
 import re
 import sys
 import tempfile
@@ -31,6 +32,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
+import tax_ctax as CT      # noqa: E402
 import tax_detail as DT      # noqa: E402
 import tax_answer as ANS     # noqa: E402
 import tax_evidence as E     # noqa: E402
@@ -2192,6 +2194,655 @@ class TestShui5RepealNote(unittest.TestCase):
         art = SH._parse_article(_article_page("正文第一段，没有批注。", own_pages=(1,)), P1)
         self.assertNotIn("repeal_note", art)
         self.assertNotIn("repeal_basis", art)
+
+
+# ── ③ L4 中国税网：检索契约、同稿合并、老地址判定与定层不把关 ──────────────
+# 这一站的可用面全长在站点自己那一边（参数名、翻页基准、地址分界、注释标记写几遍），
+# 所以用例全部离线：假会话按 URL 交出事先搭好的内容，发出去的参数留在会话上回读。
+CTAX_SEARCH = CT.SEARCH_ENDPOINTS[0]
+CTAX_NEW_URL = "https://www.ctaxnews.com.cn/policy/2023-02/10/content_1016514.html"
+CTAX_OLD_URL = "http://www.ctaxnews.com.cn/2020-06/01/content_966206.html"
+CTAX_OLD_URLS = "https://www.ctaxnews.com.cn/2020-06/01/content_966206.html"
+
+
+def _ctax_row_json(title="财政部 税务总局公告2026年第29号", date="2026-10-19",
+                   subtitle="财政部 税务总局公告2026年第29号", column="中央税收法规",
+                   url=CTAX_NEW_URL, articleid="1016514", **extra):
+    """一枚检索行的站点形态（15 枚键里这一层读的那几枚）。"""
+    a = {"title": title, "date": date, "subtitle": subtitle, "url": url,
+         "articleid": articleid, "nodesearchname": column,
+         "introtitle": "财政部 国家税务总局", "sourcename": "中国税务报",
+         "author": "2026年10月12日", "enpcontent": "正文起两行……",
+         "Abstract": "编辑写的摘要"}
+    a.update(extra)
+    return a
+
+
+def _ctax_json(rows, found=None):
+    return json.dumps({"foundNum": found if found is not None else len(rows),
+                       "article": list(rows)}, ensure_ascii=False)
+
+
+class _CtaxResp:
+    """照 `_http_get` 与 `fetch_ctax` 用得上的那几枚属性搭。
+    encoding 按 requests 的规矩给默认值：声明了 charset 用声明的，没声明给 iso-8859-1。"""
+
+    def __init__(self, body, status=200, ctype="application/json;charset=UTF-8"):
+        self.text = body
+        self.content = body.encode("utf-8")
+        self.status_code = status
+        self.headers = {"Content-Type": ctype}
+        m = re.search(r"charset=([\w-]+)", ctype, re.I)
+        self.encoding = m.group(1) if m else "iso-8859-1"
+
+    def json(self):
+        return json.loads(self.text)
+
+
+class _CtaxSession:
+    """按 URL 发内容的假会话；每一次 (url, params) 都记下。
+    值是列表的按顺序消费，用完还索要就 IndexError；没准备的地址直接 KeyError。
+    Search.do 有两个落点，默认把域名那一路备好的内容同样交给镜像那一路；
+    要单独试两路的用例自己给出两个键。"""
+
+    def __init__(self, pages):
+        self.pages = dict(pages)
+        alt = CT.SEARCH_ENDPOINTS[1]
+        if CTAX_SEARCH in self.pages and alt not in self.pages:
+            self.pages[alt] = self.pages[CTAX_SEARCH]
+        self.requested = []
+        self.headers = {}
+
+    def get(self, url, params=None, timeout=None, **kw):
+        self.requested.append((url, dict(params or {})))
+        p = self.pages[url]
+        if isinstance(p, list):
+            p = p.pop(0)
+        return p
+
+    @property
+    def sent_params(self):
+        return [q for _, q in self.requested]
+
+
+def _ctax_article_page(body="<p>正文第一段。</p><p>第二段</p>", props=None, times=2):
+    p = props if props is not None else {
+        "title": "财政部 税务总局公告2026年第29号",
+        "date": "2026-10-19 09:10:00",
+        "subtitle": "财政部 税务总局公告2026年第29号",
+        "introtitle": "财政部 税务总局",
+        "nodename": "中央税收法规", "nodeid": "8215",
+        "liability": "全文有效", "tag": "增值税；企业所得税",
+        "sourcename": "中国税务报", "author": "2026年10月12日",
+        "abstract": "编辑摘要"}
+    prop = ("<!--enpproperty"
+            + "".join("<%s>%s</%s>" % (k, v, k) for k, v in p.items()) + "-->")
+    block = "<!--enpcontent-->" + body + "<!--/enpcontent-->"
+    return "<html><body>" + (block + prop) * times + "</body></html>"
+
+
+class _CtaxOffline(unittest.TestCase):
+    """共用：把站点侧的礼节性限速在离线用例里等掉。"""
+
+    def setUp(self):
+        p = mock.patch.object(CT.time, "sleep")
+        p.start()
+        self.addCleanup(p.stop)
+
+
+class TestCtaxSearchContract(_CtaxOffline):
+    """Search.do 的参数形状：翻页只认 pageNo、位置参数只提交一枚、越界值不发出去。"""
+
+    def _one_hit(self, **kw):
+        s = _CtaxSession({CTAX_SEARCH: _CtaxResp(_ctax_json([_ctax_row_json()]))})
+        r = CT.search_ctax("增值税", size=1, session=s, **kw)
+        return s, r
+
+    def test_default_match_sends_only_q(self):
+        s, _ = self._one_hit()
+        q = s.sent_params[0]
+        self.assertEqual("增值税", q["q"])
+        for other in ("title", "content", "keyword", "author"):
+            self.assertNotIn(other, q, "多提交一枚就换了匹配域")
+        self.assertEqual(1, q["pageNo"])
+        self.assertEqual(CT.SEARCH_PAGE_SIZE, q["pageSize"])
+        self.assertEqual("date", q["sort"])
+        self.assertEqual(CT.SITE_ID, q["siteID"])
+        self.assertEqual(CT.CHANNEL_WEB, q["channel"])
+
+    def test_match_title_sends_only_the_title_slot(self):
+        """q= 会把位置参数盖掉：同发两枚时站点报的是 q 那一份数，限定等于没生效。"""
+        s, _ = self._one_hit(match="title")
+        q = s.sent_params[0]
+        self.assertEqual("增值税", q["title"])
+        self.assertNotIn("q", q)
+
+    def test_page_aliases_are_never_sent(self):
+        s, _ = self._one_hit()
+        for alias in ("start", "page", "pageNum", "p", "offset", "currentPage"):
+            self.assertNotIn(alias, s.sent_params[0],
+                             "站点不认这些别名，被忽略后落回第一页")
+
+    def test_channel_zero_omits_the_param(self):
+        """站点给 channel=0 回 37 字节空结构；这一层把 0 当"不限"，省掉这一枚取两端并集。"""
+        s, _ = self._one_hit(channel=0)
+        self.assertNotIn("channel", s.sent_params[0])
+        s2, _ = self._one_hit(channel=CT.CHANNEL_TOUCH)
+        self.assertEqual(CT.CHANNEL_TOUCH, s2.sent_params[0]["channel"])
+
+    def test_one_sided_date_sends_only_that_side(self):
+        s, _ = self._one_hit(date_from="2025-01-01")
+        self.assertEqual({"startDate"}, {"startDate", "endDate"} & set(s.sent_params[0]))
+        s2, _ = self._one_hit(date_to="2026-10-01")
+        self.assertEqual({"endDate"}, {"startDate", "endDate"} & set(s2.sent_params[0]))
+        s3, _ = self._one_hit()
+        self.assertEqual(set(), {"startDate", "endDate"} & set(s3.sent_params[0]))
+
+    def test_bad_date_is_refused_before_the_request(self):
+        """站点这一档越界直接回 HTTP 500，拦在发出之前才有意义。"""
+        s = _CtaxSession({})
+        r = CT.search_ctax("增值税", date_from="2025/01/01", session=s)
+        self.assertEqual([], s.requested)
+        self.assertTrue(r["_status"].startswith("没走成"), r["_status"])
+        self.assertIn("yyyy-mm-dd", r["_status"])
+
+    def test_empty_keyword_without_column_is_refused(self):
+        s = _CtaxSession({})
+        r = CT.search_ctax("", session=s)
+        self.assertEqual([], s.requested)
+        self.assertIn("空词只在全站范围可用", r["_status"])
+
+    def test_second_page_failure_is_not_rewritten_as_zero_rows(self):
+        """第一页成了、第二页挂了：停在已取的条数并把这一句交出去，不许读成"共 0 条"。"""
+        s = _CtaxSession({CTAX_SEARCH: [
+            _CtaxResp(_ctax_json([_ctax_row_json(articleid="1")], found=500)),
+            _CtaxResp("x", status=500, ctype="text/html"),
+            _CtaxResp("x", status=500, ctype="text/html")]})
+        r = CT.search_ctax("增值税", size=2, session=s)
+        self.assertEqual(1, len(r["results"]))
+        self.assertIn("第 2 页取不到", r["_status"])
+        self.assertIn("停在已取的 1 条", r["_status"])
+
+    def test_mirror_endpoint_is_tried_when_the_domain_fails(self):
+        """域名那一路打不通就换镜像落点，换成功了不叫失败。"""
+        s = _CtaxSession({CTAX_SEARCH: [_CtaxResp("x", status=500, ctype="text/html"),
+                                        _CtaxResp(_ctax_json([_ctax_row_json()]))]})
+        r = CT.search_ctax("增值税", size=1, session=s)
+        self.assertEqual(2, len(s.requested))
+        self.assertEqual(CT.SEARCH_ENDPOINTS[1], s.requested[1][0])
+        self.assertEqual(1, len(r["results"]))
+        self.assertNotIn("_error", r)
+
+    def test_both_endpoints_failing_is_named_as_a_failure(self):
+        """两个落点都试完才算失败；500 那句要带上"不是限流"的判据。"""
+        s = _CtaxSession({CTAX_SEARCH: [_CtaxResp("x", status=500, ctype="text/html"),
+                                        _CtaxResp("y", status=500, ctype="text/html")]})
+        r = CT.search_ctax("增值税", size=1, session=s)
+        self.assertEqual(2, len(s.requested))
+        self.assertTrue(r["_status"].startswith("没走成"), r["_status"])
+        self.assertIn("HTTP 500", r["_status"])
+        self.assertIn("不是限流", r["_status"])
+
+
+class TestCtaxColumnScope(_CtaxOffline):
+    """栏目限定的三种判据：唯一命中、重名、表里没有。后两种都不发出请求。"""
+
+    TABLE = [
+        {"nodeid": 24, "name": "政策", "dir": "policy", "foundNum": 0, "parent": True},
+        {"nodeid": 8215, "name": "其他税种", "dir": "other", "foundNum": 23},
+        {"nodeid": 63, "name": "实务分析", "dir": "sssw", "foundNum": 120},
+        {"nodeid": 77, "name": "实务分析", "dir": "news", "foundNum": 90},
+    ]
+
+    def setUp(self):
+        super().setUp()
+        p = mock.patch.object(CT, "load_columns", return_value=self.TABLE)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_three_states_of_the_lookup(self):
+        self.assertEqual(("ok", ["8215"]), CT.column_lookup("其他税种"))
+        state, cand = CT.column_lookup("实务分析")
+        self.assertEqual("ambiguous", state)
+        self.assertEqual(2, len(cand))
+        self.assertEqual(("missing", []), CT.column_lookup("没有这一栏"))
+        self.assertEqual(("missing", []), CT.column_lookup("  "))
+
+    def test_nodeid_of_returns_empty_for_both_non_ok_states(self):
+        self.assertEqual("", CT.nodeid_of("实务分析"))
+        self.assertEqual("", CT.nodeid_of("没有这一栏"))
+        self.assertEqual("8215", CT.nodeid_of("其他税种"))
+
+    def test_ambiguous_name_is_refused_without_a_half_limit(self):
+        """站点确实有重名栏目，不替读者挑一条；报错把两行都列出来。"""
+        s = _CtaxSession({})
+        r = CT.search_ctax("增值税", node="实务分析", session=s)
+        self.assertEqual([], s.requested)
+        self.assertEqual("ambiguous column", r["_error"])
+        self.assertIn("2 行对上", r["_status"])
+        self.assertIn("nodeID", r["_status"])
+
+    def test_missing_name_tells_to_rebuild_the_table(self):
+        s = _CtaxSession({})
+        r = CT.search_ctax("增值税", node="没有这一栏", session=s)
+        self.assertEqual([], s.requested)
+        self.assertIn("--update-columns", r["_status"])
+
+    def test_parent_column_is_sent_but_flagged(self):
+        """父栏目检索按叶节点收，整片回 0 不是"这一类没有文件"，要随读数交出。"""
+        s = _CtaxSession({CTAX_SEARCH: _CtaxResp(_ctax_json([], found=0))})
+        r = CT.search_ctax("增值税", node="政策", size=1, session=s)
+        self.assertEqual("24", s.sent_params[0]["nodeID"])
+        self.assertIn("父栏目", r["_filter_note"])
+        self.assertIn("叶节点", r["_filter_note"])
+
+    def test_leaf_column_carries_no_parent_note(self):
+        s = _CtaxSession({CTAX_SEARCH: _CtaxResp(_ctax_json([_ctax_row_json()]))})
+        r = CT.search_ctax("增值税", node="其他税种", size=1, session=s)
+        self.assertEqual("8215", s.sent_params[0]["nodeID"])
+        self.assertNotIn("_filter_note", r)
+
+    def test_numeric_node_skips_the_table(self):
+        s = _CtaxSession({CTAX_SEARCH: _CtaxResp(_ctax_json([_ctax_row_json()]))})
+        CT.search_ctax("增值税", node="63", size=1, session=s)
+        self.assertEqual("63", s.sent_params[0]["nodeID"])
+
+
+class TestCtaxDedupCountsArticles(_CtaxOffline):
+    """一稿多发：同一篇挂几栏就出几行，收满与计数都按篇不按行。"""
+
+    @staticmethod
+    def _four_columns(title="财政部 税务总局公告2026年第29号", date="2026-10-19",
+                      doc="财政部 税务总局公告2026年第29号", aid="1016514"):
+        cols = ["中央税收法规", "增值税", "其他税种", "财政部 国家税务总局公告"]
+        return [_ctax_row_json(title=title, date=date, subtitle=doc, column=c,
+                               articleid=str(int(aid) + i))
+                for i, c in enumerate(cols)]
+
+    def test_four_columns_merge_into_one_article(self):
+        rows = CT.dedup_rows([CT._row_from_json(a) for a in self._four_columns()])
+        self.assertEqual(1, len(rows))
+        also = rows[0]["also_in_columns"]
+        self.assertEqual(3, len(also))
+        self.assertEqual(sorted(also), also, "同一份输入两次重建的顺序要一样")
+        self.assertNotIn("中央税收法规", also, "首位那一栏不重复列进同稿")
+
+    def test_merge_key_is_title_date_doc_number(self):
+        """四行是四个 articleid，所以判据不用 articleid；文号与发布日期各管一件事。"""
+        same = [CT._row_from_json(a) for a in self._four_columns()]
+        self.assertEqual(1, len(CT.dedup_rows(same)))
+        other_doc = self._four_columns()
+        other_doc[2]["subtitle"] = "财政部 税务总局公告2026年第30号"
+        merged = CT.dedup_rows([CT._row_from_json(a) for a in other_doc])
+        self.assertEqual(2, len(merged), "同号不同件是两份文件，不许合")
+        self.assertEqual("其他税种", merged[1]["column"])
+        other_date = self._four_columns()
+        other_date[1]["date"] = "2026-10-18"
+        self.assertEqual(2, len(CT.dedup_rows([CT._row_from_json(a)
+                                               for a in other_date])), "同名不同日发布不合")
+
+    def test_size_is_counted_in_articles_not_rows(self):
+        """第一页 8 行只合出 2 篇，--size 3 必须再翻一页；按行数收会当已收满。"""
+        page1 = (self._four_columns()
+                 + self._four_columns(title="国家税务总局公告2026年第15号",
+                                      doc="国家税务总局公告2026年第15号", aid="1016520"))
+        page2 = self._four_columns(title="增值税法实施条例", date="2026-09-01",
+                                   doc="", aid="1016600")
+        s = _CtaxSession({CTAX_SEARCH: [
+            _CtaxResp(_ctax_json(page1, found=200)),
+            _CtaxResp(_ctax_json(page2, found=200)),
+            _CtaxResp(_ctax_json([], found=200))]})
+        r = CT.search_ctax("公告", size=3, session=s)
+        self.assertEqual(2, len(s.requested), "没收满就该翻页")
+        self.assertEqual([1, 2], [q["pageNo"] for q in s.sent_params])
+        self.assertEqual(3, len(r["results"]))
+        self.assertIn("合并同一篇挂多栏的行 9 行", r["_status"])
+
+    def test_small_size_still_pages_when_a_page_merges_too_hard(self):
+        """一页 48 行只合出 1 篇：页数上限不拿 --size 去换算行数，否则 --size 2 永远取不到第二篇。"""
+        rows = self._four_columns() * 12
+        s = _CtaxSession({CTAX_SEARCH: [_CtaxResp(_ctax_json(rows, found=600)),
+                                        _CtaxResp(_ctax_json(rows, found=600))]})
+        r = CT.search_ctax("公告", size=1, session=s)
+        self.assertEqual(1, len(s.requested), "一页就收满 1 篇，不必翻页")
+        self.assertEqual(1, len(r["results"]))
+        s2 = _CtaxSession({CTAX_SEARCH: [_CtaxResp(_ctax_json(rows, found=600)),
+                                         _CtaxResp(_ctax_json(
+                                             self._four_columns(
+                                                 title="国家税务总局公告2026年第15号",
+                                                 date="2026-09-30",
+                                                 doc="国家税务总局公告2026年第15号",
+                                                 aid="2000000"),
+                                             found=600))]})
+        r2 = CT.search_ctax("公告", size=2, session=s2)
+        self.assertEqual(2, len(s2.requested), "第一页合出的篇数不够，第二页要发出去")
+        self.assertEqual(2, len(r2["results"]))
+
+
+class TestCtaxAddressState(_CtaxOffline):
+    """2023-02 改版前的老行只看地址形状就能判，不必先吃一个 500。"""
+
+    def test_three_segment_is_refused_on_both_protocols(self):
+        for u in (CTAX_OLD_URL, CTAX_OLD_URLS):
+            state = CT._address_state(u)
+            self.assertNotEqual("ok", state, u)
+            self.assertIn("2023-02", state)
+
+    def test_four_segment_is_ok(self):
+        self.assertEqual("ok", CT._address_state(CTAX_NEW_URL))
+
+    def test_missing_url_is_refused(self):
+        self.assertEqual("行里没有可用地址", CT._address_state(""))
+
+    def test_fetch_sends_nothing_for_an_old_row(self):
+        s = _CtaxSession({})
+        art = CT.fetch_ctax(CTAX_OLD_URL, session=s)
+        self.assertEqual([], s.requested)
+        self.assertIn("2023-02", art["_error"])
+
+    def test_row_carries_the_flag_only_when_unreachable(self):
+        bad = CT._row_from_json(_ctax_row_json(url=CTAX_OLD_URL))
+        good = CT._row_from_json(_ctax_row_json())
+        self.assertIn("_url_state", bad)
+        self.assertNotIn("_url_state", good)
+
+    def test_row_field_mapping(self):
+        row = CT._row_from_json(_ctax_row_json())
+        self.assertEqual("财政部 税务总局公告2026年第29号", row["doc_number"])
+        self.assertEqual("财政部 国家税务总局", row["agency"])
+        self.assertEqual("中国税务报", row["byline"])
+        self.assertEqual("中央税收法规", row["column"])
+        self.assertEqual("2026年10月12日", row["draft_date"], "author 段装的是成文日期")
+        self.assertEqual("2026-10-19", row["date"], "发布与成文两件事都交出")
+        self.assertNotIn("author", row)
+
+    def test_non_date_author_survives_as_author(self):
+        row = CT._row_from_json(_ctax_row_json(author="张三"))
+        self.assertEqual("张三", row["author"])
+        self.assertNotIn("draft_date", row)
+
+    def test_snippet_and_abstract_stay_display_only(self):
+        """enpcontent 是正文截断、Abstract 是编辑摘要：两样都不接进抽取。"""
+        row = CT._row_from_json(_ctax_row_json())
+        self.assertEqual("正文起两行……", row["snippet"])
+        self.assertEqual("编辑写的摘要", row["abstract"])
+        row2 = CT._row_from_json(_ctax_row_json(enpcontent=""))
+        self.assertEqual("编辑写的摘要", row2["snippet"])
+
+
+class TestCtaxForcedUtf8(unittest.TestCase):
+    """正文页回 `Content-Type: text/html` 不带 charset，requests 按 ISO-8859-1 解且不报错。"""
+
+    URL = "https://www.ctaxnews.com.cn/policy/2023-02/10/content_9.html"
+
+    def _get(self, ctype, encoding):
+        resp = _CtaxResp("正文", ctype=ctype)
+        resp.encoding = encoding
+        got = CT._http_get(self.URL, session=_CtaxSession({self.URL: resp}))
+        self.assertIs(resp, got)
+        return got.encoding
+
+    def test_html_without_charset_is_read_as_utf8(self):
+        for enc in ("iso-8859-1", "latin-1", "ISO-8859-1"):
+            self.assertEqual("utf-8", self._get("text/html", enc), enc)
+
+    def test_declared_charset_is_left_to_the_site(self):
+        self.assertEqual("gbk", self._get("text/html;charset=GBK", "gbk"))
+
+    def test_a_default_that_is_not_latin1_is_not_rewritten(self):
+        self.assertEqual("utf-8", self._get("text/html", "utf-8"))
+
+
+class TestCtaxBodyBlocks(_CtaxOffline):
+    """正文与元信息夹在注释标记里；政策页与专题页两对标记各写两遍。"""
+
+    def _fetch(self, page):
+        s = _CtaxSession({CTAX_NEW_URL: _CtaxResp(page, ctype="text/html")})
+        return CT.fetch_ctax(CTAX_NEW_URL, session=s, fetch_interval=0)
+
+    def test_identical_twins_take_the_first_and_say_so(self):
+        art = self._fetch(_ctax_article_page())
+        self.assertEqual("正文第一段。\n第二段", art["content"], "两份相同，取一份不是漏读")
+        self.assertIn("逐字节相同", art["_note"])
+
+    def test_differing_twins_warn_instead_of_choosing_silently(self):
+        page = ("<html><body><!--enpcontent--><p>桌面版</p><!--/enpcontent-->"
+                "<!--enpproperty<title>x</title>-->"
+                "<!--enpcontent--><p>移动版</p><!--/enpcontent-->"
+                "<!--enpproperty<title>x</title>--></body></html>")
+        art = self._fetch(page)
+        self.assertEqual("桌面版", art["content"])
+        self.assertIn("两份不一致", art["_note"])
+        self.assertIn("复测", art["_note"])
+
+    def test_single_block_page_gets_no_note(self):
+        art = self._fetch(_ctax_article_page(times=1))
+        self.assertNotIn("_note", art)
+        self.assertEqual("正文第一段。\n第二段", art["content"])
+
+    def test_meta_fields_come_from_the_property_block(self):
+        art = self._fetch(_ctax_article_page(times=1))
+        self.assertEqual("2026-10-19", art["published"])
+        self.assertEqual("财政部 税务总局公告2026年第29号", art["doc_number"])
+        self.assertEqual("全文有效", art["liability"])
+        self.assertEqual(["增值税", "企业所得税"], art["tags"])
+        self.assertEqual("2026年10月12日", art["draft_date"])
+        self.assertEqual("8215", art["nodeid"])
+
+    def test_empty_content_is_named_picture_body(self):
+        art = self._fetch(_ctax_article_page(body="", times=1))
+        self.assertEqual("", art["content"])
+        self.assertIn("图片型正文", art["_error"])
+
+    def test_page_without_the_marker_reports_raw_length(self):
+        page = "<html><body>无标记</body></html>"
+        art = self._fetch(page)
+        self.assertIn("enpcontent", art["_error"])
+        self.assertEqual(len(page), art["_raw_len"])
+
+    def test_error_page_is_read_as_a_dead_address(self):
+        """这一站的错误地址回 500 而不是 404，读成地址不存在、不重试。"""
+        s = _CtaxSession({CTAX_NEW_URL: _CtaxResp("x" * 572, status=500,
+                                                  ctype="text/html")})
+        art = CT.fetch_ctax(CTAX_NEW_URL, session=s, fetch_interval=0)
+        self.assertIn("500 而不是 404", art["_error"])
+        self.assertIn("不重试", art["_error"])
+
+
+class TestCtaxReadKeepsUnreachableRows(_CtaxOffline):
+    """取正文失败的行留在原位带上原因：丢了行就没人知道这一篇没读到。"""
+
+    def test_old_row_keeps_its_place_with_the_reason(self):
+        rows = [CT._row_from_json(_ctax_row_json(articleid="1016514")),
+                CT._row_from_json(_ctax_row_json(url=CTAX_OLD_URL, articleid="966206"))]
+        s = _CtaxSession({CTAX_NEW_URL: _CtaxResp(_ctax_article_page(times=1),
+                                                  ctype="text/html")})
+        out = CT.read_articles(rows, limit=2, session=s)
+        self.assertEqual(2, len(out))
+        self.assertEqual("正文第一段。\n第二段", out[0]["content"])
+        self.assertIn("2023-02", out[1]["_error"])
+        self.assertIn("2023-02", out[1]["_url_state"], "行上的可达性标注不被正文那一步抹掉")
+        self.assertEqual([CTAX_NEW_URL], [u for u, _ in s.requested])
+
+
+class TestCtaxGradingDoesNotGuardThisRoute(unittest.TestCase):
+    """这一路的材料算不算实务层，程序不替读者判：`rank_of` 先按标题形态、
+    再按来源兜底，而 `PRACTICE_SOURCES` 里没有这一站——转载件按原文件的位阶计。"""
+
+    SRC = "中国税网 (ctaxnews.com.cn)"
+
+    def test_this_site_is_not_in_the_practice_source_list(self):
+        joined = "".join(E.PRACTICE_SOURCES)
+        self.assertNotIn("ctaxnews", joined)
+        self.assertNotIn("中国税网", joined)
+
+    def test_reprint_is_rated_as_the_original_document(self):
+        r = E.rank_of("财政部 税务总局公告2026年第29号", source=self.SRC)
+        self.assertEqual("normative", r["rank"], r["by"])
+        self.assertIn("标题形态", r["by"])
+        self.assertEqual("direct", E.role_of(r["rank"], "effective", True))
+        self.assertNotEqual("practice", E.role_of(r["rank"], "effective", True))
+
+    def test_only_an_interpretation_title_reaches_the_practice_tier(self):
+        """标题以「解读」收尾才落到实务档；按来源名判不到这一站。"""
+        hit = E.rank_of("增值税留抵退税政策的解读", source=self.SRC)
+        self.assertIn(hit["rank"], E.PRACTICE_RANKS)
+        self.assertEqual("practice", E.role_of(hit["rank"], "effective", True))
+        miss = E.rank_of("某省税务局关于征管有关事项的说明", source=self.SRC)
+        self.assertEqual("unknown", miss["rank"], miss["by"])
+        self.assertEqual("unmatched", E.role_of(miss["rank"], "effective", False))
+
+
+class TestCtaxColumnPageRows(unittest.TestCase):
+    """栏目页的列表容器至少有五种形态，行只按地址形状取；
+    切不出本栏标题时整页都算本栏，靠目录段与本栏检索集两道过滤扣外来行。"""
+
+    @staticmethod
+    def _href(d, ym, dd, aid):
+        """站点地址里就带着发布日期：/<目录>/<yyyy-mm>/<dd>/content_<id>.html。"""
+        return "https://www.ctaxnews.com.cn/%s/%s/%s/content_%s.html" % (d, ym, dd, aid)
+
+    @classmethod
+    def _li(cls, d, ym, dd, aid, text):
+        return '<li><a href="%s">%s</a></li>' % (cls._href(d, ym, dd, aid), text)
+
+    def _page(self, own=(), extra=(), header=True):
+        """extra 那几行放进 layout-380 里面，是侧栏推荐位；
+        own 那几行是本栏列表，其中目录段不对的属于"留在段内的外来行"。"""
+        head = '<div class="column-header-1">税案通报</div>' if header else ""
+        return ('<html><body>%s<ul class="tabList">%s</ul>'
+                '<div class="layout-380">侧栏推荐%s</div></body></html>'
+                % (head, "".join(own), "".join(extra)))
+
+    def test_rows_come_from_the_href_shape_not_a_container_class(self):
+        """这一页只有 <ul class="tabList">，没有 div.newsList-item：只认后者的话读出 0 行。"""
+        page = self._page(own=[self._li("sswfaj", "2026-06", "22", "111", "某案通报"),
+                               self._li("sswfaj", "2026-05", "08", "222", "另一案通报")])
+        rows, off_col, sliced, off_set = CT._page_rows(page, "sswfaj", "税案通报")
+        self.assertEqual(2, len(rows))
+        self.assertEqual("2026-06-22", rows[0]["date"], "发布日期就在地址里")
+        self.assertTrue(sliced)
+        self.assertEqual((off_col, off_set), (0, 0))
+
+    def test_off_directory_rows_inside_the_region_are_counted(self):
+        page = self._page(own=[self._li("sswfaj", "2026-06", "22", "111", "本案"),
+                               self._li("policy", "2026-06", "20", "333", "别栏的政策")])
+        rows, off_col, sliced, _ = CT._page_rows(page, "sswfaj", "税案通报")
+        self.assertEqual(1, len(rows))
+        self.assertEqual(1, off_col)
+        self.assertTrue(sliced)
+
+    def test_sidebar_rows_are_cut_before_scanning(self):
+        """侧栏那块在 layout-380 之后：整段先切掉，所以不占 off_col 那一档。"""
+        page = self._page(own=[self._li("sswfaj", "2026-06", "22", "111", "本案")],
+                          extra=[self._li("policy", "2026-06", "20", "333", "侧栏推荐")])
+        rows, off_col, sliced, _ = CT._page_rows(page, "sswfaj", "税案通报")
+        self.assertEqual(1, len(rows))
+        self.assertEqual(0, off_col)
+        self.assertTrue(sliced)
+
+    def test_unsliced_page_is_judged_by_the_search_set(self):
+        """专题页与 tab 页切不出本栏标题，行的归属只能由本栏检索集判。"""
+        page = self._page(header=True,
+                          own=[self._li("sswfaj", "2026-06", "22", "111", "在册的"),
+                               self._li("sswfaj", "2026-06", "21", "222", "不在册的")])
+        no_head = self._page(header=False,
+                             own=[self._li("sswfaj", "2026-06", "22", "111", "在册的"),
+                                  self._li("sswfaj", "2026-06", "21", "222", "不在册的")])
+        _, _, sliced, _ = CT._page_rows(page, "sswfaj", "税案通报")
+        self.assertTrue(sliced)
+        rows, off_col, sliced2, off_set = CT._page_rows(
+            no_head, "sswfaj", "税案通报", {"111"})
+        self.assertFalse(sliced2)
+        self.assertEqual(1, len(rows))
+        self.assertEqual((off_col, off_set), (0, 1))
+        rows_all, _, _, _ = CT._page_rows(no_head, "sswfaj", "税案通报")
+        self.assertEqual(2, len(rows_all), "不给检索集时同目录的行一律收，宁多不漏")
+
+    def test_date_only_line_is_not_glued_into_the_title(self):
+        """发布日期与标题在同一枚锚里，中间由 <br> 或块级标签分开：只剔纯日期那一行。"""
+        li = ('<li><a href="%s">某逃税案查处情况通报'
+              '<br><span class="time">2026.6.22</span></a></li>'
+              % self._href("sswfaj", "2026-06", "22", "111"))
+        rows, _, _, _ = CT._page_rows(self._page(own=[li]), "sswfaj", "税案通报")
+        self.assertEqual("某逃税案查处情况通报", rows[0]["title"])
+        # 规则的作用范围：日期与标题之间没有任何分隔时，两者本就是同一行，
+        # 这一条判据不动它——留着这一句，免得以后把"整行只有日期"读成"标题里不含日期"。
+        glued = ('<li><a href="%s"><span>某逃税案查处情况通报</span>'
+                 '<span class="time">2026.6.22</span></a></li>'
+                 % self._href("sswfaj", "2026-06", "22", "112"))
+        rows2, _, _, _ = CT._page_rows(self._page(own=[glued]), "sswfaj", "税案通报")
+        self.assertEqual("某逃税案查处情况通报2026.6.22", rows2[0]["title"])
+
+    def test_two_line_title_keeps_both_lines(self):
+        li = ('<li><a href="%s"><p>关于发布</p><p>增值税若干事项的公告</p></a></li>'
+              % self._href("sswfaj", "2026-06", "22", "111"))
+        rows, _, _, _ = CT._page_rows(self._page(own=[li]), "sswfaj", "税案通报")
+        self.assertEqual("关于发布 增值税若干事项的公告", rows[0]["title"])
+
+    def test_image_only_row_is_dropped_not_invented(self):
+        li = '<li><a href="%s"><img src="/i/1.jpg"></a></li>' % self._href(
+            "sswfaj", "2026-06", "22", "111")
+        rows, _, _, _ = CT._page_rows(self._page(own=[li]), "sswfaj", "税案通报")
+        self.assertEqual([], rows)
+
+    def test_summary_attaches_to_the_title_row(self):
+        href = self._href("sswfaj", "2026-06", "22", "111")
+        chunk = ('<div class="newsList-item clearfix">'
+                 '<p class="title"><a href="%s">某案通报</a></p>'
+                 '<p class="summary"><a href="%s">案情摘要两行</a></p>'
+                 '<span class="time">2026.6.22</span></div></div>' % (href, href))
+        page = ('<html><body><div class="column-header-1">税案通报</div>%s'
+                '<div class="layout-380">侧栏</div></body></html>' % chunk)
+        rows, off_col, sliced, _ = CT._page_rows(page, "sswfaj", "税案通报")
+        self.assertEqual(1, len(rows))
+        self.assertTrue(sliced)
+        self.assertEqual("案情摘要两行", rows[0]["snippet"])
+
+
+class TestCtaxSubSkillDocHooks(unittest.TestCase):
+    """子技能文档点名的符号要在发货代码里；探针的逐项请求数与 NOTE.md 那张表对得上账。"""
+
+    DOC_DIR = ROOT / "subskills" / "ctaxnews"
+
+    def test_named_symbols_exist(self):
+        named = set()
+        for name in ("SKILL.md", "NOTE.md"):
+            text = (self.DOC_DIR / name).read_text(encoding="utf-8")
+            named |= set(re.findall(r"tax_ctax\.(?!py\b)([A-Za-z_][A-Za-z0-9_]*)", text))
+        self.assertTrue(named, "两份文档至少要点名一条判据")
+        self.assertEqual([], [n for n in sorted(named) if not hasattr(CT, n)])
+
+    def test_probe_item_costs_match_the_note_table(self):
+        src = (self.DOC_DIR / "probe_ctaxnews.py").read_text(encoding="utf-8")
+        cost = None
+        for node in ast.parse(src).body:
+            if (isinstance(node, ast.Assign)
+                    and getattr(node.targets[0], "id", "") == "COST"):
+                cost = ast.literal_eval(node.value)
+        self.assertIsNotNone(cost, "探针里没有 COST 那张表")
+        text = (self.DOC_DIR / "NOTE.md").read_text(encoding="utf-8")
+        block = text.split("## 探针项与请求数", 1)
+        self.assertEqual(2, len(block), "NOTE.md 里没有「探针项与请求数」这一节")
+        table = {}
+        for ln in block[1].splitlines():
+            m = re.match(r"^\|\s*(\d+)\s*\|.*\|\s*(?:约\s*)?(\d+)\s*\|\s*$", ln)
+            if m:
+                table[int(m.group(1))] = int(m.group(2))
+        self.assertEqual(sorted(cost), sorted(table), "表的行与探针的项不成同一集合")
+        for n in cost:
+            self.assertEqual(cost[n], table[n], "第 %d 项的请求数对不上" % n)
+        self.assertEqual(178, sum(cost.values()), "NOTE.md 第 11 行的全项数")
+        self.assertEqual(60, sum(cost.values()) - cost[10], "NOTE.md 第 11 行的 --fast 数")
+
+    def test_the_route_stays_out_of_the_five_source_aggregator(self):
+        """这一路只挂 ③ 的 L4，不混进 ④ 的五源：多一枚默认源会让日期那一维度半接线。"""
+        self.assertFalse([s for s in AGG.DEFAULT_SOURCES if "ctax" in s])
+        self.assertFalse([k for k in AGG.SOURCE_RANK if "ctax" in k])
+        text = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        self.assertTrue(any("中国税网" in ln and "五源聚合" in ln
+                            for ln in text.splitlines()),
+                        "SKILL ⑪ 那一行要写明不进五源聚合")
 
 
 # ── 用例自身的能力自检：规则不能永远绿 ─────────────────────────────────────
