@@ -53,7 +53,7 @@ AI 直接调用网页同款后端接口完成取数，再用自动化打开页�
      日期→`cwrqStart`/`cwrqEnd`、时效→`xxgkAging`），排序另走 `SORT_TO_ORDER`
      （`sort=date`→`orderBy=1`），命中的维度会原样回显在 `result.filters`。这四维在
      「增值税」×文件类白名单基数上各收到多少条、界面把范围与时效两栏一起收窄又剩多少条，
-     是站点层读数，记在 `subskills/chinatax-npc/NOTE.md` 第四节（那一行标明取的是
+     是站点层读数，记在 `subskills/chinatax/NOTE.md` 第二节（那一行标明取的是
      `/api/search` 那一路）。
      时效在这一路走 `aging`（五个文本值）而不是 `status`（NPC 的时效码），界面靠
      `syncFilterControls` 随数据源换那一栏的值域，默认「全部」——白名单里六成条目

@@ -220,7 +220,7 @@ class TestSearchRoute(_RouteCase):
 
         用例故意发 NPC 那侧的"现行有效"：search5 认的是"全文有效"，两套值域不通用。
         发错时接口不发错误码，回的是 `total=0`——与"这一维真的没有内容"是同一个形态
-        （单发读数见 subskills/chinatax-npc/NOTE.md 第五节）。界面只会显示 0 条，看不出
+        （单发读数见 subskills/chinatax/NOTE.md 第三节）。界面只会显示 0 条，看不出
         是值域写错还是库里就这么多，所以原因必须在 400 这一层报出来。
         """
         with mock.patch.object(tax_server, "search_chinatax") as m:

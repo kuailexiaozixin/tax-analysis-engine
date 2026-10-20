@@ -814,8 +814,8 @@ class TestSubskillPointers(unittest.TestCase):
     def test_the_rule_sees_a_nontrivial_number_of_pointers(self):
         """提取规则空转就是假绿：要比对小节的指针条数得有下限。
 
-        口径：2026-10-20 这轮扫到 15 条（全仓 112 条 `subskills/` 指针里，窗口带
-        「第X节」或「小节名」且路径点到了 NOTE.md/SKILL.md 的那几条）。把正则的
+        口径：2026-10-20 拆出 npc-flk 之后重扫，全仓 122 条 `subskills/` 指针里，窗口带
+        「第X节」或「小节名」且路径点到了 NOTE.md/SKILL.md 的有 17 条。把正则的
         排除字符类删宽、或不认「第X节」句式，这一条会先掉到下限以下。
         """
         n = section_pointer_count(self.docs)
@@ -824,15 +824,15 @@ class TestSubskillPointers(unittest.TestCase):
     def test_mutation_renumbered_section_is_caught(self):
         """自检：目标文件里那一节的中文序号换了，指针必须报红。"""
         docs = dict(self.docs)
-        key = "subskills/chinatax-npc/NOTE.md"
-        docs[key] = docs[key].replace("## 四、search5 的可发参数", "## 柒、search5 的可发参数", 1)
+        key = "subskills/chinatax/NOTE.md"
+        docs[key] = docs[key].replace("## 二、search5 的可发参数", "## 柒、search5 的可发参数", 1)
         p = subskill_pointer_problems(docs)
-        self.assertTrue(any("第四节" in x for x in p), "序号改了却不报红：%s" % p)
+        self.assertTrue(any("第二节" in x for x in p), "序号改了却不报红：%s" % p)
 
     def test_mutation_renamed_section_title_is_caught(self):
         """自检：小节改名而引文不动，「小节名」那条判据必须报红。"""
         docs = dict(self.docs)
-        key = "subskills/chinatax-npc/NOTE.md"
+        key = "subskills/npc-flk/NOTE.md"
         docs[key] = docs[key].replace("## 一、NPC（flk）命令行三处细节",
                                       "## 一、NPC（flk）命令行细节", 1)
         p = subskill_pointer_problems(docs)

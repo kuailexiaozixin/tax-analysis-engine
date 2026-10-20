@@ -94,6 +94,8 @@ OFFLINE_GROUP = [
      [PY, str(TESTS_DIR / "test_eval_answer.py")]),
     ("文档内部契约用例（目录锚点/⑥形态清单/前向指针/归属表符号/⑦红线归属登记表/子技能指针小节）",
      [PY, str(TESTS_DIR / "test_doc_contract.py")]),
+    ("子技能自成一体用例（两份文档齐全/不引主技能私有编号/路径与编号指针落地/符号可 import）",
+     [PY, str(TESTS_DIR / "test_subskill_selfcontained.py")]),
 ]
 
 # 联网组：真打外部站点，通不过可能是网络或对方限流，不当作代码问题

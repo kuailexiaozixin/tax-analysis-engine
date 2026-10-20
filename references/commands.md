@@ -56,7 +56,7 @@ python scripts/tax_search.py "<关键词>" --status 1 --size 20
    必须先用 `resolve_tax_type` 归到具体税种/专题，再按税种映射表选词。
 
 `--sort date`、`--from`／`--to`、`--scope fulltext` 这三枚在站点上各有自己的走法，
-逐项读数与取样口径在 `subskills/chinatax-npc/NOTE.md`「一、NPC（flk）命令行三处细节」，
+逐项读数与取样口径在 `subskills/npc-flk/NOTE.md`「一、NPC（flk）命令行三处细节」，
 这里留判据：
 
 - `--sort date` 的排序在**本地做**：接口收到 `orderByParam={order:-1,sort:gbrq}` 并不真按发文
@@ -119,7 +119,7 @@ NPC 法规库那个接口（`tax_search.py`）经实测是**从 1 起算**，两
   定级时优先按它归档，比按标题形态猜准。
 
 默认**按需自适应**：连续 3 页没捞到新的法规库条目就收尾（上限 20 页）。默认检索范围
-已是文件类标签（那十枚就是站点「综合」tab 提交的那一串，见 `subskills/chinatax-npc/SKILL.md`
+已是文件类标签（那十枚就是站点「综合」tab 提交的那一串，见 `subskills/chinatax/SKILL.md`
 第三步），还连着 3 页空手，剩下的只是与检索词沾边的别的文件，硬翻到底只是多花请求。代价是
 **可能漏掉间隔 3 页以上的条目**；若出现 `total` 很少但 `total_hits` 很大的可疑情形，就用
 `--pages N` 显式指定页数——那时会关掉自适应、严格翻满，但翻得越深相关性越差。
@@ -136,20 +136,20 @@ NPC 法规库那个接口（`tax_search.py`）经实测是**从 1 起算**，两
 `appendixContent` 取样全为空串，随文的申报表、税率表只在附件里，所以正文没表不等于没有表）、
 表格与执行期限只在正文层（`tax_evidence.expiry_of`／`period_start_of`）、正文是视频或图片的条目
 带 `media_only: true`（这不是取失败，重试也没用；只有真正取失败才进 `body_error`）、`media_urls`
-是正文层字段且只有 `--body` 那一轮才有。判据写在 `subskills/chinatax-npc/SKILL.md` 第五步；
+是正文层字段且只有 `--body` 那一轮才有。判据写在 `subskills/chinatax/SKILL.md` 第四步；
 铺表口径（colspan 补空列、rowspan 把值带到它盖住的每一行、末列恒空的成因、不吞字的逐行复算）
 与逐篇取样读数（三个检索词 16 条里 3 条带附件、两批 75 篇里 8 篇含 `<table>`、5 条 `media_only`
-全部带出素材地址且抽查两个直链回 200）在 `subskills/chinatax-npc/NOTE.md`
-「三、法规库清单页与正文的形态」。
+全部带出素材地址且抽查两个直链回 200）在 `subskills/chinatax/NOTE.md`
+「一、法规库清单页与正文的形态」。
 
 ### search5 的单发参数与分面字段：读数在子技能
 
-`search5` 的可发参数、八个分面字段与逐项单发读数都在 `subskills/chinatax-npc/NOTE.md`：
-「四、search5 的可发参数与分面字段」是 2026-10-01、10-02 两批单发实测，「五、search5
+`search5` 的可发参数、八个分面字段与逐项单发读数都在 `subskills/chinatax/NOTE.md`：
+「二、search5 的可发参数与分面字段」是 2026-10-01、10-02 两批单发实测，「三、search5
 的值域、两族日期与行业键名单发读数（2026-10-20 取样）」按当日基线重发，两批各自的全站与
 文件类标签基数写在表头，**这两档基数随上游录入每天在漂，比对前先重发当日基线**；
-「六、站点自己发的那一串」是 `getSearch.js` 与 `public.js` 两份脚本的逐行读数，键名以那里为准。
-判据收在 `subskills/chinatax-npc/SKILL.md` 第三步。
+「四、站点自己发的那一串」是 `getSearch.js` 与 `public.js` 两份脚本的逐行读数，键名以那里为准。
+判据收在 `subskills/chinatax/SKILL.md` 第三步。
 这里只登记接进了什么：
 
 - **已接进命令行的有七组**（2026-10-01 起五组，2026-10-02 补 `xxgkAging`、`xxgkEffectLevel`）：
@@ -162,8 +162,8 @@ NPC 法规库那个接口（`tax_search.py`）经实测是**从 1 起算**，两
   `tax_cases.py` 的 `CASE_COLUMN=5741`）。
 - **函数层与命令行都不发**：`xxgkTaxPolicy`、`xxgkFormulatedYear`、`industrytypename`、`likeDoc`、
   `searchWordMd5`，以及 `startTime`／`endTime` 那一族（同一区间带完整时间戳时与 `cwrq` 那族收到
-  同一个集合，页面自己发的是 `cwrq`）。往命令行加新维度时按 `subskills/chinatax-npc/NOTE.md`
-  第四节那张单发参数表逐行核对，不要凭记忆改。
+  同一个集合，页面自己发的是 `cwrq`）。往命令行加新维度时按 `subskills/chinatax/NOTE.md`
+  第二节那张单发参数表逐行核对，不要凭记忆改。
 - 值域是拦停依据：`AGING_VALUES`／`EFFECT_LEVEL_VALUES` 之外的值由 `build_filters` 在发请求前
   抛 `ValueError`。放过去拿到的是 `total=0`，与"这一维真的没有内容"在响应里是同一个形态。
 - 效力等级与时效两维**同发必然归零**，不要拼：判据与数字见 `source_defects.md`
@@ -200,7 +200,7 @@ python scripts/tax_web_search.py "研发费用" --doc-type "财政部 税务总�
     --doc-year 2023 --doc-no 7
 
 # 成文日期区间：命令行只收 YYYY-MM-DD，发出去前补成整点时间戳（全站基数下 2024 全年收到 207 条；
-# 不补时间戳的那一发量的不是区间，见 subskills/chinatax-npc/NOTE.md 第五节）
+# 不补时间戳的那一发量的不是区间，见 subskills/chinatax/NOTE.md 第三节）
 python scripts/tax_web_search.py "增值税" --cwrq-from 2024-01-01 --cwrq-to 2024-12-31
 
 # 按录入的时效或效力等级收窄（取值域就是命令行回显的那几档，域外值发请求前就报错；
@@ -211,10 +211,10 @@ python scripts/tax_web_search.py "增值税" --effect-level 财税文件
 # 换排序：date_desc 发的是 orderBy=1（成文日期最新在前；orderBy=2 排的是类别不是日期）
 python scripts/tax_web_search.py "增值税" --order date_desc --size 8
 
-# 要连新闻、视频、各地动态一起搜时才关白名单（关掉后基数换成全站那一档，两档的成分对比见 NOTE.md 第四节）
+# 要连新闻、视频、各地动态一起搜时才关白名单（关掉后基数换成全站那一档，两档的成分对比见 NOTE.md 第二节）
 python scripts/tax_web_search.py "小微企业" --all-labels
 
-# 法规库清单同样可下推维度（把翻页窗口对准法规文件；栏目与分面那批读数在 subskills/chinatax-npc/NOTE.md 第四节）
+# 法规库清单同样可下推维度（把翻页窗口对准法规文件；栏目与分面那批读数在 subskills/chinatax/NOTE.md 第二节）
 python scripts/tax_fgk.py "增值税" --tax-type 增值税 --pages 5
 
 # 逐条查关联文件/解读/问答（每条多一次 POST，不依赖 --body、不进缓存）

@@ -68,7 +68,7 @@ def _ui_filters(scope: str, exact, date_from, date_to, aging: str = "") -> dict:
 
     走 search5 的源（chinatax／fgk，含 NPC 分支里被自动换源到法规库的 sta 专题）
     都调这一个，免得控件在某一条路径上又被静默丢掉。命令行开关与判据在
-    references/commands.md，逐档取值域与单发读数在 subskills/chinatax-npc/NOTE.md。
+    references/commands.md，逐档取值域与单发读数在 subskills/chinatax/NOTE.md。
 
     aging 是「时效」控件在 search5 那一侧的取值（全文有效／已修改／全文失效／
     全文废止／尚未生效），与 NPC 的 status 码是两套值域，前端按数据源切换：

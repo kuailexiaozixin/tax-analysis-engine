@@ -3029,7 +3029,7 @@ class _FlkResp:
 class TestFlkTotalIsNotTheEchoedHitCount(unittest.TestCase):
     """命令行的回显：flk 那一格 `total` 是接口随参数换值的回报，不是命中总数。
 
-    取样口径与逐发读数在 `subskills/chinatax-npc/NOTE.md` 第二节：同一枚「环境保护」在
+    取样口径与逐发读数在 `subskills/npc-flk/NOTE.md` 第二节：同一枚「环境保护」在
     `pageSize=5` 回 3,118、在 10／20／50 回 224，`pageSize=10` 翻到第 23 页它又回 3,118。
     按 `⌈total/pageSize⌉` 报"一共几页"会在一份还能翻的集合上给出一个假的顶。
     """

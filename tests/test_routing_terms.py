@@ -414,7 +414,7 @@ def test_aging_and_effect_level_domains():
 
     为什么要在这一层拦：接口对不认识的取值不发错误码，回的是 `total=0`，与"这一维
     真的没有内容"在响应里是同一个形态（域外值那两发的读数与口径见
-    subskills/chinatax-npc/NOTE.md 第五节）。调用方看到的是一条筛得很干净的 0 条，
+    subskills/chinatax/NOTE.md 第三节）。调用方看到的是一条筛得很干净的 0 条，
     以为这一维收到底了，其实是值域写错。
     """
     assert W.build_filters(aging="全文有效") == {"xxgkAging": "全文有效"}
@@ -463,7 +463,7 @@ def test_doc_year_help_says_the_document_number_year():
     依据是 2026-10-20 空词整档的两发对照（`docYear=2024` 回 82、`xxgkFormulatedYear=2024`
     回 90，两发的 10 行里能逐条指出 1 条差异：《中华人民共和国增值税法》文号空、制定年 2024，
     只被后者收到；其余 7 条差额要翻页才比得齐，本机没取），逐发口径记在
-    `subskills/chinatax-npc/NOTE.md` 第五节。帮文写错时照着填的人会拿成文日期那年
+    `subskills/chinatax/NOTE.md` 第三节。帮文写错时照着填的人会拿成文日期那年
     去填这一栏，命中的是另一批条目。成文日期那一维另有两枚开关（`--cwrq-from`／
     `--cwrq-to`），帮文里必须把这层分开。
     变异验证：把 help 改回「成文年份四位（docYear）」，本条报红。
