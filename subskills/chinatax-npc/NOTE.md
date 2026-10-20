@@ -98,7 +98,7 @@
 ## 二、NPC（flk）接口形态、分类树与 `total` 的换值
 
 **取样口径**：`POST https://flk.npc.gov.cn/law-search/search/list`。除注明外每一发都按
-`tax_search.search_npc` 那一串发（`searchRange=1`、`searchType=2`、`sxx=[3]` 即现行有效、
+`tax_search.search_tax` 那一串发（`searchRange=1`、`searchType=2`、`sxx=[3]` 即现行有效、
 `gbrq=[]`、`sxrq=[]`、`gbrqYear=[]`、`flfgCodeId=[]`、`zdjgCodeId=[]`、`xgzlSearch=false`、
 `orderByParam={order:"",sort:""}`、`pageNum=1`、`pageSize=5`），检索词除注明外固定「环境保护」；
 每发只改表里那一枚键，读的是响应**根节点**的 `total` 与 `rows` 长度；请求间隔 15 秒。

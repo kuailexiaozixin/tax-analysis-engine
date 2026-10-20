@@ -29,7 +29,7 @@ description: |
 
 | 要什么 | 走哪条 | 前置 |
 |---|---|---|
-| 上位法（法律、行政法规）按税种找 | `tax_search.search_npc(关键词)`，即 `POST flk.npc.gov.cn/law-search/search/list` | 无：开放接口，不要凭据、不启浏览器 |
+| 上位法（法律、行政法规）按税种找 | `tax_search.search_tax(关键词)`，即 `POST flk.npc.gov.cn/law-search/search/list` | 无：开放接口，不要凭据、不启浏览器 |
 | 本体法名已知，只要那一份 | 同一函数的 `search_type=1`，命令行 `--exact` | 无 |
 | 总局公告、规范性文件、文字解读 | `tax_web_search.search_chinatax(关键词)`，即 `GET www.chinatax.gov.cn/search5/search/s` | 无 |
 | 规章与法规库条目（国际税收、转让定价、处罚依据在这一路） | `tax_fgk.search_fgk(关键词)`，翻页自适应 | 无 |
