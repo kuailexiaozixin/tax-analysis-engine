@@ -46,7 +46,7 @@ AI 直接调用网页同款后端接口完成取数，再用自动化打开页�
      `source`（npc|chinatax|fgk|aggregated，取值域是 `tax_server.SEARCH_SOURCES`，
      显式给这四个之外的值一律 400 并在 `error` 里列出取值域；不给这一维才是默认
      NPC——改前这样的值会落进 `api_search` 的 else 分支按 NPC 查完回 200，调用方
-     以为结果出自自己点的那一源）/ `province` / `date_from` / `date_to` / `size` / `body`
+     以为结果出自自己点的那一源）/ `province` / `date_from` / `date_to` / `size` / `page`（1 起算，只对 NPC 与税务总局两路下推，法规库与聚合无此维度）/ `body`
      结果不在顶层：单源在 `result.results`，`source=aggregated` 在 `result.items`；
      每条的法规号字段叫 `id`，它就是后面三个接口要用的 `<bbbs_id>`。
      归类换源写在 `result._routed`，源被拦写在 `result.errors`（聚合）里。
@@ -70,6 +70,12 @@ AI 直接调用网页同款后端接口完成取数，再用自动化打开页�
      `UNROUTED_NOTE`——这时检索词就是用户原话，NPC 按字面匹配标题（实测整句
      提问回 687 条、首条《证券投资基金法》）。这句必须看到：不写出来，一摞无
      关法条会读成"按本题找出来的依据"。
+
+     size/page 取值域由 `_int_param` 统一闸：size 1~100，page>=1，
+     坏值一律 400。`result._count_note` 把「库内总数」与「本轮给出」拆成两个口径写成整句，
+     前端照抄进标签。`result._page_note` 只有在 `page>1` 且实际取数层没有这一维时出现
+     （判定基于 `effective` 而不是用户点的那一源）。前端「本轮条数」与「页码」控件的启用判据是
+     `PAGE_SOURCES` 常量，切换到另两源时按钮置灰并把理由写进 label.title。
    - `GET /api/text/<bbbs_id>` — 法规全文。正文是 `sections` 数组，每项
      `{type, text}`，`type` 取 chapter|article|heading|body；条文数是 `article_count`，
      没有名为 `content` 的单字段。
@@ -88,13 +94,19 @@ AI 直接调用网页同款后端接口完成取数，再用自动化打开页�
    - `GET /api/quick-tax-types` — 快捷税种清单，整份由 `tax_search.TAX_TYPE_KEYWORDS`
      渲出（现有 33 项），每项只有 `label` 与 `keyword` 两枚字段且同值：点下去发的就是
      专题名，接下来按哪部本体法检索由 `resolve_tax_type` 与 `api_search` 的换源规则决定，
-     界面不替它预判。这一份以前手写十二项，永远比词表少一截——全球最低税、税收协定、
-     转让定价这类专题在界面上点不到，命令行与 NPC 分支的换源却能走到，读界面的人会以为
-     引擎只认这十二个。原先的 `icon` 字段一并去掉：前端只读那两枚，发出去没人读的字段
-     会变成第二份迟早和词表对不上的清单。发票不在归类词表的键里（它是
-     `tax_search.detect_intent` 的五个意图之一），入口在引导面板第三步的"发票问题"。
-     首页铺前 12 项加"展开其余 21 项"，那个数字是 `frontend/index.html` 的
-     `QUICK_TAX_SHOWN`，与清单条数无关。
+     界面不替它预判。这一份不在路由里手写第二遍，也不加第三枚字段（`icon` 那类）——
+     前端只读那两枚，多出来的清单迟早和词表对不上，表现为界面上点不到而命令行走得通。
+     发票不在归类词表的键里（它是 `tax_search.detect_intent` 的五个意图之一），
+     入口在引导面板第三步的"发票问题"。
+     键序就是按钮顺序：首页直接铺出前 18 枚，其余 15 项收在"展开其余 15 项"那一枚里。
+     这个 18 不是凑整——`TAX_TYPE_KEYWORDS` 的键序前 18 项正是我国现行十八个税种
+     （增值税到环境保护税，含烟叶税），第 19 项起才是横切专题，`QUICK_TAX_SHOWN` 取的
+     就是这个段长。切点落在段中间时会有税种默认点不到。段长与这一枚数由
+     `tests/test_server_routes.py` 的 `test_default_row_covers_all_statutory_tax_types`
+     钉住（该用例另存一份十八个税种的名字，按单行法律／暂行条例数出来的，不从词表反推）。
+     词表挪键序前要想到归类打平时的胜负手：`resolve_tax_type` 比的是（别名长度、
+     有无本体法、别名长度），三项全平才由键序决定，2026-10-20 把烟叶税挪进税种段时
+     359 道标注题逐题归类结果不变。
    - `GET /api/calc` — 算式展开面板的骨架清单。`骨架` 数组每项给 `名称`／`公式`／
      `参数`／`结果`，`限制` 是 `tax_calc.DISCLAIMER`。`参数` 来自
      `tax_calc.inputs_spec`，每项是 `{名称, 形态, 列}`：`形态` 取 `数值` 或 `税率表`，
@@ -264,8 +276,9 @@ AI 直接调用网页同款后端接口完成取数，再用自动化打开页�
   那一行。字段名因此必须真的出现在那句里，`tests/test_date_window.py` 的
   `test_note_names_each_server_field` 拿 `DATE_SERVER_FIELDS` 三枚逐一比对
   `_date_scope_note` 的输出
-- 快捷税种那一栏铺 `GET /api/quick-tax-types` 回来的 33 项，前 12 项直接给按钮、
-  其余由"展开其余 21 项"这一枚铺开（`QUICK_TAX_SHOWN` 只管铺多少枚，与清单条数无关）。
+- 快捷税种那一栏铺 `GET /api/quick-tax-types` 回来的 33 项，前 18 项（现行十八个税种）
+  直接给按钮、其余 15 项由"展开其余 15 项"这一枚铺开（`QUICK_TAX_SHOWN` 取词表税种段
+  的段长，与清单总条数无关；段长变了这一枚要跟着变，用例 `test_default_row_covers_all_statutory_tax_types` 会报红）。
   点一项就是把专题名填进搜索框发一次检索，界面不预判它归到哪部本体法——换源规则在
   `api_search` 那一侧
 - 4 Tab 法规弹窗：法规原文（关键词高亮）/ 官方解读 / AI 解读 / 相关网页；

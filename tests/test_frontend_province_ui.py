@@ -80,16 +80,17 @@ class TestProvinceControlMovedOutOfSearchBar(unittest.TestCase):
     def test_filter_province_is_gone(self):
         self.assertFalse("filterProvince" in _code(HTML), "filterProvince 不该再出现")
 
-    def test_filters_bar_keeps_only_the_six_real_filters(self):
+    def test_filters_bar_keeps_only_the_eight_real_filters(self):
         bar = _slice(HTML, FILTERS_BAR, "<!-- \u2550\u2550\u2550 RESULTS")
-        self.assertEqual(6, bar.count('class="filter-group"'), bar)
+        self.assertEqual(8, bar.count('class="filter-group"'), bar)
         self.assertFalse("省份" in bar, "搜索栏里不该再有省份")
         for fid in ("filterScope", "filterType", "filterStatus",
-                    "filterSort", "filterSource", "filterDateFrom"):
+                    "filterSort", "filterSource", "filterSize",
+                    "pageGroup", "filterDateFrom"):
             self.assertIn(fid, bar, fid)
 
     def test_search_payload_has_no_province(self):
-        body = _slice(HTML, "async function doSearch(){", "function renderResults(")
+        body = _slice(HTML, "async function doSearch(resetPage=true){", "function renderResults(")
         payload = _slice(body, "const payload={", "};")
         self.assertNotIn("province", re.findall(r"(\w+)\s*:", payload),
                          "payload 里不该有 province 键")

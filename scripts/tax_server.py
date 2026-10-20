@@ -51,6 +51,50 @@ PORT = int(os.getenv("TAX_PORT", "5080"))
 # source=aggregate 都回 200、走的是 search_tax）。不给 source 才是默认 NPC。
 SEARCH_SOURCES = ("npc", "chinatax", "fgk", "aggregated")
 
+# 界面「本轮条数」那一栏的取值域。上界不是随口定的：tax_search.search_tax 往下发的是
+# min(size, 100)，比它大的值会被 NPC 自己截成 100，界面上写的条数与实际取回的条数
+# 就成了两个数。这里宁可在闸门上就把上界说明白。
+SIZE_DEFAULT = 20
+SIZE_MAX = 100
+
+# 没有页码维度的那两路：聚合是六源各取 size 条再合并截断，法规库是一次连扫若干页
+# 按 size 截断（tax_fgk.search_fgk 只有 max_pages，没有 pageNum）。这两路上的页码
+# 控件必须说清没生效，不能静默停在第一轮取回的那批条目上。
+PAGELESS_LAYERS = ("aggregated", "fgk")
+
+
+def _int_param(data: dict, name: str, default: int, lo: int, hi: int = None) -> int:
+    """把请求体里的数值控件读成一个整数，坏值在这一层就报出去。
+
+    size 与 page 直接进上游请求体的 pageSize 与 pageNum。改动前这两枚是 `min(data.get
+    ("size", 20), 50)` 这样吃的：发成字符串时比较运算抛 TypeError，回的是 HTML 的
+    500 页面，调用方看不出是自己多带了一个字段；发 0 时上游照样回 200 且清单为空，
+    界面把它读成"库里没有"。与 source／aging／日期那三道闸同一口径。
+    """
+    raw = data.get(name)
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        raise ValueError(f"{name} 要的是整数，收到的是 {raw!r}")
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not re.fullmatch(r"\d+", raw):
+            raise ValueError(f"{name} 要的是整数，收到的是 {raw!r}")
+        value = int(raw)
+    elif isinstance(raw, int):
+        value = raw
+    elif isinstance(raw, float):
+        if not raw.is_integer():
+            raise ValueError(f"{name} 要的是整数，收到的是 {raw!r}")
+        value = int(raw)
+    else:
+        raise ValueError(f"{name} 要的是整数，收到的是 {type(raw).__name__}")
+    domain = f"{lo}~{hi}" if hi is not None else f"不小于 {lo}"
+    if value < lo or (hi is not None and value > hi):
+        raise ValueError(f"{name} 只认 {domain} 的整数，收到的是 {raw!r}")
+    return value
+
+
 # 检索意图在界面上显示成什么。取值域是 tax_search.INTENTS；这里的措辞比
 # tax_formatter.INTENT_HEADERS 短，因为界面那一栏是个标签，不是 markdown 标题。
 # 两张表各管一个界面，键集合由 tests/test_routing_terms.py::test_intent_vocabularies_agree 对齐。
@@ -114,6 +158,28 @@ def _stamp_source(result: dict, source: str) -> None:
     for item in (result.get("results") or result.get("items") or []):
         if isinstance(item, dict):
             item.setdefault("_source", source)
+
+def _count_note(result: dict, source: str, page: int) -> str:
+    """把"库里有多少"与"这一轮给了多少"分开说，整句由后端给，前端只照抄。
+
+    改动前界面那一栏只有一个数：`result.total || result.total_items || items.length`。
+    单源那三路读的是上游的命中总数（实测「增值税」NPC 45 条、税务总局 1910 条），
+    卡面却只有本轮取回那 20 张；聚合那一路读的是 total_items（六源去重后收全的条数），
+    而 tax_aggregator 往下给的是 items[:size*3]，两个口径共用一个"📋 N条"，
+    看页面的人会以为屏幕上这一摞就是全部。
+    """
+    items = result.get("results") or result.get("items") or []
+    if source == "aggregated":
+        lib, head = result.get("total_items"), "六源共收"
+    else:
+        lib, head = result.get("total"), "库内命中"
+    tail = f" · 第 {page} 页" if page > 1 else ""
+    if lib is None:
+        return f"本轮给出 {len(items)} 条{tail}"
+    if lib == len(items):
+        return f"{head} {lib} 条（已全部给出）{tail}"
+    return f"{head} {lib} 条 · 本轮给出 {len(items)} 条{tail}"
+
 
 _text_cache = {}
 _interp_cache = {}
@@ -404,12 +470,18 @@ def api_search():
     status = data.get("status", 3)
     date_from = data.get("date_from")
     date_to = data.get("date_to")
-    size = min(data.get("size", 20), 50)
     sort = data.get("sort", "relevance")
     source = data.get("source", "npc")
     if source not in SEARCH_SOURCES:
         return jsonify({"error": "source 只认 %s 这几个取值，收到的是 %r"
                                  % ("／".join(SEARCH_SOURCES), source)}), 400
+    # 本轮条数与页码两道取值域闸。排在分支之前，是因为这两枚的值要带进下面每一条
+    # 取数调用；坏值如果不在这儿拦掉，进到 min()/pageNum 就是 500 或空清单。
+    try:
+        size = _int_param(data, "size", SIZE_DEFAULT, 1, SIZE_MAX)
+        page = _int_param(data, "page", 1, 1)
+    except ValueError as e:
+        return jsonify({"error": f"筛选参数不合法：{e}"}), 400
     # 真正取回这一批条目的那一层。用户点的是 source，但下面两处会换层（sta 专题
     # 换到法规库、境外专题换到税务总局全站层），换层时这一栏跟着改，条目的来源
     # 标注才不会停在用户点的那一源上。聚合那一路由 tax_aggregator 逐条写。
@@ -459,8 +531,14 @@ def api_search():
             else:
                 if parent_law:
                     agg_kw = parent_law
+                # 「匹配」这一栏在聚合里只约束走 NPC 的那一路（aggregate_search 往下
+                # 只在 npc 那一条 future 上用 exact，其余五路没有这个参数）。改动前这
+                # 一行写的是 exact=bool(parent_law)，请求体里的值从不读：归不出本体法时
+                # 用户在界面上点"精确"是空转。现在两问合一——用户点精确就按精确，
+                # 检索词是本体法名时仍强制精确（否则模糊按发布时间排，本体法被顶出首位）。
                 result = aggregate_search(agg_kw, size=size, status=status,
-                                          scope=scope, exact=bool(parent_law),
+                                          scope=scope,
+                                          exact=bool(parent_law) or bool(data.get("exact")),
                                           sort=sort, date_from=date_from,
                                           date_to=date_to)
                 if parent_law:
@@ -489,7 +567,7 @@ def api_search():
             # note）。不换就是回一份空清单，读起来像"这件事没有文件"。换层的原因
             # 写进 _routed，与 sta 那一路把 NPC 换成法规库同形。
             term = (tax_type_info or {}).get("search_term") or keyword
-            result = search_chinatax(term, size=size, filters=ui_filters,
+            result = search_chinatax(term, page=page, size=size, filters=ui_filters,
                                      file_only=False, order=ui_order)
             effective = "chinatax"
             where = "法规库" if source == "fgk" else "税务总局的文件类标签"
@@ -497,7 +575,7 @@ def api_search():
                 f"{tax_type_info['type']}的规则主体在境外辖区，{where}里没有对应文件，"
                 f"已改查税务总局全站层（文件类标签之外）：{term}")
         elif source == "chinatax":
-            result = search_chinatax(keyword, size=size, filters=ui_filters,
+            result = search_chinatax(keyword, page=page, size=size, filters=ui_filters,
                                      order=ui_order)
         else:
             result = search_fgk(keyword, size=size, with_body=bool(data.get("body")),
@@ -539,7 +617,7 @@ def api_search():
                                          data.get("aging"))
             except ValueError as e:
                 return jsonify({"error": f"筛选参数不合法：{e}"}), 400
-            result = search_chinatax(term, size=size, filters=ui_filters,
+            result = search_chinatax(term, page=page, size=size, filters=ui_filters,
                                      file_only=False,
                                      order=SORT_TO_ORDER.get(sort, "relevance"))
             effective = "chinatax"
@@ -551,7 +629,7 @@ def api_search():
                 result = search_tax(
                     keyword, scope=scope, search_type=search_type,
                     status=status, date_from=date_from, date_to=date_to,
-                    size=size, sort=sort,
+                    page=page, size=size, sort=sort,
                 )
             except ValueError as e:
                 # NPC 这一路不吃日期校验时，非法格式发给接口是被静默忽略还是
@@ -564,6 +642,19 @@ def api_search():
 
     if source != "aggregated":
         _stamp_source(result, effective)
+
+    # 页码这一维不是四条分支都有：聚合按 size×3 截断、法规库一次扫若干页再截断，
+    # 两路都没有 pageNum。这两路上用户点了"下一页"，清单照样回 200、条数照样是有的，
+    # 不写这一句就读成"第 2 页取回的是这些"。判定放在后端而不是让前端看数据源：
+    # 用户点的是 NPC，归类成总局专题时条目其实来自法规库那一层。
+    if page > 1 and (source == "aggregated" or effective == "fgk"):
+        result["_page_note"] = (
+            f"第 {page} 页没有生效：多源聚合没有页码这一维，六源各按本轮条数取回再合并、"
+            "按权威度排序后截断，这份清单仍是本轮取回的那一批；要一次多看就把「本轮条数」调大"
+            if source == "aggregated" else
+            f"第 {page} 页没有生效：税务法规库这一层没有页码，它是一次连扫若干页再按本轮条数"
+            "截断，这份清单仍是本轮扫到的那一批；要按页翻请切到 NPC 或税务总局")
+    result["_count_note"] = _count_note(result, source, page)
 
     # 会计口径缺口这句话由 tax_analyze 写成整句，前端只照抄——不在界面里自己
     # 判断准则能不能当依据（判据在 SKILL.md ③ 末）。按用户原话判，不看被改写后
@@ -581,6 +672,10 @@ def api_search():
     return jsonify({
         "keyword": keyword,
         "user_keyword": data.get("keyword", "").strip(),
+        # 这一轮真正生效的两个数由后端回，界面不拿自己 DOM 里的值充数：
+        # 请求体里的 size 可能被取值域闸门拦下、page 可能在没有这一维的那两路被丢掉。
+        "size": size,
+        "page": page,
         "intent": intent,
         "province": province,
         "intent_label": INTENT_LABELS.get(intent, intent),
@@ -839,10 +934,16 @@ def api_web_related(bbbs_id):
 def api_quick_tax_types():
     """首页税种栏与引导面板第二步共用的清单，整份由归类词表渲出。
 
-    以前这里手写十二项，而归类与自动换源走的是 `tax_search.TAX_TYPE_KEYWORDS`
-    （现有 33 项）。手写那一份永远比词表少一截：全球最低税、税收协定、转让定价
-    这类专题在界面上点不到，命令行与 NPC 分支的换源却能走到，读界面的人会以为
-    引擎只认这十二个税种。
+    这一份不在路由里手写第二遍：归类与自动换源读的是 `tax_search.TAX_TYPE_KEYWORDS`
+    （现有 33 项），另立清单永远比词表少一截——全球最低税、税收协定、转让定价这类
+    专题界面上点不到，命令行却能走到，读界面的人会以为引擎只认清单里那几个。
+    键序就是界面上按钮的先后：前端按回来的顺序渲，只铺前 QUICK_TAX_SHOWN 枚，其余收进
+    "展开"。词表因此按"税种段在前、横切专题在后"排——前 18 键正是现行十八个税种
+    （含烟叶税），第 19 键起是专题；段长与那一枚数由
+    `tests/test_server_routes.py::test_default_row_covers_all_statutory_tax_types` 钉住。
+    挪键序对归类的风险有限但不为零：`resolve_tax_type` 比的是（别名长度、有无本体法、
+    别名长度），键序只在这三项打平时决定谁被取——本次把烟叶税从词表末尾挪进税种段，
+    359 道标注题的归类结果逐题相同。
     keyword 一律取键名本身：点下去发的是专题名，接下来按哪部本体法检索由
     `resolve_tax_type` 归类和 `api_search` 的换源规则决定，界面不替它预判。
     原先的 icon 字段一并去掉——前端只读 label 与 keyword，发出去没人读的字段

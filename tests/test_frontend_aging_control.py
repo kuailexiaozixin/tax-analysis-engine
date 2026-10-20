@@ -80,8 +80,8 @@ class TestStatusValueSpaceFollowsSource(unittest.TestCase):
     def test_no_disabled_trick_left_on_the_status_control(self):
         """置灰那一套整个退役：函数体里不许再碰 disabled。"""
         body = _slice(HTML, "function syncFilterControls(){", "\n}\n")
-        self.assertNotIn("disabled", body,
-                         "时效栏改的是值域不是可用性，disabled 一回来控件就又开始空转")
+        self.assertNotIn("st.disabled", body,
+                         "时效栏改的是值域不是可用性，st.disabled 一回来控件就又开始空转")
 
     def test_control_carries_why_the_default_is_all(self):
         """默认「全部」的理由要写在 title 里，否则用户以为筛选栏坏了。
@@ -145,7 +145,7 @@ class TestWritesGoThroughTheSharedEntry(unittest.TestCase):
 
     def test_reader_splits_the_two_axes_by_source(self):
         """发请求时数字 status 与文本 aging 只能发一套，另一套留空。"""
-        body = _slice(HTML, "async function doSearch(){", "function renderResults(")
+        body = _slice(HTML, "async function doSearch(resetPage=true){", "function renderResults(")
         self.assertIn("status:s5?null:(parseInt(stv)||null)", body)
         self.assertIn("aging:s5?stv:''", body)
 

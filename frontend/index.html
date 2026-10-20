@@ -192,6 +192,27 @@ body{
 .filter-group select:focus,.filter-group input:focus{
   border-color:var(--black);
 }
+/* 页码那一栏：两个按钮 + 当前页码。禁用态由 syncFilterControls 按数据源切换
+   （法规库与聚合两层的取数方式没有页码这一维，见那两个分支里的说明），
+   禁用时不只是一个灰点——label 的 title 会换成"这一层没有页码"那句理由。 */
+.pg-btn{
+  padding:2px 8px;
+  border:1px solid var(--g200);
+  border-radius:2px;
+  background:var(--white);
+  color:var(--black);
+  font-size:12px;
+  font-family:inherit;
+  cursor:pointer;
+}
+.pg-btn:disabled{color:var(--g300);cursor:not-allowed;background:var(--g100)}
+.pg-cur{
+  min-width:16px;
+  text-align:center;
+  font-size:12px;
+  color:var(--black);
+}
+.filter-group.disabled label{color:var(--g300)}
 
 /* ── Results ── */
 .results-area{padding:0 20px 60px;max-width:var(--readable);margin:0 auto}
@@ -524,10 +545,12 @@ table.calc-tiers td{padding:2px 6px}
 <!-- ═══ FILTERS ═══ -->
 <div class="filters-bar" id="filtersBar">
   <div class="filter-group"><label>范围</label><select id="filterScope"><option value="title" selected>标题</option><option value="fulltext">全文（按全文分词命中，可能偏题）</option></select></div>
-  <div class="filter-group"><label>匹配</label><select id="filterType"><option value="fuzzy">模糊</option><option value="exact">精确</option></select></div>
+  <div class="filter-group"><label title="按整个检索词精确匹配，不按分词模糊命中。两处例外：归出本体法时后端强制精确（换源那一行会写明按哪部法检索），聚合那一路这一栏只约束走 NPC 的那一路">匹配</label><select id="filterType"><option value="fuzzy">模糊</option><option value="exact">精确</option></select></div>
   <div class="filter-group"><label>时效</label><select id="filterStatus" title=""><option value="3" selected>现行有效</option><option value="">全部</option></select></div>
   <div class="filter-group"><label>排序</label><select id="filterSort"><option value="relevance">相关度</option><option value="date">日期↓</option></select></div>
   <div class="filter-group"><label>数据源</label><select id="filterSource" onchange="syncFilterControls()"><option value="npc">NPC法规库</option><option value="aggregated">多源聚合</option><option value="chinatax">税务总局</option><option value="fgk">税务法规库</option></select></div>
+  <div class="filter-group"><label title="一次让每个数据源取回多少条。库内命中比这一栏多时用右边的页码翻页；聚合那一路是六源各取这么多条再合并、按权威度排后截断，它没有页码，要一次多看只能调大这一栏">本轮条数</label><select id="filterSize"><option value="20" selected>20 条</option><option value="50">50 条</option><option value="100">100 条</option></select></div>
+  <div class="filter-group" id="pageGroup"><label id="pageLabel" title="翻上一轮 / 下一轮。这一维只有 NPC 与税务总局两路有">页码</label><button class="pg-btn" id="pagePrev" onclick="turnPage(-1)">‹</button><span class="pg-cur" id="pageCur">1</span><button class="pg-btn" id="pageNext" onclick="turnPage(1)">›</button></div>
   <div class="filter-group"><label title="这一维按数据源分两种生效方式：有的由接口自己收窄，有的只在本轮取回的条目窗口内补筛。本轮哪一路收的是哪一枚日期字段、取回与剔除多少条，写在结果上方那行日期说明里">日期</label><input type="date" id="filterDateFrom">—<input type="date" id="filterDateTo"></div>
 </div>
 
@@ -568,6 +591,7 @@ table.calc-tiers td{padding:2px 6px}
 <script>
 /* ═══════════ STATE ═══════════ */
 let lastResults=[],lastKeyword='',guideState={},activeTab='law';
+let currentPage=1;
 const NEXT_STEP={user_type:'tax_type',tax_type:'intent',intent:'conditions'};
 
 /* 六源在界面上的名字只有这一份。改动前这里存着 srcLabels 与 srcIcons 两张表，
@@ -679,6 +703,31 @@ function toggleFilters(){
 const AGING_S5=['全文有效','已修改','全文失效','全文废止','尚未生效'];
 const AGING_FROM_NPC={'3':'全文有效','2':'已修改','1':'全文废止','4':'尚未生效'};
 function currentSource(){return document.getElementById('filterSource').value;}
+
+/* 页码这一维只有两路有：tax_search.search_tax 与 tax_web_search.search_chinatax 都往
+   上游请求体里发 pageNum（后者的 pageNum 从 0 起算，取数层对外已统一成 1 起算）。
+   税务法规库那一路没有页码——它一次连扫若干页再按「本轮条数」截断（tax_fgk.search_fgk
+   只有 max_pages）；聚合也没有——六源各取 size 条合并后按 size×3 截断。这两路禁用按钮
+   而不是藏掉控件，label 的 title 换成该层的取数方式，让人知道为什么点不动；真发下去
+   后端也会回 _page_note 那一行（点的是 NPC、条目却被换到法规库时只有后端知道）。 */
+const PAGE_SOURCES=['npc','chinatax'];
+const PAGE_PAGELESS_WHY={
+  page:'翻上一轮 / 下一轮。这一维只有 NPC 与税务总局两路有',
+  fgk:'这一层没有页码：法规库是一次连扫若干页再按「本轮条数」截断，要一次多看就调大那一栏',
+  aggregated:'这一层没有页码：聚合是六源各取「本轮条数」那么多条再合并、按权威度排后截断，要一次多看就调大那一栏'
+};
+function isPageable(){return PAGE_SOURCES.includes(currentSource());}
+function paintPageCursor(){
+  document.getElementById('pageCur').textContent=currentPage;
+  document.getElementById('pagePrev').disabled=!isPageable()||currentPage<=1;
+}
+function turnPage(d){
+  if(!isPageable())return;
+  const n=currentPage+d;
+  if(n<1)return;
+  currentPage=n;
+  doSearch(false);
+}
 function statusSpaceIsS5(){const s=currentSource();return s==='chinatax'||s==='fgk';}
 function syncFilterControls(){
   const st=document.getElementById('filterStatus');
@@ -692,6 +741,17 @@ function syncFilterControls(){
              :(sv==='aggregated'
                ?'按 NPC 库的时效码收窄。聚合里这一栏只约束走 NPC 的那一路，其余各路没有这个参数、按各自默认范围取回，逐条看卡面上的时效标记'
                :'按 NPC 库的时效码收窄，默认「现行有效」');
+  // 换源就是换一批结果，页码回到第 1 页；停在第 3 页再换源会把新清单的第 1 页
+  // 标成第 3 页（服务端回的 page 会跟着请求走，界面那一栏也就跟着错了）
+  currentPage=1;
+  const pageable=isPageable(),pl=document.getElementById('pageLabel');
+  document.getElementById('pageGroup').classList.toggle('disabled',!pageable);
+  pl.title=pageable?PAGE_PAGELESS_WHY.page
+                   :PAGE_PAGELESS_WHY[sv];
+  // 换源先把"下一页"按这一层有没有页码定下来；查到结果后再按总数收一次，
+  // 免得主页面还没查过时按钮亮着却翻不动。
+  document.getElementById('pageNext').disabled=!pageable;
+  paintPageCursor();
 }
 /* 按 NPC 的时效码设置那一栏，落到哪个值域看当前数据源。向导（step 4「只看现行有效」）
    与主搜索栏共用这一个入口，免得当源是 search5 时把「3」写进一个不含该选项的
@@ -706,9 +766,13 @@ function setNpcStatus(code){
    归类词表原样列出来——界面前些字手写过一份"常用税种"清单，词表里有 33 项、
    页面上只有 12 项，点不到的那些在命令行和自动换源里都走得通，看页面的人却
    会以为引擎只认这 12 个。
-   默认只铺前 QUICK_TAX_SHOWN 项（词表按流转税、所得税排在前面），其余收起来：
-   三十几枚按钮一起铺开会把搜索框顶出首屏。 */
-const QUICK_TAX_SHOWN = 12;
+   铺开的那一项数按"税种段"取，不取一个凑整的数：词表前 18 项是我国现行 18 个
+   税种（增值税…环境保护税），第 19 项起才是专题。以前这里写 12，切在税种段中间，
+   车辆购置税、印花税、城建税、烟叶税、资源税、环保税六个税种被收到"展开"后面，
+   读界面的人会以为烟叶税不是税种。其余收起来：三十几枚按钮一起铺开会把搜索框顶出
+   首屏。这个 18 与词表顺序的对应关系由 tests/test_server_routes.py 钉住——词表往
+   税种段里插专题、或把这一枚数改小，用例都会报红。 */
+const QUICK_TAX_SHOWN = 18;
 let QUICK_TYPES = [];
 let quickTaxOpen = false;
 async function loadQuickTax(){
@@ -980,9 +1044,13 @@ async function fetchWithRetry(url,opts={},retries=3,delay=800){
   throw new Error('请求失败，已达最大重试次数');
 }
 
-async function doSearch(){
+async function doSearch(resetPage=true){
   const keyword=document.getElementById('searchInput').value.trim();if(!keyword)return;
   const c=document.getElementById('resultsContainer'),btn=document.getElementById('searchBtn');
+  // 换关键词、改筛选条件都从第 1 页重新取；只有 turnPage 传 false 保住页码。
+  // 否则在第 3 页改一下日期，请求带的是 page=3，那一轮的命中数已经变了，
+  // 界面却还写着第 3 页。
+  if(resetPage!==false){currentPage=1;}
   c.innerHTML=`<div class="loading-state"><div class="loading-spinner"></div><p>正在查询…</p><p style="font-size:12px;color:var(--g400)">"${esc(keyword)}"</p></div>`;
   btn.disabled=true;btn.textContent='查询中…';
   try{
@@ -998,6 +1066,10 @@ async function doSearch(){
       aging:s5?stv:'',
       sort:document.getElementById('filterSort').value,
       source:document.getElementById('filterSource').value,
+      // 本轮条数四条分支都吃（聚合是按每源计），页码只在 NPC 与总局两路的取数层
+      // 里有对应参数；发过去了这一层没读的页，后端会用 _page_note 说明，不在这里预判
+      size:parseInt(document.getElementById('filterSize').value,10),
+      page:currentPage,
       date_from:document.getElementById('filterDateFrom').value||null,
       date_to:document.getElementById('filterDateTo').value||null,
     };
@@ -1012,6 +1084,17 @@ async function doSearch(){
 function renderResults(data){
   const c=document.getElementById('resultsContainer'),result=data.result,items=result?.results||result?.items||[];
   const total=result?.total||result?.total_items||items.length,searchedAt=result?.searched_at||'';
+  // 页码那一栏跟着服务端实际生效的值走，不跟 DOM：size 与 page 由 /api/search 一起回，
+  // 换源、被取值域闸门拦下、或落到没有页码的那一层时，DOM 里的数与真生效的数不是一个。
+  const size=data.size||20;
+  if(data.page)currentPage=data.page;
+  paintPageCursor();
+  // 还能不能翻下一页按"总数 ÷ 本轮条数"判。总数只有取数层给了数字才拿来算，
+  // 取不到就不猜：按钮留着，翻过头由下面那句超出总页数的话说明。
+  const lib=result&&(result.total!=null?result.total:result.total_items);
+  const lastPage=(typeof lib==='number'&&lib>0&&size>0)?Math.ceil(lib/size):null;
+  document.getElementById('pageNext').disabled=
+    !isPageable()||(lastPage!=null&&currentPage>=lastPage);
   const cacheTag=result?._from_cache?' [缓存]':'';
   const statusMap={1:'s-abolished',2:'s-amended',3:'s-effective',4:'s-pending'};
   const statusIcons={1:'🔴',2:'🟡',3:'🟢',4:'🔵'};
@@ -1022,7 +1105,9 @@ function renderResults(data){
     h+='<div class="meta-bar">';
     if(data.intent_label)h+=`<span class="tag tag-intent">🎯 ${data.intent_label}</span>`;
     if(data.tax_type)h+=`<span class="tag tag-source">📂 ${data.tax_type}</span>`;
-    h+=`<span class="tag tag-count">📋 ${total}条</span>`;
+    // 整句由后端给（tax_server._count_note）：库里有多少与这一轮给了多少是两个数，
+    // 改动前这里只有一个 total，界面把"📋 45条"配 20 张卡，读起来像屏幕上这一摞就是全部。
+    h+=`<span class="tag tag-count">📋 ${esc(result?._count_note||`${total}条`)}</span>`;
     if(searchedAt)h+=`<span class="tag tag-time">🕐 ${searchedAt}${cacheTag}</span>`;
     h+='</div>';
   }
@@ -1040,6 +1125,9 @@ function renderResults(data){
   // 归不出税种时这句是"这批结果是按原话字面匹配出来的"——不写出来，
   // 一摞无关法条看起来就像按本题找到的依据。
   if(result?._routed){h+=`<div class="meta-bar" style="border-bottom:none"><span class="source-label" style="border-color:var(--g700);color:var(--g700);white-space:normal">🧭 ${esc(result._routed)}</span></div>`;}
+  // 页码发到了没有这一维的那一层（聚合、法规库，或点的是 NPC 却被自动换到法规库）。
+  // 这一行由后端给：前端只知道自己点了哪个源，不知道这一批条目来自哪一层。
+  if(result?._page_note){h+=`<div class="meta-bar" style="border-bottom:none"><span class="source-label" style="border-color:var(--accent);color:var(--accent);white-space:normal">📄 ${esc(result._page_note)}</span></div>`;}
   // 日期区间这一维在六源里的生效方式不是一种（NPC／总局／中国税网由接口收窄，
   // 360、税屋、公众号只能在取回的窗口内补筛），整句由后端给（tax_search._date_note 与
   // tax_aggregator._date_scope_note）。这里照抄：前端不自己判断哪一源真收窄过，
@@ -1063,14 +1151,17 @@ function renderResults(data){
   // 规则主体在境外辖区的专题（支柱二），取回的是境外立法动态而不是境内征税依据。
   // 整句住在专题项上（tax_search.TAX_TYPE_KEYWORDS 的 note），这里照抄。
   if(data.overseas_note){h+=`<div class="meta-bar" style="border-bottom:none"><span class="source-label" style="border-color:var(--accent);color:var(--accent);white-space:normal">🌐 ${esc(data.overseas_note)}</span></div>`;}
-  // 空清单的成因有四种，分流顺序按"越靠近真相越先看"：
-  //   _fetch_failed —— 上游真的没取到数据（_error 是整形过的失败原因），不能读成"库里没有"
-  //   _filter_note  —— 叠加收窄维度后 0 条，分不清"拼窄"还是"没有"
-  //   _empty_reason —— 接口给了命中数、这一页没给清单
-  //   _error(其余)  —— 法规库翻完前 N 页未筛出条目（是扫描结论，不是失败）
-  // 四者都不带的空结果才读作"关键词太宽/库里确实没有这份文件"。
+  // 空清单的成因有五种，分流顺序按"越靠近真相越先看"：
+  //   页码超出总页数 —— 总数是取数层给的，翻过头这件事本地就能定，不该读成"库里没有"
+  //   _fetch_failed  —— 上游真的没取到数据（_error 是整形过的失败原因），不能读成"库里没有"
+  //   _filter_note   —— 叠加收窄维度后 0 条，分不清"拼窄"还是"没有"
+  //   _empty_reason  —— 接口给了命中数、这一页没给清单
+  //   _error(其余)   —— 法规库翻完前 N 页未筛出条目（是扫描结论，不是失败）
+  // 五者都不带的空结果才读作"关键词太宽/库里确实没有这份文件"。
   if(items.length===0){
-    if(result && result._fetch_failed){
+    if(currentPage>1&&lastPage!=null&&currentPage>lastPage){
+      h+=`<div class="empty-state"><div style="font-size:28px;margin-bottom:8px">↩</div><p><b>第 ${currentPage} 页超出总页数</b></p><p style="font-size:13px;color:var(--g400)">共 ${lib} 条，每页 ${size} 条，最后一页是第 ${lastPage} 页</p><p style="font-size:12px;margin-top:8px;color:var(--g400)">退回第 ${lastPage} 页，或把「本轮条数」调大一次多取</p></div>`;
+    } else if(result && result._fetch_failed){
       h+=`<div class="empty-state"><div style="font-size:28px;margin-bottom:8px">⚠️</div><p><b>取数失败</b></p><p style="font-size:13px;color:var(--g400)">关键词:"${esc(data.keyword)}"</p><p style="font-size:12px;margin-top:8px;color:var(--accent)">${esc(result._error||'上游没有返回数据')}</p><p style="font-size:12px;margin-top:8px;color:var(--g400)">这是没取到数据，不代表库里没有；可稍后重试</p></div>`;
     } else {
       const why=(result&&(result._filter_note||result._empty_reason||result._error))||'';

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Flask 服务端路由用例。全部打桩上游，不联网。
 
-tax_server.py 是前端唯一的后端，9 个路由需要接口级测试钉住契约——
+tax_server.py 是前端唯一的后端，11 个路由注册（`/api/calc` 的 GET 与 POST 各一条）
+需要接口级测试钉住契约——
 只靠联网 e2e 间接碰到它时，e2e 失败说不清是"路由写错了"还是
 "对方限流了"。这一组把路由自己的契约钉住：
 
@@ -37,6 +38,14 @@ STA_TAX_TYPE = {
     "authority": "sta",
     "search_term": "特别纳税调整",
 }
+
+# 我国现行十八个税种，按单行法律／暂行条例数出来的，不是从词表里抄的——
+# 这一份写在用例里就是为了让它与词表对不上时报红。
+STATUTORY_TAX_TYPES = (
+    "增值税", "消费税", "关税", "车辆购置税", "企业所得税", "个人所得税",
+    "房产税", "车船税", "土地增值税", "城镇土地使用税", "契税", "耕地占用税",
+    "烟叶税", "资源税", "城市维护建设税", "环境保护税", "印花税", "船舶吨税",
+)
 
 
 class _RouteCase(unittest.TestCase):
@@ -102,6 +111,33 @@ class TestStaticRoutes(_RouteCase):
                    if (tax_search.resolve_tax_type(k) or {}).get("type") != k]
         self.assertIn(alias, off, "注入没打到这一项，上一条款可能是空转")
         self.assertEqual(23, len(off), "自归依赖键名别名的键数变了，口径要重测")
+
+    def test_default_row_covers_all_statutory_tax_types(self):
+        """界面默认铺出的那一行必须含全部十八个税种，切点不许落在税种段中间。
+
+        两处各管一半，缺一半都会让某个税种点不到：
+        - 词表顺序：接口按 `TAX_TYPE_KEYWORDS` 的键序渲按钮，税种要排在专题之前。
+          2026-10-20 之前「烟叶税」挂在词表末尾一个名为「从业/凭证类」的段下——
+          那个段名既不是税种也不是专题，它是 18 个税种里唯一放错段的一个。
+        - 前端 `QUICK_TAX_SHOWN`：决定铺开几枚、其余收进「展开」。以前写 12，
+          切在税种段中间，车辆购置税、印花税、城市维护建设税、烟叶税、资源税、
+          环境保护税六个税种默认点不到；用户把「点不到」读成「引擎不认这个税种」，
+          而命令行与自动换源明明走得通。
+
+        口径：取词表前 QUICK_TAX_SHOWN 枚，与 STATUTORY_TAX_TYPES 整份比集合——
+        数少了会漏（报红），数多了会把专题也拉进这一段（同样报红，因为前 N 项
+        不再全是税种）。税种那一份清单按现行单行法律／暂行条例数出来写死在本文件
+        顶部，不从词表反推，所以词表自己漏收一个税种也会被这条查到。
+        """
+        html = (Path(__file__).resolve().parent.parent
+                / "frontend" / "index.html").read_text(encoding="utf-8")
+        m = re.search(r"const QUICK_TAX_SHOWN\s*=\s*(\d+)\s*;", html)
+        self.assertIsNotNone(m, "index.html 里找不到 const QUICK_TAX_SHOWN = <整数>;")
+        shown = int(m.group(1))
+        keys = list(tax_server.TAX_TYPE_KEYWORDS)
+        self.assertEqual(set(STATUTORY_TAX_TYPES), set(keys[:shown]),
+                         f"QUICK_TAX_SHOWN={shown} 铺出的那一段与十八个税种对不上："
+                         f"差集 {set(STATUTORY_TAX_TYPES) ^ set(keys[:shown])}")
 
     def test_health_reports_gate_closed(self):
         with mock.patch.object(tax_server.tax_llm, "channel",
@@ -458,10 +494,162 @@ class TestSearchRoute(_RouteCase):
         self.assertEqual("广东", r.get_json()["province"])
         self.assertNotIn("广东", str(m.call_args))
 
-    def test_size_is_capped(self):
+    def test_size_and_page_domains(self):
+        """size／page 的发值取值域闸：坏值一律 400，且一个源都不许碰。
+
+        改前这一行是 `size = min(data.get("size", 20), 50)`。三种坏值实测（2026-10-20
+        本机 5080）：发 "20" 之外的非数字串与 999 分别在比较运算与静默截断上出问题，
+        前者回 HTML 的 500、调用方看不出是自己带错了字段；发 0 时上游照样回 200 且
+        清单为空，界面读成"库里没有这份文件"。page 改前从不读，发什么都不报。
+        数字串按命令行 `--size 20` 的同一口径收下（argparse 的 type=int 也收 "20"）。
+        """
+        for bad in ({"size": 999}, {"size": 0}, {"size": -1}, {"size": "x"},
+                    {"size": True}, {"size": 2.5}, {"page": 0}, {"page": "x"},
+                    {"page": -3}):
+            with self.subTest(**bad), \
+                    mock.patch.object(tax_server, "search_tax") as m:
+                r = self._post(dict(keyword="增值税", **bad), tax_type=None)
+            self.assertEqual(400, r.status_code)
+            self.assertIn("筛选参数不合法", r.get_json()["error"])
+            m.assert_not_called()
+
+    def test_size_upper_bound_is_the_npc_layers_own(self):
+        """上界取 tax_search.search_tax 往下发的 min(size, 100)。
+
+        发比它大的值时 NPC 自己截成 100，界面上「本轮条数」写的是一个数、实际取回
+        的是另一个数。宁可在闸上就把上界说明白，不做静默截断。
+        """
         with mock.patch.object(tax_server, "search_tax", return_value={}) as m:
-            self._post({"keyword": "增值税", "size": 999}, tax_type=None)
+            self._post({"keyword": "增值税", "size": 100}, tax_type=None)
+        self.assertEqual(100, m.call_args.kwargs["size"])
+        with mock.patch.object(tax_server, "search_tax", return_value={}) as m:
+            r = self._post({"keyword": "增值税", "size": "20"}, tax_type=None)
+        self.assertEqual(200, r.status_code)
+        self.assertEqual(20, m.call_args.kwargs["size"])
+
+    def test_page_reaches_only_the_layers_that_have_that_dimension(self):
+        """page 下推给 NPC 与税务总局两路；法规库与聚合两路接到说明而不是静默停在第一轮。
+
+        取数层的 page 是可用并已实测的（2026-10-20）：tax_search.search_tax「增值税」
+        标题·模糊·现行有效 total=45，page=1 与 page=2 各取 5 条、标题交集 1 条；
+        tax_web_search.search_chinatax 同词两页交集 0 条。改前 api_search 从不读请求体
+        里的 page，界面永远停在第一轮取回的那一批，元信息那一栏却只写"📋 45条"。
+        """
+        with mock.patch.object(tax_server, "search_tax", return_value={}) as m:
+            r = self._post({"keyword": "增值税", "page": 3, "size": 50}, tax_type=None)
+        self.assertEqual(3, m.call_args.kwargs["page"])
         self.assertEqual(50, m.call_args.kwargs["size"])
+        self.assertEqual(3, r.get_json()["page"])
+        self.assertEqual(50, r.get_json()["size"])
+        with mock.patch.object(tax_server, "search_chinatax",
+                               return_value={}) as m:
+            self._post({"keyword": "增值税", "source": "chinatax", "page": 2},
+                       tax_type=None)
+        self.assertEqual(2, m.call_args.kwargs["page"])
+        for src, patch_name, attr in (("fgk", "search_fgk", "search_fgk"),
+                                      ("aggregated", "aggregate_search",
+                                       "aggregate_search")):
+            with self.subTest(src=src), mock.patch.object(
+                    tax_server, attr, return_value={}) as m:
+                r = self._post({"keyword": "增值税", "source": src, "page": 2},
+                               tax_type=None)
+            self.assertNotIn("page", m.call_args.kwargs)
+            self.assertIn("第 2 页没有生效", r.get_json()["result"]["_page_note"])
+
+    def test_page_note_follows_the_layer_actually_called(self):
+        """点的是 NPC，命中却被自动换到法规库时，页码说明要跟着那一层走。
+
+        这条是"由后端判定而不是让前端看数据源"的根据：前端按 filterSource 只能知道
+        用户点了 NPC，不知道这一批条目来自哪一层。
+        """
+        sta = {"type": "税收优惠", "aliases": [], "authority": "sta",
+               "search_term": "税收优惠"}
+        with mock.patch.object(tax_server, "search_fgk", return_value={}) as m:
+            r = self._post({"keyword": "税收优惠", "page": 2}, tax_type=sta)
+        self.assertNotIn("page", m.call_args.kwargs)
+        self.assertIn("第 2 页没有生效", r.get_json()["result"]["_page_note"])
+
+    def test_page_control_domain_matches_the_branches_that_forward_it(self):
+        """前端那张"哪些源能翻页"的名单，逐源对着后端真实行为核一遍。
+
+        PAGE_SOURCES 是界面上第二份按源分键的源名单：它决定页码按钮在哪几个数据源上
+        启用，而后端认的是真正调了哪一层（点的是 NPC、条目却被归类换到法规库时不转）。
+        两份各改各的就会一边按钮亮着、一边页码被丢掉，或反过来明明能翻却按不动。
+        判据不写在人眼里：把四条分支各发一次 page=2，看哪一层的调用真收到了 2。
+        """
+        html_path = Path(__file__).resolve().parent.parent / "frontend" / "index.html"
+        html = html_path.read_text(encoding="utf-8")
+        m = re.search(r"const PAGE_SOURCES=\[([^\]]*)\]", html)
+        self.assertTrue(m, "前端没有 PAGE_SOURCES 这张名单")
+        claimed = sorted(re.findall(r"'([^']+)'", m.group(1)))
+        forwarded = []
+        for src in tax_server.SEARCH_SOURCES:
+            with mock.patch.object(tax_server, "search_tax", return_value={}) as a, \
+                    mock.patch.object(tax_server, "search_chinatax",
+                                      return_value={}) as b, \
+                    mock.patch.object(tax_server, "search_fgk",
+                                      return_value={}) as c, \
+                    mock.patch.object(tax_server, "aggregate_search",
+                                      return_value={}) as d:
+                r = self._post({"keyword": "增值税", "source": src, "page": 2},
+                               tax_type=None)
+                got = [x for x in (a, b, c, d)
+                       if x.call_args and x.call_args.kwargs.get("page") == 2]
+            # 最多一层收到页码：两层同时收到就说明这一路发重了
+            self.assertLessEqual(len(got), 1, f"{src} 这一路有多层收到 page")
+            if got:
+                forwarded.append(src)
+            else:
+                self.assertIn("第 2 页没有生效",
+                              r.get_json()["result"]["_page_note"])
+        self.assertEqual(claimed, sorted(forwarded))
+
+    def test_count_note_separates_library_total_from_items_given(self):
+        """条数那一栏分两个口径，整句由后端给。
+
+        改前前端读的是 `result.total || result.total_items || items.length`，一个数字
+        同时被两件事用：单源那三路是库内命中总数（实测「增值税」NPC 45、税务总局 1910），
+        卡面只有本轮取回那 20 张；聚合那一路 total_items 是六源去重后收全的条数，
+        而 tax_aggregator 往下只给 items[:size*3]。
+        """
+        fake = {"total": 45, "results": [{"title": "x%d" % i} for i in range(20)]}
+        with mock.patch.object(tax_server, "search_tax", return_value=fake):
+            r = self._post({"keyword": "增值税"}, tax_type=None)
+        self.assertEqual("库内命中 45 条 · 本轮给出 20 条",
+                         r.get_json()["result"]["_count_note"])
+        fake = {"total": 3, "results": [{"title": "x%d" % i} for i in range(3)]}
+        with mock.patch.object(tax_server, "search_tax", return_value=fake):
+            r = self._post({"keyword": "增值税"}, tax_type=None)
+        self.assertEqual("库内命中 3 条（已全部给出）",
+                         r.get_json()["result"]["_count_note"])
+        fake = {"total_items": 120, "items": [{"title": "x%d" % i} for i in range(60)]}
+        with mock.patch.object(tax_server, "aggregate_search", return_value=fake):
+            r = self._post({"keyword": "增值税", "source": "aggregated"}, tax_type=None)
+        self.assertEqual("六源共收 120 条 · 本轮给出 60 条",
+                         r.get_json()["result"]["_count_note"])
+
+    def test_exact_control_reaches_the_aggregator(self):
+        """界面上的「匹配」在聚合那一路也要传下去，不被本体法那条规则顶掉。
+
+        改前这传的是 `exact=bool(parent_law)`，请求体里的 exact 从不读：归不出本体法时
+        用户点"精确"是空转。本体法那一路仍强制精确（tax_aggregator 里 exact 只落在
+        NPC 那一条 future 上，模糊按发布时间排会把本体法顶出首位），两条规则是相加
+        不是替换。
+        """
+        with mock.patch.object(tax_server, "aggregate_search", return_value={}) as m:
+            self._post({"keyword": "研发费用", "source": "aggregated", "exact": True},
+                       tax_type=None)
+        self.assertTrue(m.call_args.kwargs["exact"])
+        with mock.patch.object(tax_server, "aggregate_search", return_value={}) as m:
+            self._post({"keyword": "研发费用", "source": "aggregated"}, tax_type=None)
+        self.assertFalse(m.call_args.kwargs["exact"])
+        # 本体法那一路仍强制精确，与用户这一栏选什么无关
+        law = {"type": "增值税", "aliases": [], "authority": "npc",
+               "parent_law": "增值税法"}
+        with mock.patch.object(tax_server, "aggregate_search", return_value={}) as m:
+            self._post({"keyword": "增值税", "source": "aggregated", "exact": False},
+                       tax_type=law)
+        self.assertTrue(m.call_args.kwargs["exact"])
 
     def test_intent_label_is_translated(self):
         with mock.patch.object(tax_server, "search_tax", return_value={}):
