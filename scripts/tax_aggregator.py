@@ -8,13 +8,19 @@ Data source priority (按权威性排序):
   3. 360 站内搜索 (m.so.com)        — 省局子站、地方文件
   4. 税屋 (shui5.cn)                — 实务解读
   5. 微信公众号 (搜狗微信)          — 实务解读
+  6. 中国税网 (ctaxnews.com.cn)     — 中国税务报社：政策转载、解读、税案通报
 
-第 4、5 两源默认开启：二者补的是前三个源查不到的实操层内容。权威性低于
-法规原文，输出里以 _authority_rank 排在后面。
+后四源默认开启：它们补的是前两个源（法规原文层）查不到的地方口径与实操层内容。
+权威性低于法规原文，输出里以 _authority_rank 排在后面。
 
 税屋的检索有两路（360 的 site:shui5.cn 与站内原生检索），正文要先过一次阿里云
 WAF：默认这一路只取链接（不要凭据），要正文时由 tax_shui5 启本机浏览器过一次
 挑战再连读。两路覆盖的是不同排序，一路 0 条不能读成另一路也 0 条。
+
+中国税网是报社站，登的多是别人发的文件：这一路的条目进的是检索层，
+被它登的那份文件才是依据，依据链里的 url 要写官方那一份（判据见
+subskills/ctaxnews/ 与 SKILL ③ L4）。它服务端收发布日期区间，
+所以和 NPC／税务总局一样走 DATE_SERVER_SOURCES，不靠本地补筛。
 
 AnySearch 已移除：本机不存在其 CLI（~/.claude/skills/anysearch/scripts 下
 没有 anysearch_cli.py），原实现永远静默返回空列表。
@@ -23,7 +29,7 @@ Usage:
   python tax_aggregator.py "增值税" --size 10
   python tax_aggregator.py "小微企业优惠" --size 10 --json
   python tax_aggregator.py "加计扣除" --sources npc,chinatax
-  python tax_aggregator.py "资本化" --sources npc,chinatax,so360,shui5,wechat
+  python tax_aggregator.py "资本化" --sources npc,chinatax,so360,shui5,wechat,ctax
 """
 
 import argparse
@@ -43,6 +49,7 @@ from tax_web_search import search_chinatax, build_filters, label_scope_text
 from tax_so360 import so360_search
 from tax_shui5 import search_shui5
 from tax_wechat import search_wechat
+from tax_ctax import search_ctax
 
 # 权威性排名，数字越小越权威
 SOURCE_RANK = {
@@ -51,14 +58,16 @@ SOURCE_RANK = {
     "so360": 2,
     "shui5": 3,
     "wechat": 4,
+    "ctax": 5,
 }
-DEFAULT_SOURCES = ["npc", "chinatax", "so360", "shui5", "wechat"]
+DEFAULT_SOURCES = ["npc", "chinatax", "so360", "shui5", "wechat", "ctax"]
 SOURCE_LABELS = {
     "npc": "📜 NPC法规库",
     "chinatax": "🏛️ 国家税务总局",
     "so360": "🔎 360站内搜索",
     "shui5": "🏠 税屋(实务解读)",
     "wechat": "💬 微信公众号(实务解读)",
+    "ctax": "📰 中国税网(报社转载与税案)",
 }
 
 # 每个源挂掉时"缺的到底是哪一层"，由程序说清楚：缺哪层、什么后果、以及不要用
@@ -71,6 +80,8 @@ SOURCE_IMPACT = {
              "见 tax_shui5.search_shui5 的 channel 判据）",
     "shui5": "税屋的实务解读层缺失",
     "wechat": "微信公众号的实务解读层缺失",
+    "ctax": "中国税网的报刊登载层缺失（税案通报与报刊视角的执行口径少这一路；"
+            "这一路本来就不供法定依据，缺它不影响法规原文那三层）",
 }
 
 # 给说明文字用的平名（SOURCE_LABELS 带图标，抄进答案里会成噪声）。
@@ -80,19 +91,29 @@ SOURCE_PLAIN = {
     "so360": "360 搜索",
     "shui5": "税屋",
     "wechat": "微信公众号",
+    "ctax": "中国税网",
 }
 
-# 日期区间这一维在五源里的作用方式不是一种，分界的依据是"该源有没有日期参数"：
-#   DATE_SERVER_SOURCES — 接口自己收（NPC 是 gbrq 公布日期，税务总局是 cwrq 成文
-#     日期，2026-10-03 实测「增值税」只给上界 2020-12-31 时 45→38 条、max 由
-#     2025-12-25 收到 2020-07-30，是真收窄）
+# 日期区间这一维在六源里的作用方式不是一种，分界的依据是"该源有没有日期参数"：
+#   DATE_SERVER_SOURCES — 接口自己收，三源各收哪一枚字段、字段叫什么，逐源登记在
+#     下面的 DATE_SERVER_FIELDS，含义彼此不同。实测两路都真收窄：税务总局
+#     2026-10-03「增值税」只给上界 2020-12-31 时 45→38 条、max 由 2025-12-25 收到
+#     2020-07-30；中国税网 2026-10-19「增值税」全词 2,537 行起始、45,739 行截止、
+#     成对取 2025 全年 1,405 行，起止两枚各自独立生效。
 #   DATE_LOCAL_SOURCES — 三个网页源都没有日期参数，只能在取回的窗口内按条目
 #     自带日期补筛。360 那一路的解析结果里根本没有日期字段（tax_so360 的条目
 #     只有 title/url/snippet/source/site），所以它整源都会落进"无日期"那一档。
 # 把这两路混成一句"已按日期收窄"，读者会把本地补筛读成源端收窄，进而把
 # "该源这一轮 0 条"当成"该源在这个区间里没有文件"——这是要防的那一步。
-DATE_SERVER_SOURCES = ("npc", "chinatax")
+DATE_SERVER_SOURCES = ("npc", "chinatax", "ctax")
 DATE_LOCAL_SOURCES = ("so360", "shui5", "wechat")
+# 服务端那一档各自收的字段名。_date_scope_note 逐源点名靠这张表：加了源不登记
+# 这里，回显就会出现"某源由接口自己收窄"却没说收哪一枚字段的那种半截话。
+DATE_SERVER_FIELDS = {
+    "npc": "公布日期 gbrq",
+    "chinatax": "成文日期 cwrq",
+    "ctax": "发布日期 startDate/endDate",
+}
 _ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
@@ -113,25 +134,24 @@ def _date_scope_note(date_from: str, date_to: str, sources: list,
     local = [SOURCE_PLAIN[s] for s in DATE_LOCAL_SOURCES if s in sources]
     parts = []
     if server:
-        fields = []
-        if "npc" in sources:
-            fields.append("NPC 收公布日期 gbrq")
-        if "chinatax" in sources:
-            fields.append("税务总局收成文日期 cwrq")
-        both = len(fields) > 1
+        fields = [f"{SOURCE_PLAIN[s]}收{DATE_SERVER_FIELDS[s]}"
+                  for s in DATE_SERVER_SOURCES if s in sources]
         gap = ""
         if not (date_from and date_to):
             bits = []
-            if "npc" in sources:
-                bits.append(f"NPC 那一路按 {DATE_FLOOR}／{DATE_CEIL} 补缺的那一端")
-            if "chinatax" in sources:
-                bits.append("税务总局那一路不发缺失的那一维")
+            for s in DATE_SERVER_SOURCES:
+                if s not in sources:
+                    continue
+                if s == "npc":
+                    bits.append(f"NPC 那一路按 {DATE_FLOOR}／{DATE_CEIL} 补缺的那一端")
+                else:
+                    bits.append(f"{SOURCE_PLAIN[s]}那一路不发缺失的那一维")
             if bits:
                 gap = "；" + "，".join(bits)
         parts.append(
             "、".join(server) + "由接口自己收窄（" + "，".join(fields) +
-            ("；两个「日期」字段含义不同，同一区间在两侧圈到的条目本就不必相同"
-             if both else "") + gap + "）")
+            (f"；{len(fields)} 个「日期」字段含义不同，同一区间在各侧圈到的条目"
+             "本就不必相同" if len(fields) > 1 else "") + gap + "）")
     if local:
         parts.append(
             "、".join(local) + "这一路没有日期参数，是在本源本轮取回的条目窗口内"
@@ -263,7 +283,7 @@ def aggregate_search(keyword: str, *,
     Args:
         keyword: search term
         size: results per source
-        sources: 见 DEFAULT_SOURCES；默认五源全开
+        sources: 见 DEFAULT_SOURCES；默认六源全开
         status: NPC status filter (default: 3 = effective)
         scope: NPC search scope (default: title；fulltext 已按相关度排序但可能偏题)
         exact: NPC 精确检索。检索词是本体法名时必须为 True，否则模糊检索
@@ -271,16 +291,17 @@ def aggregate_search(keyword: str, *,
         sort: "relevance"（默认）按权威度分层；"date" 时跨源按公布日期降序，
               不再按权威度分层——"只看最新"要的正是时间序，把 NPC 整源顶在
               前面会让总局 2026 年的公告排在 NPC 2024 年的法律之后。
-        date_from / date_to: YYYY-MM-DD 日期区间，任一端可缺。生效方式分三路，
-              见 _date_scope_note：npc 与 chinatax 由接口自己收（公布日期／
-              成文日期，含义不同），so360、shui5、wechat 没有日期参数，只能
-              在本源取回的 size 条窗口内按条目日期补筛，计数写
+        date_from / date_to: YYYY-MM-DD 日期区间，任一端可缺。生效方式分两档，
+              见 _date_scope_note：npc、chinatax、ctax 由接口自己收（公布日期／
+              成文日期／发布日期，三种含义都不同），so360、shui5、wechat 没有
+              日期参数，只能在本源取回的 size 条窗口内按条目日期补筛，计数写
               `_date_filter.local_window`，判读规则写 `_date_note`。没带日期的
               条目留在结果里并计入 no_date，不静默丢。
         file_only: 只落在税务总局那一路（search_chinatax 的同名参数），默认 True
               把这一路限定在十个文件类标签内。规则主体在境外辖区的专题（支柱二、
               全球最低税）文件类标签下实测 0 条，要传 False 连动态与境外立法编译
-              一起取；其余四源没有这个维度，不受影响。
+              一起取；其余五路（npc、so360、shui5、wechat、ctax）没有这个维度，
+              不受影响。
 
     Raises:
         ValueError: date_from/date_to 不是补零的 YYYY-MM-DD 真实日期。
@@ -294,13 +315,14 @@ def aggregate_search(keyword: str, *,
     # 税务总局那一路收的收窄维度就是 build_filters 产出的日期区间（它没有 NPC
     # 那种 status/scope 参数）；这一层不往下传，界面上的日期控件在聚合这条路径
     # 上就是空转（2026-10-02 实测：带与不带日期的 12 条结果一模一样，仍含
-    # 2019-11-27 那份）。build_filters 同时兼任校验。
+    # 2019-11-27 那份）。build_filters 同时兼任校验。中国税网那一路不走这张表：起止两枚
+    # 作为 startDate/endDate 直接下推，见下面 futures["ctax"]。
     date_filters = build_filters(cwrq_from=date_from, cwrq_to=date_to)
 
     results = {}
     errors = {}
 
-    with ThreadPoolExecutor(max_workers=5) as pool:
+    with ThreadPoolExecutor(max_workers=6) as pool:
         futures = {}
 
         if "npc" in sources:
@@ -328,6 +350,13 @@ def aggregate_search(keyword: str, *,
         if "wechat" in sources:
             futures["wechat"] = pool.submit(
                 search_wechat, keyword, min(size, 5)
+            )
+        if "ctax" in sources:
+            # 服务端收 startDate/endDate（发布日期），所以日期直接下推，不靠本地补筛；
+            # match 用 title 以外的默认全文，size 给的是合并后的篇数。
+            futures["ctax"] = pool.submit(
+                search_ctax, keyword, size=min(size, 5),
+                date_from=date_from, date_to=date_to,
             )
 
         for source, future in futures.items():
@@ -360,7 +389,7 @@ def aggregate_search(keyword: str, *,
             # 响应级标记说的是"这一整窗条目共同的取回方式"（NPC 正文检索就是全文
             # 分词命中），逐条带上不算冤枉某一条。说明文字必须跟着一起带：只带档位
             # 的话，界面与定级层就退回到"凭档位猜原因"。
-            # 本层五路源里没有会自带条目级标记的那一路（深页标记出自 tax_fgk，
+            # 本层六路源里没有会自带条目级标记的那一路（深页标记出自 tax_fgk，
             # 只在 tax_answer 的分轮取数里出现），所以这里不存在两种标记撞车的情况。
             if source_rel:
                 item["_reliability"] = source_rel

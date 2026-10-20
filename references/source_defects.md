@@ -84,7 +84,7 @@
 | 剥标签与段落换行两步先后一颠倒，整篇正文粘成一行且不报错 | `tax_ctax._to_text` 先用 `_PARA_RE`（块级结束标签与 `<br>`）换成换行，再用 `_TAG_RE` 剥剩下的标签，最后逐行去空白、压掉空行；顺序写在函数说明里 | `_TAG_RE` 把 `</p>` 一起剥掉之后 `_PARA_RE` 再也找不到边界。三条用例按段落数断言（`test_identical_twins_take_the_first_and_say_so`、`test_single_block_page_gets_no_note`、`test_old_row_keeps_its_place_with_the_reason` 都要求两个正文段落之间是换行），把这两行 `sub` 调换顺序三条一起报红 |
 | 检索行里那两枚摘要（`enpcontent` 截断与编辑写的 `Abstract`）看着像正文，接进抽取等于拿摘要当条文 | `_row_from_json` 只把它们落成 `snippet`／`abstract` 两个展示字段，正文一律回正文页取；`test_snippet_and_abstract_stay_display_only` | 200 行取样里 `enpcontent` 195 行有值、只有 120 与 123 两档长度、194 行带收尾截断标记；`Abstract` 174 行有值、9 到 193 字（逐字段读数表见 `subskills/ctaxnews/NOTE.md`「检索行的字段与值域」）。一枚是正文截断、一枚是编辑摘要，两者都不是原文 |
 | 栏目页的行若按容器类名找会漏会串：站点实际出现的容器有三枚（`div.newsList-item`、`ul.onlyTitleList`、`ul.ztNews-list-main`），且 `newsList-item` 写成 `newsList-item clearfix` 时按精确类名 14 页全读 0 行；侧栏还铺着别的栏目的推荐位 | `_page_rows` 按地址形状认行（`_ARTICLE_HREF_RE`：`/<目录段>/<yyyy-mm>/<dd>/content_<id>.html`），`_own_region` 先按 `layout-380`／`footer` 切掉侧栏与页脚，再用两个计数器分别记留在本栏段内的外来行数（`off_col`）与切不出本栏标题时不在本栏检索集里的行数（`off_set`）；`_row_title` 只在纯日期单独占一行时丢掉它，两行标题两行都留 | 归属判据是地址而不是类名，所以没有类名的页面照样取到行、目录段不是本栏的一律扣进 `off_col`；切不出标题的那一类页面（实测三例：按别的栏铺块的落地页 node_13、只铺一块相关文号列表的短页 node_8030、父栏目页 node_24）同目录兄弟栏长得一样，只能拿本栏最新一批 `articleid`（`_column_id_set`，`pageSize` 上限 5000、只发 `sort=date`，取到的是按发布日期倒序的最新 5000 行）交一次。同一篇的配图链接与标题链接同址，按地址并成一行、标题取非空那枚，并完仍无文字的行丢掉。`TestCtaxColumnPageRows` 八条覆盖这六道，夹具外壳用的类名 `tabList` 是合成的（站点 14 份栏目页副本里 0 处命中），故意挑一枚站点没发过的名字才验得出 `_page_rows` 不读类名；其中 `test_sidebar_rows_are_cut_before_scanning` 与 `test_off_directory_rows_inside_the_region_are_counted` 是一对——把侧栏那块摆进 `layout-380` 之前，前一者的 `off_col` 立刻从 0 变 1 |
-| 子技能两份文档里写的符号名与探针请求数，改脚本时容易只改一侧 | `TestCtaxSubSkillDocHooks` 三条：`test_named_symbols_exist` 把 `subskills/ctaxnews/` 两份文档里出现的 `tax_ctax.<符号>` 逐个 `hasattr` 核对；`test_probe_item_costs_match_the_note_table` 从 `subskills/ctaxnews/probe_ctaxnews.py` 的语法树里读 `COST` 表，与 NOTE.md「探针项与请求数」小节逐行比对，断言两个合计（全项 209、去掉第 10 项后 107），再把这对合计在六处文字里逐处核对且各只许出现一次——NOTE 的复测入口那一行、表下面那一行与子技能 SKILL 命令行那两条注释按数字解析比对，NOTE 单轮耗时那一行（`--fast` 数与全项数各一条整串）、README 目录树那一行、这一行本身按整串比对；`test_the_route_stays_out_of_the_five_source_aggregator` 断言 `tax_aggregator.DEFAULT_SOURCES` 与 `SOURCE_RANK` 里没有这一站，同时要求 SKILL.md 里有一行同时写着中国税网与五源聚合 | 文档写了一个不存在的函数名、探针改了请求数而 NOTE/README/台账没跟着改、有人把这一站塞进聚合那五源，三种都会报红。2026-10-20 在隔离副本树跑十二处变异全打红（先取一份未变异副本的失败集当基线，只把新增失败算检出）：探针 `COST` 第 5 项改一档、NOTE 表第 5 行改一档、NOTE 复测入口那行的全项数、NOTE 表下面那行的 `--fast` 数、SKILL 全项复测那行、SKILL `--fast` 那行、README 那行的全项数、这一行的两个合计、NOTE 单轮耗时那行的 `--fast` 数、同一行的全项数、`_is_date_line` 把三段日期只认两段、父栏目提醒把「父栏目」改成「上级栏目」。打向 README、这一行与 NOTE 单轮耗时那一行的四处变异是这一轮才打红的：第一遍副本排除 `data/` 时另有一条无关用例先红，README 与这一行被它冒充成检出；改成基线差集后这两处露出漏检，说明原门禁只核对 NOTE 与 SKILL，补上整串复述核对才打红 |
+| 子技能两份文档里写的符号名与探针请求数，改脚本时容易只改一侧 | `TestCtaxSubSkillDocHooks` 三条：`test_named_symbols_exist` 把 `subskills/ctaxnews/` 两份文档里出现的 `tax_ctax.<符号>` 逐个 `hasattr` 核对；`test_probe_item_costs_match_the_note_table` 从 `subskills/ctaxnews/probe_ctaxnews.py` 的语法树里读 `COST` 表，与 NOTE.md「探针项与请求数」小节逐行比对，断言两个合计（全项 209、去掉第 10 项后 107），再把这对合计在六处文字里逐处核对且各只许出现一次——NOTE 的复测入口那一行、表下面那一行与子技能 SKILL 命令行那两条注释按数字解析比对，NOTE 单轮耗时那一行（`--fast` 数与全项数各一条整串）、README 目录树那一行、这一行本身按整串比对；`test_the_route_is_wired_into_the_aggregator` 断言这一站在 `DEFAULT_SOURCES`、`SOURCE_RANK`、`SOURCE_LABELS`、`SOURCE_IMPACT`、`SOURCE_PLAIN`、`DATE_SERVER_SOURCES` 六处登记一处不缺（四张源表的键集合两两相同），日期已下推给服务端、没有再在窗口内补筛一遍，并要求 SKILL.md 里有一行同时写着中国税网与源键 `ctax` | 文档写了一个不存在的函数名、探针改了请求数而 NOTE/README/台账没跟着改、有人把这一站从默认名单里摘掉（六处登记漏一处）或把它的日期退回本地补筛，三种都会报红。2026-10-20 在隔离副本树跑十二处变异全打红（先取一份未变异副本的失败集当基线，只把新增失败算检出）：探针 `COST` 第 5 项改一档、NOTE 表第 5 行改一档、NOTE 复测入口那行的全项数、NOTE 表下面那行的 `--fast` 数、SKILL 全项复测那行、SKILL `--fast` 那行、README 那行的全项数、这一行的两个合计、NOTE 单轮耗时那行的 `--fast` 数、同一行的全项数、`_is_date_line` 把三段日期只认两段、父栏目提醒把「父栏目」改成「上级栏目」。打向 README、这一行与 NOTE 单轮耗时那一行的四处变异是这一轮才打红的：第一遍副本排除 `data/` 时另有一条无关用例先红，README 与这一行被它冒充成检出；改成基线差集后这两处露出漏检，说明原门禁只核对 NOTE 与 SKILL，补上整串复述核对才打红 |
 
 ## 限流记录的实测台账
 
@@ -221,7 +221,7 @@ SKILL.md ② 末尾指向这一节。它回答两个问题：某一格动作**�
 | ③④ 决定取数轮次与候选词 | 脚本给计划，Agent 放宽 | `tax_answer.build_plan`，回显在 `rounds_done` | `python scripts/tax_answer.py "<原话>" --plan` |
 | ③ L2 要"整栏横截面"（这一栏现行文件都有哪些） | 脚本 | `tax_gov_list.sync` / `lookup` / `stats`，栏目与栏目页两张表 `CHANNELS`、`CHANNEL_PAGES` | `python scripts/tax_gov_list.py stats` 读栏目/条目数/时效性分布/栏目页；离线用例 `tests/test_gov_list.py` |
 | ③ L4 报刊登载层（中国税网）检索、一稿多发合并与逐篇取正文 | 脚本 | `tax_ctax.search_ctax` / `dedup_rows` / `fetch_ctax` / `read_articles` / `column_lookup` / `list_column`，栏目表 `data/ctax_columns.json`；复测探针 `subskills/ctaxnews/probe_ctaxnews.py`（发真请求，逐项请求数记在 NOTE.md） | `python scripts/tax_ctax.py "增值税" --size 3` 读 `_status` 里的"合并同一篇挂多栏的行 N 行"与 `_pages`；离线用例 `tests/test_source_defects.py` 里 `TestCtax` 打头的十组（组名 grep 得到），全程打桩会话不发一次真请求 |
-| ④ 五源聚合与取数失败留名 | 脚本 | `tax_answer.gather`，产出 `rounds_done[].failed` | `tests/test_source_defects.py::TestRoundFailureIsNotSilent` |
+| ④ 六源聚合与取数失败留名 | 脚本 | `tax_answer.gather`，产出 `rounds_done[].failed` | `tests/test_source_defects.py::TestRoundFailureIsNotSilent` |
 | ⑧ 实务口径援引的文号回官方库核对 | 脚本 | `tax_answer.check_practice_citations`（在 `gather` 里排在 `grade_all` 之前），产出 `plan["citation_check"]` 与每条的 `official_status` | `tests/test_source_defects.py::TestPracticeCitationCheck`、`TestCitationCheckReachesTheAnswer`；命令行看【执行口径与实务认定】末尾那句核对统计 |
 | ⑧ 层级、时效、主题对应三轴定级 | 脚本 | `tax_evidence.LEGAL_RANK` / `rank_of` / `judge_validity` / `on_topic_of` / `grade` | `tests/test_judge_validity.py` |
 | ⑧ 角色分层与主依据挑选 | 脚本 | `tax_evidence.role_of` / `pick_primary` / `_order_key`，理由写进 `_why` | `test_legislation_lane_items_cannot_become_primary`、`TestConstitutionIsNotTheHeadline` |
@@ -301,9 +301,9 @@ SKILL.md ② 末尾指向这一节。它回答两个问题：某一格动作**�
   写一句 `_error` 说明（翻完几页、共几条命中、范围限于文件类标签），而检索层的
   `_rows_and_error` 认的是"`_error` 非空即失败"，`gather` 于是把这一轮记进
   `errors` 与 `rounds_done[].failed`。文号核对那一路（`_doc_number_in_library`）
-  已经改成认 `_fetch_failed`／`_empty_reason` 标记，检索层这一路还没跟着改：其余四个
+  已经改成认 `_fetch_failed`／`_empty_reason` 标记，检索层这一路还没跟着改：其余五个
   源不产这两个标记，把同一规则套上去会把它们真正的故障也读成"没命中"，比现在的
-  假"取数失败"更难发现。收掉它要先给五个源统一标记契约，**这一步尚未实现**，读到这一条时
+  假"取数失败"更难发现。收掉它要先给六个源统一标记契约，**这一步尚未实现**，读到这一条时
   按"未收口"对待。
 - **废止日期这一栏接口给不出，别指望它替正文说话**。`xxgk_abolishDate` 按
   `xxgkAging` 取「全文废止」「已修改」「全文有效」三路各 10 条（2026-10-04 实测，
@@ -337,7 +337,7 @@ SKILL.md ② 末尾指向这一节。它回答两个问题：某一格动作**�
   把"全文转载的现行公告"与"媒体解读"混成同一档，比现在的读数更坏。
   `TestCtaxGradingDoesNotGuardThisRoute` 三条钉住现状（这一站不在名单里、转载按原文件
   定档、只有「解读」标题到实务档），谁加进去第一条就报红。另一侧由
-  `TestCtaxSubSkillDocHooks::test_the_route_stays_out_of_the_five_source_aggregator`
-  钉住：这一路只有单站取数，
-  `tax_aggregator.DEFAULT_SOURCES` 与 `SOURCE_RANK` 都没有它，④ 的聚合结果里不会出现它，
-  要用它得单独走 `scripts/tax_ctax.py`。
+  `TestCtaxSubSkillDocHooks::test_the_route_is_wired_into_the_aggregator` 钉住这条接线：
+  这一路进的是默认名单，不用调用方点名：
+  `tax_aggregator.DEFAULT_SOURCES`、`SOURCE_RANK`、`SOURCE_LABELS`、`SOURCE_IMPACT`、`SOURCE_PLAIN` 与
+  `DATE_SERVER_SOURCES` 六处都登记了它，日期按发布日期下推、不再落回本地补筛；单站取数仍走 `scripts/tax_ctax.py`。

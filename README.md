@@ -52,9 +52,9 @@
 检索层  tax_search.py（NPC）· tax_detail.py（详情与 DOCX 正文）
         tax_web_search.py（总局 search5）· tax_fgk.py（法规库目录与正文）
         tax_so360.py（360 site: 站内）· tax_shui5.py（税屋）· tax_wechat.py（公众号）
-        tax_ctax.py（中国税网检索与正文，③ L4 的旁路，不进五源聚合）
+        tax_ctax.py（中国税网检索与正文，③ L4 的取证一路，同时是 ④ 的 ctax 源）
         tax_browser.py（复用本机浏览器过 WAF）
-        tax_aggregator.py（五源并发聚合）
+        tax_aggregator.py（六源并发聚合）
         旁路：tax_formatter.py 只把检索路的原始 JSON 排成 markdown，主线的四段式
               答案由上面那层的 tax_answer._print_answer 打印，两条路不共用模板
         │
@@ -63,7 +63,7 @@
         www.chinatax.gov.cn   总局公告与法规库 fgk.chinatax.gov.cn（search5 JSON）
         m.so.com              site: 检索，定位省局、财政部、国务院等站点
         www.shui5.cn          税屋：实务解读、专栏、答疑（正文可取）
-        www.ctaxnews.com.cn   中国税网（中国税务报社）：政策转载、解读、税案通报（子技能，不进五源聚合）
+        www.ctaxnews.com.cn   中国税网（中国税务报社）：政策转载、解读、税案通报（子技能，④ 的 ctax 源）
         mp.weixin.qq.com      微信公众号（经搜狗微信检索）
         bbs.auditdog.cn       陈版主实务答疑、监管处罚、准则衍生问答（子技能，补专业口径）
         docs.maoyanqing.com   审计文库 MaoDocs：会计/审计/内控/评估/证券规范逐条原文（子技能）
@@ -98,8 +98,8 @@
 | **文号链接缓存** | `tax_cited.py` | `is_official(url)`：只认 `chinatax.gov.cn` 及任意子域（用 `urlparse().hostname` 比后缀，防"官方域塞进路径"的假链接），拒商业站；`get/put_cited_link`：文号→已核实官方链接的持久缓存（`~/.cache/.../cited_links.json`），非官方域一律不落。`tax_answer.locate_cited_document` 命中缓存时零网络、`_from_cache=True` |
 | **实务解读** | `tax_shui5.py` | 税屋：两条检索通道（`--channel so360`／`native`，默认 `auto` 先 360、被拦或 0 条才换站内）+ 浏览器过 WAF 后 HTTP 连读；长文按本篇 ID 跟 `$N` 续页读到末页，中间页取不到时写 `_pages_error`；站内那一路可按栏目（`--column`，逗号多选）、发布日期区间（成对才两头收）、匹配域（`--match title`）限定并按总条数取全，`--list`/`--tag` 不检索直接取清单，`--find-doc` 只有一枚文号时回站内定位（半角→全角→去机关名三档，候选全部交出不替读者挑）。站点自己标的时效线索也落进字段：行标题尾部方括号标记进 `status_mark`，正文开头「税屋提示——」批注进 `repeal_note`、其中的依据文号进 `repeal_basis`，三枚都只作定位与提醒、不接进定级。站点的取数机制（没凭据时任何地址都回同一份 23,682 字节挑战页、放行 cookie 是 `acw_sc__v2` 约 60 分钟、站内搜索表单只认四个入参与两份提示页、正文收口在 `left2e`、栏目分页用 `<classid>_<页>.html`）**下沉到 `subskills/shui5/`**，含复测探针 `probe_shui5.py` |
 | **实务解读** | `tax_wechat.py` | 微信公众号：搜狗微信 + 移动 UA |
-| **报刊登载层** | `tax_ctax.py` | 中国税网（中国税务报社）：开放 JSON 检索 `GET /xy/Search.do`（域名打不通时回落到站点后端 `120.132.80.188:8088` 同一接口，实测 `foundNum` 一字不差），纯 HTTP、无凭据、不启浏览器（静态服务端渲染、无 WAF、不校验 UA）。检索可按栏目（`--column` 收名称或 nodeID）、成文日期区间（两枚各自独立，只给一侧照常收）、匹配域（`q`/`title`/`keyword`/`author`，`--match`；同时提交 `q` 与 `title` 时 `q` 会盖掉位置参数，所以只匹配标题时只发 `title=`）限定；`--all` 按 `foundNum` 翻到底（`SEARCH_MAX_PAGES` 防「增值税」那种 46,871 条宽词），`--find-doc` 只有一枚文号时回站内定位并把一稿多栏并成一条（`also_in_columns` 收被并掉的栏目名，收满按并完的篇数算），`--list` 不检索按栏目列表页取最新清单（列表页只铺到第 10 页，按栏目取全走检索不走列表页），`--read` 逐篇取正文，`--columns`/`--update-columns` 读写本地栏目表（`data/ctax_columns.json`，重建一轮当期实发 102 次请求）。正文与元信息夹在方正 CMS 的注释标记里（`enpcontent`／`enpproperty`），政策页与专题页两块各写两遍且逐字节相同，取第一块是去重。**域名后不足四段路径的行取不到正文**（2023-02 前的老行，`_address_state` 只看段数判定，协议不进判断），这类行只有题录；正文页响应头不带 charset，requests 会按 ISO-8859-1 解出乱码且不报错，所以 HTML 一律显式按 utf-8 解。行里的 `enpcontent` 是正文截断、`Abstract` 是编辑摘要，两者只作展示不接进抽取。站点机制**下沉到 `subskills/ctaxnews/`**，含复测探针 `probe_ctaxnews.py`；不进 ④ 的五源聚合 |
-| **多源聚合** | `tax_aggregator.py` | 五源并发、Jaccard 去重、权威度排序、源级失败上抛、跨源时间序 |
+| **报刊登载层** | `tax_ctax.py` | 中国税网（中国税务报社）：开放 JSON 检索 `GET /xy/Search.do`（域名打不通时回落到站点后端 `120.132.80.188:8088` 同一接口，实测 `foundNum` 一字不差），纯 HTTP、无凭据、不启浏览器（静态服务端渲染、无 WAF、不校验 UA）。检索可按栏目（`--column` 收名称或 nodeID）、发布日期区间（两枚各自独立，只给一侧照常收）、匹配域（`q`/`title`/`keyword`/`author`，`--match`；同时提交 `q` 与 `title` 时 `q` 会盖掉位置参数，所以只匹配标题时只发 `title=`）限定；`--all` 按 `foundNum` 翻到底（`SEARCH_MAX_PAGES` 防「增值税」那种 46,871 条宽词），`--find-doc` 只有一枚文号时回站内定位并把一稿多栏并成一条（`also_in_columns` 收被并掉的栏目名，收满按并完的篇数算），`--list` 不检索按栏目列表页取最新清单（列表页只铺到第 10 页，按栏目取全走检索不走列表页），`--read` 逐篇取正文，`--columns`/`--update-columns` 读写本地栏目表（`data/ctax_columns.json`，重建一轮当期实发 102 次请求）。正文与元信息夹在方正 CMS 的注释标记里（`enpcontent`／`enpproperty`），政策页与专题页两块各写两遍且逐字节相同，取第一块是去重。**域名后不足四段路径的行取不到正文**（2023-02 前的老行，`_address_state` 只看段数判定，协议不进判断），这类行只有题录；正文页响应头不带 charset，requests 会按 ISO-8859-1 解出乱码且不报错，所以 HTML 一律显式按 utf-8 解。行里的 `enpcontent` 是正文截断、`Abstract` 是编辑摘要，两者只作展示不接进抽取。站点机制**下沉到 `subskills/ctaxnews/`**，含复测探针 `probe_ctaxnews.py`；这一路是 ④ 默认名单里的第 6 源（源键 `ctax`） |
+| **多源聚合** | `tax_aggregator.py` | 六源并发、Jaccard 去重、权威度排序、源级失败上抛、跨源时间序 |
 | **输出格式化** | `tax_formatter.py` | **检索路**的渲染器：stdin 收 `tax_search` / `tax_aggregator` 的原始 JSON，stdout 出四段式 Markdown。主线不经过它——主线的答案骨架是 `tax_answer.compose` 产出、`tax_answer._print_answer` 打印，两处模板不共用。`--intent` 是检索路自己的五档意图（`tax_search.INTENTS`），只决定标题措辞，与主线九类题型（`tax_analyze.QUESTION_TYPES`）不能互换，键集合由 `test_routing_terms.py` 钉住。命令行形态：`python scripts/tax_formatter.py --intent policy_lookup < result.json`（加 `--mode aggregated` 走多源归并；stdin 的字段要求见「命令行搜索」） |
 | **模型通道** | `tax_llm.py` | 外部模型调用的唯一出口：付费闸门只认环境变量、不探测本机 CLI、额度类错误分型上抛 |
 | **后端 API** | `tax_server.py` | Flask 路由、法规原文提取、解读搜索、AI 解读（走付费闸门）、取数失败与空结果分离 |
@@ -206,7 +206,7 @@ Step 4: 补充条件  →  纳税人类型(小规模/一般/小微/高新) + 时
 | 跨境税务风险 | ~12 项 | 境外所得申报、常设机构判定 |
 | 特殊行业风险 | ~14 项 | 建筑挂靠、医药 CSO、电商刷单 |
 
-> 以上均为搜索提示词，实际指标以实时搜索 五源（NPC / 税务总局 / 360 / 税屋 / 微信公众号）结果为准。
+> 以上均为搜索提示词，实际指标以实时搜索 六源（NPC / 税务总局 / 360 / 税屋 / 微信公众号 / 中国税网）结果为准。
 
 ### 6. 安全约束与合规
 
@@ -319,14 +319,14 @@ GET /api/text/ff808181927b083b0193fd65a0eb02cb
 | **fgk.chinatax.gov.cn** | 税务总局法规库结构化内容。国际税收、转让定价、税务行政处罚的依据都在这里 | ⭐⭐⭐⭐ | 实时 | search5 JSON API 翻页（每页固定 10 条）+ 详情页。税率表与执行期限只在详情页、随文申报表只在清单层附件链接里，两域分工与正文容器在 `subskills/chinatax-npc/` |
 | **gov.cn** | 国务院政策发布、答记者问 | ⭐⭐⭐⭐⭐ | 实时 | 360 `site:` 搜索 |
 | **税屋 shui5.cn** | 实务解读、专栏、答疑（正文可取） | ⭐⭐⭐ | 实时 | 两条检索通道（360 `site:` 与站内原生；站内可按栏目、发布日期区间、匹配域限定并取全，`--find-doc` 按文号定位）+ 浏览器过 WAF 后连读；站点机制与实测台账在 `subskills/shui5/` |
-| **中国税网 ctaxnews.com.cn**（子技能 ctaxnews） | 中国税务报社站：政策转载、政策解读、税案通报、地方税收法规、报刊专栏。登载件不是法定依据，被它登的那份文件才是；`tax_evidence.rank_of` 按标题形态把转载件算成原文件的位阶，`PRACTICE_SOURCES` 里没有这一站，所以依据链的 url 要自己写官方那份 | 实务解读 ⭐⭐⭐ | 实时 | 开放 JSON `GET /xy/Search.do`，`scripts/tax_ctax.py` 直连：无凭据、不启浏览器、不调模型；可按栏目、成文日期区间、匹配域限定并翻页取全，`--find-doc` 按文号定位并把一稿多栏并成一条，`--list` 不检索按栏目列表页取清单；域名后不足四段路径的行只有题录（2023-02 前的旧地址），四段那一批可取正文；站点机制与实测台账在 `subskills/ctaxnews/`，**不进 ④ 的五源聚合** |
+| **中国税网 ctaxnews.com.cn**（子技能 ctaxnews） | 中国税务报社站：政策转载、政策解读、税案通报、地方税收法规、报刊专栏。登载件不是法定依据，被它登的那份文件才是；`tax_evidence.rank_of` 按标题形态把转载件算成原文件的位阶，`PRACTICE_SOURCES` 里没有这一站，所以依据链的 url 要自己写官方那份 | 实务解读 ⭐⭐⭐ | 实时 | 开放 JSON `GET /xy/Search.do`，`scripts/tax_ctax.py` 直连：无凭据、不启浏览器、不调模型；可按栏目、发布日期区间、匹配域限定并翻页取全，`--find-doc` 按文号定位并把一稿多栏并成一条，`--list` 不检索按栏目列表页取清单；域名后不足四段路径的行只有题录（2023-02 前的旧地址），四段那一批可取正文；站点机制与实测台账在 `subskills/ctaxnews/`，**④ 默认名单里的第 6 源**（源键 `ctax`，日期按发布日期下推到服务端） |
 | **微信公众号** | 实务解读、申报实操 | ⭐⭐ | 实时 | 搜狗微信 + 移动 UA |
 | **bbs.auditdog.cn**（子技能 chenyiwei-bbs） | 陈版主实务答疑、监管处罚案例、准则衍生问答，附带企业会计准则原文。补的是专业口径那一层，不答税法 | 专业口径 ⭐⭐⭐⭐；税收依据 无 | 按批进库、间隔不固定（2026-10-18 实测 `recent` 的 1／2／3 天窗口全回 0 条，读数见 `subskills/chenyiwei-bbs/NOTE.md`） | 公开 REST API，`curl` 直连，无 key；操作手册在 `subskills/chenyiwei-bbs/` |
 | **docs.maoyanqing.com**（子技能 maodocs） | 审计文库 MaoDocs：企业/政府/小企业会计准则、注协审计准则、企业内控规范、资产评估准则、证监会监管规则适用指引的**逐条原文全文**。补专业口径原文，不答税法 | 专业口径 ⭐⭐⭐⭐；税收依据 无 | 实时（sitemap lastmod 至 2026-09-28） | 纯标准库直连静态站，无 WAF、无浏览器、无 key；脚本与手册在 `subskills/maodocs/` |
 | **www.szse.cn**（子技能 szse-lawrules） | 深交所「法律规则」栏目：法律/行政法规/司法解释/证监会规章·指引·规范性文件/废止公告＋十二类"本所业务规则"自律规则的**目录与原文定位**。补证券交易场所口径，不答税法 | 专业口径 ⭐⭐⭐；税收依据 无 | 实时（当日枚举 724 条入索引） | 先 `build` 建本地索引再离线 `query`；标准库直连为主，业务规则通道复用 `scripts/tax_browser`，无 key、不调模型；脚本与手册在 `subskills/szse-lawrules/` |
-| **减免税政策代码目录**（子技能 tax-preference） | 总局《减免税政策代码目录》xlsx：现行有效/已失效两栏、8 位减免性质代码、收入种类·政策大类、文号、优惠条款。**税收优惠的权威封闭枚举**——按税种/大类列全某主体名下有哪些现行优惠，是五源关键词召回凑不出的 | 税收依据 ⭐⭐⭐⭐（带文号，回 ⑧ 定级） | 官方每月更新（国家税务总局公告 2015 年第 73 号）；本地 `sync` 抓直链比版本 | 先 `sync` 下载重建 `preference_index.json`，再离线 `query`/`list-types`；同步复用 `scripts/tax_sync.py`，plain HTTP、无 key、不调模型；脚本与手册在 `subskills/tax-preference/` |
-| **研发费用加计扣除与高企认定合规**（子技能 rd-deduction-hitech） | 研发费用税务合规的**领域分析知识库**（非抓取源）：高企认定评分自检（八条一票否决 + 四项指标 71 分达标）、加计扣除归集与测算（六类费用/其他费用 10% 限额/委托研发 80%/境外 2/3/负面清单）、口径隔离与差异协同（会计／高企／加计三套为科目级基准，另有 R&D 统计与 IPO 披露两套扩展口径）、2026 穿透式监管与稽查应对、内控制度/流程/表单模板与加计/高企/IPO 三套资料包。补五源给不了的**规则计算与模板产出**那一层 | 领域规则 ⭐⭐⭐⭐（以官方政策文件为基础，另含公开稽查案例）；税收依据 无（引用政策原文时仍回 ⑧ 定级） | 静态随技能提供，政策更新时人工维护 | 离线直接使用，**不连接任何业务系统、不读写数据库、不调模型**；数字一律来自用户提供或企业台账，缺失列待补不虚构；手册与规则在 `subskills/rd-deduction-hitech/` |
-| **chinatax.gov.cn 政策文件库清单**（`scripts/tax_gov_list.py`） | 七个栏目（税务规范性文件 1925／财税文件 1532／其他文件 488／法律 75／行政法规 65／国务院文件 35／税务部门规章 86，2026-10-04 实测 total）的**封闭分页清单**，每条自带发文字号·效力等级·**时效性分类状态**·成文日期·税费类型·官方 url。补 search5 关键词召回给不了的"某栏目全部现行文件"横截面，也是 ⑧ 时效判定的官方时效性字段来源；财税文件（1532 条）与其他文件（488 条）两栏官方不填时效性，整栏翻到底 0 条真值 | 税收依据 ⭐⭐⭐⭐（带官方 url，回 ⑧ 定级） | 集合 diff（`tax_sync.ListSynchronizer`：按 url+时效性+文号+标题算集合 SHA1，时效性翻转会检出重建） | `sync [--channel 名]` 抓全建 `data/sync/chinatax-list/`（索引只有一份，切栏会强制重建到所请求栏目），`lookup`/`stats` 离线查（`--aging` 只认那五种，域外值取数前报错），`seed-cache` 批量预热文号→官方链接缓存，`missing` 出待补链接工作清单；`stats` 带出该栏官方栏目页直链（页面名不统一，规章是 `list.html`，故 `CHANNEL_PAGES` 逐条录不拼接）。用在 ③ L2 的"整栏横截面"，不在 ④ 五源聚合里；plain HTTP POST、无 cookie、不调模型 |
+| **减免税政策代码目录**（子技能 tax-preference） | 总局《减免税政策代码目录》xlsx：现行有效/已失效两栏、8 位减免性质代码、收入种类·政策大类、文号、优惠条款。**税收优惠的权威封闭枚举**——按税种/大类列全某主体名下有哪些现行优惠，是六源关键词召回凑不出的 | 税收依据 ⭐⭐⭐⭐（带文号，回 ⑧ 定级） | 官方每月更新（国家税务总局公告 2015 年第 73 号）；本地 `sync` 抓直链比版本 | 先 `sync` 下载重建 `preference_index.json`，再离线 `query`/`list-types`；同步复用 `scripts/tax_sync.py`，plain HTTP、无 key、不调模型；脚本与手册在 `subskills/tax-preference/` |
+| **研发费用加计扣除与高企认定合规**（子技能 rd-deduction-hitech） | 研发费用税务合规的**领域分析知识库**（非抓取源）：高企认定评分自检（八条一票否决 + 四项指标 71 分达标）、加计扣除归集与测算（六类费用/其他费用 10% 限额/委托研发 80%/境外 2/3/负面清单）、口径隔离与差异协同（会计／高企／加计三套为科目级基准，另有 R&D 统计与 IPO 披露两套扩展口径）、2026 穿透式监管与稽查应对、内控制度/流程/表单模板与加计/高企/IPO 三套资料包。补六源给不了的**规则计算与模板产出**那一层 | 领域规则 ⭐⭐⭐⭐（以官方政策文件为基础，另含公开稽查案例）；税收依据 无（引用政策原文时仍回 ⑧ 定级） | 静态随技能提供，政策更新时人工维护 | 离线直接使用，**不连接任何业务系统、不读写数据库、不调模型**；数字一律来自用户提供或企业台账，缺失列待补不虚构；手册与规则在 `subskills/rd-deduction-hitech/` |
+| **chinatax.gov.cn 政策文件库清单**（`scripts/tax_gov_list.py`） | 七个栏目（税务规范性文件 1925／财税文件 1532／其他文件 488／法律 75／行政法规 65／国务院文件 35／税务部门规章 86，2026-10-04 实测 total）的**封闭分页清单**，每条自带发文字号·效力等级·**时效性分类状态**·成文日期·税费类型·官方 url。补 search5 关键词召回给不了的"某栏目全部现行文件"横截面，也是 ⑧ 时效判定的官方时效性字段来源；财税文件（1532 条）与其他文件（488 条）两栏官方不填时效性，整栏翻到底 0 条真值 | 税收依据 ⭐⭐⭐⭐（带官方 url，回 ⑧ 定级） | 集合 diff（`tax_sync.ListSynchronizer`：按 url+时效性+文号+标题算集合 SHA1，时效性翻转会检出重建） | `sync [--channel 名]` 抓全建 `data/sync/chinatax-list/`（索引只有一份，切栏会强制重建到所请求栏目），`lookup`/`stats` 离线查（`--aging` 只认那五种，域外值取数前报错），`seed-cache` 批量预热文号→官方链接缓存，`missing` 出待补链接工作清单；`stats` 带出该栏官方栏目页直链（页面名不统一，规章是 `list.html`，故 `CHANNEL_PAGES` 逐条录不拼接）。用在 ③ L2 的"整栏横截面"，不在 ④ 六源聚合里；plain HTTP POST、无 cookie、不调模型 |
 
 ### 缓存策略
 
@@ -501,9 +501,9 @@ tax-analysis-engine/
 │   ├── tax_http.py                 # 统一请求层：对外 HTTP 的唯一出口（verify 必填）
 │   ├── tax_shui5.py                # 税屋检索与正文
 │   ├── tax_wechat.py               # 微信公众号（搜狗微信）
-│   ├── tax_ctax.py                 # 中国税网检索与正文（开放 JSON，无凭据、不启浏览器；不进五源聚合）
+│   ├── tax_ctax.py                 # 中国税网检索与正文（开放 JSON，无凭据、不启浏览器；④ 的 ctax 源）
 │   ├── tax_browser.py              # 复用本机浏览器过 WAF、导 cookie
-│   ├── tax_aggregator.py           # 五源并发聚合（源级失败上抛）
+│   ├── tax_aggregator.py           # 六源并发聚合（源级失败上抛）
 │   ├── tax_formatter.py            # 检索路的四段式 Markdown 渲染（stdin 收原始 JSON；主线输出在 tax_answer）
 │   ├── tax_llm.py                  # 外部模型调用的唯一出口：付费闸门 + 额度异常分型
 │   ├── tax_sync.py                 # 离线同步外壳：Synchronizer（单资源直链 diff）+ ListSynchronizer（分页列表集合 diff）

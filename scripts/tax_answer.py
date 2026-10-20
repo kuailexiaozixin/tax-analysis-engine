@@ -153,7 +153,7 @@ def _retarget_for_legislation(rounds: list) -> None:
     这一条是实测逼出来的：同一份《税收征管法》修订草案的提问，轮次若写成
     "取本体法现行条文""确认有无更新或配套文件"，跑完取回的是 2015 年修正的现行
     文本，看起来答完了，实际一句草案内容都没碰——搜索策略按"规定是什么"排，
-    而题面问的是"正在审的那份文本改了什么"。立法过程件不在五个税收源里
+    而题面问的是"正在审的那份文本改了什么"。立法过程件不在六个税收源里
     （见 tax_analyze.legislative_note），所以取证的落点放在人大网站内检索。
     """
     for rnd in rounds:
@@ -161,7 +161,7 @@ def _retarget_for_legislation(rounds: list) -> None:
     rounds.append({
         "round": len(rounds) + 1,
         "goal": "取立法过程件与草案解读：人大网草案/审议公告，及税屋、公众号的逐条解读",
-        # 草案正文不在五个税收源里，但草案解读文章在税屋与公众号：实测
+        # 草案正文不在六个税收源里，但草案解读文章在税屋与公众号：实测
         # search_shui5("税收征管法 修订草案") 首条即国务院法制办征求意见稿通知，
         # search_wechat 同名次全是"修订草案解读"。只查人大网等于漏掉这一层。
         "sources": ["legis", "shui5", "wechat"],
@@ -291,7 +291,7 @@ def _rows_and_error(r: dict) -> tuple[list, str]:
     return (r.get("results", []) if not err else []), err
 
 
-# 法律草案、审议结果报告、征求意见公告的法定公布平台。五个税收源都不收这一层。
+# 法律草案、审议结果报告、征求意见公告的法定公布平台。六个税收源都不收这一层。
 LEGISLATION_SITE = "npc.gov.cn"
 
 
@@ -309,7 +309,7 @@ def _legis_round(term: str, size: int) -> tuple[list, str]:
     for row in rows:
         row["_reliability"] = "medium"
         row["_reliability_note"] = ("立法过程件（中国人大网站内检索所得），"
-                                    "不在五个税收源的收录范围内，只用于定位文本")
+                                    "不在六个税收源的收录范围内，只用于定位文本")
         # 单独一个标记，不靠 medium 顶替：medium 说的是"检索结果可能偏题"，
         # 这一层的件子可能恰恰就是题面问的那份草案，它不能当主依据的原因是
         # 文本还没有效力，不是排序不可信。compose 据此把它排除在主依据候选之外。
@@ -317,6 +317,9 @@ def _legis_round(term: str, size: int) -> tuple[list, str]:
     return rows, err
 
 
+# 这一张表按回合（round）逐源取正文，和 ④ 的并发名单是两件事，键集合本来就不必
+# 相等：中国税网没有单独的"回合"——④ 每答必走、它那一路的题录已经带回来了，
+# 再在这里发一次是重取而不是补齐。要正文时走 tax_ctax.py --read，见 SKILL ③ L4。
 _FETCHERS = {"npc": _npc_round, "fgk": _fgk_round,
              "whole_site": _whole_site_round,
              "shui5": _shui5_round, "wechat": _wechat_round,
@@ -985,7 +988,7 @@ def compose(plan: dict) -> dict:
         # 规则陈述类题型：个案轴缺失不追问，但要在答案里留一句适用边界
         "rule_note": plan.get("rule_note", ""),
         # 题面借用了会计确认与计量的地方：税法条文引的是会计结果，准则那一层
-        # 五个税收源都不收，取证入口是子技能 chenyiwei-bbs（见 SKILL.md ③）
+        # 六个税收源都不收，取证入口是子技能 chenyiwei-bbs（见 SKILL.md ③）
         "accounting_gap": plan.get("accounting_gap", []),
         # 题面点名的是草案/征求意见稿时，本轮取回的同名文本是现行有效版本，
         # 不是草案内容。这句话命令行与服务端共用，不在两处各说各话。
@@ -1050,10 +1053,10 @@ def _print_overseas_note(note: str):
 
 
 def _print_accounting_gap(gap: list):
-    """会计口径缺口：五个税收源都不收会计准则，这一层要交给子技能去取。"""
+    """会计口径缺口：六个税收源都不收会计准则，这一层要交给子技能去取。"""
     if not gap:
         return
-    print("\n会计口径缺口（五个税收源都不收准则条文，取证的入口是子技能）：")
+    print("\n会计口径缺口（六个税收源都不收准则条文，取证的入口是子技能）：")
     for g in gap:
         print(f"  · 要先问清会计上的哪一件事：{g}")
     print("  · 读 subskills/chenyiwei-bbs/SKILL.md，准则原文与实务答疑都在那里")

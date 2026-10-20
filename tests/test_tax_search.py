@@ -1181,6 +1181,7 @@ def test_aggregated_sort_date():
         "so360_search": lambda *a, **k: {"results": [dict(web_item)]},
         "search_shui5": lambda *a, **k: {"results": []},
         "search_wechat": lambda *a, **k: {"results": []},
+        "search_ctax": lambda *a, **k: {"results": []},
     }
     saved = {name: getattr(agg, name) for name in stubs}
     seen_kwargs = {}

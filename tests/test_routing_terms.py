@@ -596,7 +596,7 @@ def test_request_failure_is_flagged_not_read_as_no_hit():
 
 
 def test_accounting_gap_flags_questions_keyed_on_accounting():
-    """税法条款借用会计结果时，① 要登记会计口径缺口——五个税收源都不收准则条文。"""
+    """税法条款借用会计结果时，① 要登记会计口径缺口——六个税收源都不收准则条文。"""
     cases = {
         "企业合并中乙企业净资产账面价值1000万元，特殊性税务处理怎么适用":
             "损益落在哪一期、账面价值按什么计量",
@@ -650,7 +650,7 @@ def test_accounting_gap_reaches_the_answer_layer():
 
 
 def test_legislative_stage_flags_draft_wording():
-    """点名立法过程文件时必须在 ① 认出来：五个税收源收的都是已公布文本。
+    """点名立法过程文件时必须在 ① 认出来：六个税收源收的都是已公布文本。
 
     三组措辞各盯一条 `tax_analyze.LEGISLATIVE_STAGES` 判据。用户原话里
     "国务院常务会议审议并原则通过…决定将草案提请全国人大常委会审议"同时命中

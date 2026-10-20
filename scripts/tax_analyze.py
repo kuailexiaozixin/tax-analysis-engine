@@ -213,7 +213,7 @@ RULE_STATEMENT_TYPES = ("lookup", "fill_blank")
 RULE_AXES = ("time",)
 
 # 税法条文常常不自己定义会计概念：条款里写"确认收入""计入当期损益""公允价值"，
-# 说的是会计上怎么处理，税法只借用那个结果。五个税收源都不收企业会计准则，
+# 说的是会计上怎么处理，税法只借用那个结果。六个税收源都不收企业会计准则，
 # ③ 的 L1→L4 走到头也取不到这一层——这就是会计口径缺口。命中下面任何一组词，
 # 就登记一条缺口，取证交给子技能（`subskills/chenyiwei-bbs/SKILL.md`，见 ③）。
 #
@@ -304,7 +304,7 @@ def legislative_note(stages: list) -> str:
     if not stages:
         return ""
     return ("题面点名的是立法过程文件（" + "；".join(stages) +
-            "）。五个税收源收的都是已经公布的文本，本轮取回的同名文件是它的"
+            "）。六个税收源收的都是已经公布的文本，本轮取回的同名文件是它的"
             "现行有效版本，只能当「修订基线」来写，不能当草案的内容来写："
             "草案文本走立法过程实位取证（中国人大网 npc.gov.cn 的草案审议与"
             "征求意见公告、新华社受权发布稿），取回的条目一律标"
@@ -315,7 +315,7 @@ def accounting_gap(question: str) -> list:
     """认出本题借用了会计确认与计量的地方，返回待核的会计问题清单。
 
     返回空列表表示题面没有会计口径依赖。这里只登记缺口，不判断会计上怎么办——
-    准则条文不在五个税收源的覆盖范围内，答它要走的取证入口见 ③。
+    准则条文不在六个税收源的覆盖范围内，答它要走的取证入口见 ③。
     """
     return [what for pattern, what in ACCOUNTING_SIGNALS if pattern.search(question)]
 
@@ -329,7 +329,7 @@ def accounting_note(gap: list) -> str:
     if not gap:
         return ""
     return ("这道题的税法要件落在会计确认与计量上（" + "；".join(gap) +
-            "）。五个税收源都不收企业会计准则条文，取证入口是子技能 "
+            "）。六个税收源都不收企业会计准则条文，取证入口是子技能 "
             "subskills/chenyiwei-bbs/SKILL.md；准则与实务答疑只作适用前提与参考，"
             "不是税收法定依据。")
 
@@ -605,7 +605,7 @@ def main():
         print("\n前提齐了，可以直接作答。")
     gap = r["accounting_gap"]
     if gap:
-        print("\n会计口径缺口（准则条文不在五个税收源的覆盖范围内）：")
+        print("\n会计口径缺口（准则条文不在六个税收源的覆盖范围内）：")
         for g in gap:
             print(f"  · 要先问清会计上的哪一件事：{g}")
         print("  · 取证入口：subskills/chenyiwei-bbs/SKILL.md")

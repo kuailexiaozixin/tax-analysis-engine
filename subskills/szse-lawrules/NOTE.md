@@ -5,7 +5,7 @@
 scripts\szse_lawrules_scraper.py`，playwright+openpyxl 全站爬成 Excel），本项目**不改
 那份原技能**，只把"深交所法律规则"这一信息源按查询式重做成仓库原生子技能。
 
-用来给母技能 ③「库外专业口径」层补上**证券交易场所自律规则**这一格——五个税收源、
+用来给母技能 ③「库外专业口径」层补上**证券交易场所自律规则**这一格——六个税收源、
 MaoDocs、chenyiwei-bbs 都不收交易所自己的业务规则。
 
 ## 收录来源
@@ -52,7 +52,7 @@ MaoDocs、chenyiwei-bbs 都不收交易所自己的业务规则。
 - **chenyiwei-bbs**：陈版主**实务答疑**、处罚案例、准则衍生问答。
 
 同一份证监会文件，MaoDocs `garr` 与深交所 `csrc_*` 都可能收到；**要目录与官网链接走
-szse，要逐条原文走 MaoDocs**。三者都不进五源、不进 ⑧ 定级，触发条件与在答案里的位置
+szse，要逐条原文走 MaoDocs**。三者都不进六源、不进 ⑧ 定级，触发条件与在答案里的位置
 都写在母技能 `SKILL.md` ③ 与 `references/out_of_library_layers.md`。
 
 **本技能不自行决定何时调它。**

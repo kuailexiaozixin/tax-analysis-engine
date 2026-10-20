@@ -662,8 +662,8 @@ function renderResults(data){
   const c=document.getElementById('resultsContainer'),result=data.result,items=result?.results||result?.items||[];
   const total=result?.total||result?.total_items||items.length,searchedAt=result?.searched_at||'';
   const cacheTag=result?._from_cache?' [缓存]':'';
-  const srcLabels={npc:'NPC国家法规库',chinatax:'国家税务总局',so360:'360站内搜索',shui5:'税屋(实务解读)',wechat:'微信公众号(实务解读)'};
-  const srcIcons={npc:'📜',chinatax:'🏛️',so360:'🔎',shui5:'🏠',wechat:'💬'};
+  const srcLabels={npc:'NPC国家法规库',chinatax:'国家税务总局',so360:'360站内搜索',shui5:'税屋(实务解读)',wechat:'微信公众号(实务解读)',ctax:'中国税网(报社登载)'};
+  const srcIcons={npc:'📜',chinatax:'🏛️',so360:'🔎',shui5:'🏠',wechat:'💬',ctax:'📰'};
   const statusMap={1:'s-abolished',2:'s-amended',3:'s-effective',4:'s-pending'};
   const statusIcons={1:'🔴',2:'🟡',3:'🟢',4:'🔵'};
   const statusNames={1:'已废止',2:'已修改',3:'现行有效',4:'尚未生效'};
@@ -677,7 +677,7 @@ function renderResults(data){
     if(searchedAt)h+=`<span class="tag tag-time">🕐 ${searchedAt}${cacheTag}</span>`;
     h+='</div>';
   }
-  if(result?.source_summary){const s=result.source_summary;h+='<div class="meta-bar">';if(s.npc)h+=`<span class="source-label src-npc">📜 NPC ${s.npc}条</span>`;if(s.chinatax)h+=`<span class="source-label src-chinatax">🏛️ 总局 ${s.chinatax}条</span>`;if(s.so360)h+=`<span class="source-label src-anysearch">🔎 360 ${s.so360}条</span>`;if(s.shui5)h+=`<span class="source-label src-anysearch">🏠 税屋 ${s.shui5}条</span>`;if(s.wechat)h+=`<span class="source-label src-anysearch">💬 公众号 ${s.wechat}条</span>`;h+='</div>';}
+  if(result?.source_summary){const s=result.source_summary;h+='<div class="meta-bar">';if(s.npc)h+=`<span class="source-label src-npc">📜 NPC ${s.npc}条</span>`;if(s.chinatax)h+=`<span class="source-label src-chinatax">🏛️ 总局 ${s.chinatax}条</span>`;if(s.so360)h+=`<span class="source-label src-anysearch">🔎 360 ${s.so360}条</span>`;if(s.shui5)h+=`<span class="source-label src-anysearch">🏠 税屋 ${s.shui5}条</span>`;if(s.wechat)h+=`<span class="source-label src-anysearch">💬 公众号 ${s.wechat}条</span>`;if(s.ctax)h+=`<span class="source-label src-anysearch">📰 中国税网 ${s.ctax}条</span>`;h+='</div>';}
   // 缺了哪一层由后端给成句照抄（见 tax_aggregator._degraded_note）。这里不自己
   // 判断、也不把缺失渲染成普通的"0 条"——0 条看起来像"该层确实没有内容"。
   if(result?.degraded_note){h+=`<div class="meta-bar" style="border-bottom:none"><span class="source-label" style="border-color:var(--accent);color:var(--accent);white-space:normal">⚠️ ${esc(result.degraded_note)}</span></div>`;}
@@ -685,8 +685,8 @@ function renderResults(data){
   // 归不出税种时这句是"这批结果是按原话字面匹配出来的"——不写出来，
   // 一摞无关法条看起来就像按本题找到的依据。
   if(result?._routed){h+=`<div class="meta-bar" style="border-bottom:none"><span class="source-label" style="border-color:var(--g700);color:var(--g700);white-space:normal">🧭 ${esc(result._routed)}</span></div>`;}
-  // 日期区间这一维在五源里的生效方式不是一种（NPC/总局由接口收窄，360、税屋、
-  // 公众号只能在取回的窗口内补筛），整句由后端给（tax_search._date_note 与
+  // 日期区间这一维在六源里的生效方式不是一种（NPC／总局／中国税网由接口收窄，
+  // 360、税屋、公众号只能在取回的窗口内补筛），整句由后端给（tax_search._date_note 与
   // tax_aggregator._date_scope_note）。这里照抄：前端不自己判断哪一源真收窄过，
   // 也不把"窗口内补筛到 0 条"渲染成"该源没有"。读的是 result 这一层——单源与
   // 聚合两条路都把这句挂在这里。
@@ -699,7 +699,7 @@ function renderResults(data){
     const seg=Object.keys(lw).filter(k=>lw[k].got).map(k=>`${nm[k]||k}：取回 ${lw[k].got} 条，区间内 ${lw[k].in_range} 条，区间外剔除 ${lw[k].out_of_range} 条，无日期保留 ${lw[k].no_date} 条`);
     if(seg.length)h+=`<div class="meta-bar" style="border-bottom:none"><span class="source-label" style="white-space:normal">📊 日期补筛 ${esc(seg.join('；'))}</span></div>`;}
   // 税法要件落在会计确认与计量上时，后端给整句提示（tax_analyze.accounting_note），
-  // 这里照抄不自己判断：准则不在五源覆盖范围内，只能由子技能取，且不是税收依据。
+  // 这里照抄不自己判断：准则不在六源覆盖范围内，只能由子技能取，且不是税收依据。
   if(data.accounting_note){h+=`<div class="meta-bar" style="border-bottom:none"><span class="source-label" style="border-color:var(--g700);color:var(--g700);white-space:normal">📘 ${esc(data.accounting_note)}</span></div>`;}
   // 点名的是草案/征求意见稿时，这一栏列出的同名文件是现行有效版本、不是草案内容。
   // 整句由后端给（tax_analyze.legislative_note），这里照抄，不在前端判断库的收录范围。

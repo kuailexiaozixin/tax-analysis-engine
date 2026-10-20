@@ -155,7 +155,7 @@ python tests/eval_answer.py --sample 36 --arms evidence,blind   # 主指标
 | `on_topic` | 主依据就是路由表给出的那部本体法 | — |
 | `off_topic` | 路由对了，但取回的是另一部法 | 检索词与排序 |
 | `unrouted` | `parent_law` 为空，检索词直接用了题面原话 | `TAX_TYPE_KEYWORDS` / 专题表 |
-| `no_evidence` | 一条依据都没取到 | 该主题根本不在五源覆盖内，答案只能给方向 |
+| `no_evidence` | 一条依据都没取到 | 该主题根本不在六源覆盖内，答案只能给方向 |
 
 为什么要单独报这一档：这批题库的选择题对模型来说偏易，实测中把
 《国际刑事司法协助法》顶成"国际重复征税"主依据的题照样答对——答对率看不见

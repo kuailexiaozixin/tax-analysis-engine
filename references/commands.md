@@ -316,7 +316,7 @@ JSON 接口 `GET /xy/Search.do`，无 WAF、不校验 UA、不需要凭据，也
 两条硬边界：一篇稿挂几栏就出几行且 `articleid` 各不相同，`dedup_rows` 按「标题＋发布日期＋文号」
 并成一条，所以收满按并完的篇数算；2023-02 改版前的行地址缺一段目录，正文永久取不到，
 `_address_state` 只看段数就能判定，这类行只当题录（`_url_state` 写明原因，不重试）。
-这一路不进 ④ 的五源聚合。定级那一步也不会替它把关：`tax_evidence.rank_of` 先按标题形态判，
+这一路是 ④ 默认名单里的 `ctax` 源，服务端收发布日期区间。定级那一步也不会替它把关：`tax_evidence.rank_of` 先按标题形态判，
 转载件的标题就是原文件那份标题，所以「财政部 税务总局公告2026年第29号」这样一行会判成
 `normative`、角色成 `direct`，而 `PRACTICE_SOURCES` 那六枚来源标记里没有 `ctaxnews.com.cn`，
 标题不带"解读"二字的行也落不进 `interpretation`。**读成：这一路的地址只作定位与线索，
@@ -428,7 +428,7 @@ python scripts/tax_web_search.py "<关键词>" --size 10
 python scripts/tax_shui5.py "<关键词>" --size 5 --read
 python scripts/tax_wechat.py "<关键词>" --size 5 --read
 
-# 中国税网 — 报社登载的政策转载、解读与税案通报（不进五源聚合，判据见 subskills/ctaxnews/）
+# 中国税网 — 报社登载的政策转载、解读与税案通报（④ 的 ctax 源；单站命令与判据见 subskills/ctaxnews/）
 python scripts/tax_ctax.py "<关键词>" --size 5 --read
 python scripts/tax_ctax.py --find-doc "<文号>"
 
@@ -439,9 +439,9 @@ python scripts/tax_so360.py "<关键词>" --site chinatax.gov.cn --size 10
 python scripts/tax_detail.py --info <法规ID>
 python scripts/tax_detail.py --preview <法规ID>
 
-# 多源聚合 — 五源全开
+# 多源聚合 — 六源全开
 python scripts/tax_aggregator.py "<关键词>" --size 10
-python scripts/tax_aggregator.py "<关键词>" --sources npc,chinatax,so360,shui5,wechat --size 10
+python scripts/tax_aggregator.py "<关键词>" --sources npc,chinatax,so360,shui5,wechat,ctax --size 10
 python scripts/tax_aggregator.py "<关键词>" --from 2024-01-01 --to 2026-12-31   # 按源分两种口径，见 L1 的 --from/--to 说明
 ```
 
@@ -489,7 +489,7 @@ NPC 验到 16 路并发、三趟共 104 次请求，下面那三种形态一个�
 | 中国税网返回"没走成" | `_status` 以「没走成」开头的是**请求被拦在发出之前**：栏目名不在 `data/ctax_columns.json`、或与表里多行重名（`column_lookup` 的 `ambiguous`/`missing`，会把候选一并列出）、或空词没带栏目、或日期不是 `yyyy-mm-dd`、或 `match` 不在 `MATCH_POSITIONS` 的四枚里、或 `channel` 不在 0/1/2 里、或不收满时 `size` 不是正整数、或 `max_rows` 为负、或 `--list` 的 `--pages` 非正。绕过命令行直接给 `_search_once` 传越界值时，站点那一路回 500，`_status` 末尾带 HTTP 码与字节数并写明"不是限流" | 换限定条件重发，别把它当成"站内没有"；站内确实没命中时 `_status` 写的是「0 条：这一词（连同本轮限定）在站内没有命中」，两句不是一回事 |
 | 中国税网取到的条数明显比预期少 | `_status` 写「取到 N 条，这一词共 M 条；已到页数上限」就是没翻到底（`SEARCH_MAX_PAGES` × `SEARCH_PAGE_SIZE`），写「已到 max_rows=N 行的上限」就是先撞到 `--max-rows` 那枚行数预算，写「合并同一篇挂多栏的行 K 行」则是一篇稿挂了几栏出几行被并成一条 | 第一种加 `--all`（要控制花费就配 `--max-rows`），第二种是 `--max-rows` 给的预算用完了、想多要就加大它或去掉，第三种是正常合并、不是丢数据；三种都不读成"这一词只有这些" |
 | 中国税网正文取不到 | 该行带 `_url_state`，写的是地址缺一段目录（2023-02 前的老行，回 500 加一份错误页；字节数随请求带的 UA 变，带浏览器 UA 572、不带 170，所以尺寸不是判据，段数才是） | 只用题录字段（标题／发布日期／文号／发文机关），正文回官方库或改版后的转载件；**不重试**，这一站错误地址回 500 不是 404，重试没有意义还占间隔 |
-| 全部为空 | 五源无结果 | 放宽关键词、换源、告知用户并建议 12366 |
+| 全部为空 | 六源无结果 | 放宽关键词、换源、告知用户并建议 12366 |
 | 子技能限流 | HTTP 429 | 等一分钟再试；准则条文一次取全篇（`ref/{slug}`），别为凑证据面猛刷搜索 |
 | 子技能词太短 | HTTP 400 | 检索词补足两字以上，或改用 `by-tag` 按标签取名 |
 | 子技能帖子不存在 | HTTP 404 | `link` 必须是检索接口原样返回的值，手拼的 tid/链接一律当作无效 |

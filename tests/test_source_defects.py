@@ -115,7 +115,8 @@ class TestAggregatorGaps(unittest.TestCase):
              mock.patch.object(AGG, "search_shui5",
                                return_value=shui5 if shui5 is not None else ok(0)), \
              mock.patch.object(AGG, "search_wechat",
-                               return_value=wechat if wechat is not None else ok(0)):
+                               return_value=wechat if wechat is not None else ok(0)), \
+             mock.patch.object(AGG, "search_ctax", return_value=ok(1)):
             return AGG.aggregate_search("测试词", size=5)
 
     def test_no_gap_when_nothing_failed(self):
@@ -153,7 +154,9 @@ class TestAggregatorGaps(unittest.TestCase):
 
     def test_note_counts_hits_and_names_the_layer(self):
         r = self._agg(so360={"_error": "360 被拦截", "results": []})
-        self.assertIn("2/5", r["degraded_note"], r["degraded_note"])
+        # 分母取的是这一轮实际发出的源名单长度，不是文案里的常量：名单加到六枚，
+        # 这句就得跟着改，改了才发现漏了。打桩给的是 npc／chinatax／ctax 三路有命中。
+        self.assertIn("3/6", r["degraded_note"], r["degraded_note"])
         self.assertIn("税屋", r["degraded_note"])
 
 
@@ -279,7 +282,7 @@ class TestReliabilityBecomesAReminder(unittest.TestCase):
         """同是 medium，三条来源各说各的原因，提醒必须用来源自己那句。
 
         `medium` 在本仓库有三个出处：NPC 正文检索按全文分词命中、总局法规库第 2
-        页起排序变松、立法过程件不在五个源的收录范围内。定级层若按档位配一句
+        页起排序变松、立法过程件不在六个源的收录范围内。定级层若按档位配一句
         固定话（"这一条来自清单靠后的页位"），三处里只有法规库那处对得上，另两处
         给的是假提醒——全文检索和站内检索没有"页位"这件事。
 
@@ -391,7 +394,8 @@ class TestAggregatorCarriesTheReminder(unittest.TestCase):
              mock.patch.object(AGG, "search_chinatax", return_value=chinatax), \
              mock.patch.object(AGG, "so360_search", return_value=empty), \
              mock.patch.object(AGG, "search_shui5", return_value=empty), \
-             mock.patch.object(AGG, "search_wechat", return_value=empty):
+             mock.patch.object(AGG, "search_wechat", return_value=empty), \
+             mock.patch.object(AGG, "search_ctax", return_value=empty):
             return AGG.aggregate_search("增值税", size=5, scope="fulltext")
 
     def test_source_level_marker_reaches_each_item_with_its_note(self):
@@ -1922,7 +1926,8 @@ class TestAggregatorShui5Attribution(unittest.TestCase):
              mock.patch.object(AGG, "so360_search",
                                return_value={"_error": "360 被拦截", "results": []}), \
              mock.patch.object(AGG, "search_shui5", return_value=shui5), \
-             mock.patch.object(AGG, "search_wechat", return_value=ok(0)):
+             mock.patch.object(AGG, "search_wechat", return_value=ok(0)), \
+             mock.patch.object(AGG, "search_ctax", return_value=ok(1)):
             return AGG.aggregate_search("测试词", size=5)
 
     def _shui5_gap(self, r):
@@ -1952,7 +1957,8 @@ class TestAggregatorShui5Attribution(unittest.TestCase):
              mock.patch.object(AGG, "so360_search",
                                return_value={"_error": "360 被拦截", "results": []}), \
              mock.patch.object(AGG, "search_shui5", return_value=ok(0)), \
-             mock.patch.object(AGG, "search_wechat", return_value=ok(0)):
+             mock.patch.object(AGG, "search_wechat", return_value=ok(0)), \
+             mock.patch.object(AGG, "search_ctax", return_value=ok(1)):
             g = self._shui5_gap(AGG.aggregate_search("测试词", size=5))
         self.assertEqual("so360", g["blocked_by"])
 
@@ -2943,14 +2949,50 @@ class TestCtaxSubSkillDocHooks(unittest.TestCase):
             self.assertEqual(1, n, "%s 里 %r 要与表相等且只出现一次，实际 %d 次"
                              % (rel.name, phrase, n))
 
-    def test_the_route_stays_out_of_the_five_source_aggregator(self):
-        """这一路只挂 ③ 的 L4，不混进 ④ 的五源：多一枚默认源会让日期那一维度半接线。"""
-        self.assertFalse([s for s in AGG.DEFAULT_SOURCES if "ctax" in s])
-        self.assertFalse([k for k in AGG.SOURCE_RANK if "ctax" in k])
-        text = (ROOT / "SKILL.md").read_text(encoding="utf-8")
-        self.assertTrue(any("中国税网" in ln and "五源聚合" in ln
-                            for ln in text.splitlines()),
-                        "SKILL ⑪ 那一行要写明不进五源聚合")
+    def test_the_route_is_wired_into_the_aggregator(self):
+        """这一路是 ④ 的第 6 源：六处登记一处不缺，日期走服务端而不是本地补筛。
+
+        逐处分开断言——漏一处不会带着别处一起报红：漏 `SOURCE_IMPACT` 时缺口句只剩
+        "该源本次没有取到内容"这句兜底，漏 `SOURCE_LABELS` 时缺口行印成裸键 ctax，
+        漏 `DATE_SERVER_SOURCES` 时它被本地补筛再过一遍、同一维度算两次。
+        """
+        for table in ("DEFAULT_SOURCES", "SOURCE_RANK", "SOURCE_LABELS",
+                      "SOURCE_IMPACT", "SOURCE_PLAIN", "DATE_SERVER_SOURCES"):
+            self.assertIn("ctax", getattr(AGG, table), "接线缺在 %s" % table)
+        self.assertNotIn("ctax", AGG.DATE_LOCAL_SOURCES)
+        # 四张按源键索引的表与名单必须同集合：只往名单加一枚、表里没登记，
+        # 运行时是 KeyError 或 .get 兜底，看输出看不出来。
+        keys = {frozenset(AGG.SOURCE_RANK), frozenset(AGG.SOURCE_LABELS),
+                frozenset(AGG.SOURCE_IMPACT), frozenset(AGG.SOURCE_PLAIN)}
+        self.assertEqual(1, len(keys), "四张源表的键集合不一致")
+        self.assertEqual(sorted(AGG.DEFAULT_SOURCES), sorted(keys.pop()))
+        # 服务端那一档要逐源登记字段名，否则回显给出"某源由接口自己收窄"却没说收哪一枚
+        self.assertEqual(sorted(AGG.DATE_SERVER_SOURCES), sorted(AGG.DATE_SERVER_FIELDS))
+        with mock.patch.object(AGG, "search_ctax",
+                               return_value={"total": 1, "results": []}) as spy:
+            r = AGG.aggregate_search("测试词", size=5, sources=["ctax"],
+                                     date_from="2024-01-01", date_to="2026-12-31")
+        self.assertEqual("2024-01-01", spy.call_args.kwargs["date_from"])
+        self.assertEqual("2026-12-31", spy.call_args.kwargs["date_to"])
+        self.assertEqual(["ctax"], r["_date_filter"]["server_side"])
+        self.assertEqual({}, r["_date_filter"]["local_window"],
+                         "日期已经下推给接口，不该再在窗口内补筛一遍")
+        self.assertIn("中国税网收发布日期", r["_date_note"])
+        # SKILL 里两处都得各自钉住：只按整篇 assertIn 时，⑪ 那一行能替 ③ L4 那一格
+        # 过关，L4 里的接线说明被删掉也不报红，而按 L4 走的调用方读的就是那一格。
+        lines = (ROOT / "SKILL.md").read_text(encoding="utf-8").splitlines()
+        starts = [i for i, ln in enumerate(lines)
+                  if ln.startswith("- **L4 实务案例与解读")]
+        self.assertEqual(1, len(starts), "③ 的 L4 那一格在 SKILL 里要只有一处")
+        block = lines[starts[0]:starts[0] + 40]
+        block = block[:next((i for i, ln in enumerate(block) if not ln.strip()),
+                            len(block))]
+        self.assertTrue(any("源键 `ctax`" in ln for ln in block),
+                        "③ L4 那一段要写明这一路在 ④ 的默认名单里")
+        rows = [ln for ln in lines if ln.startswith("| 中国税网 ctaxnews.com.cn")]
+        self.assertEqual(1, len(rows), "⑪ 数据源表里中国税网那一行要只有一处")
+        self.assertIn("源键 `ctax`", rows[0],
+                      "⑪ 那一行也要写明它在 ④ 的默认名单里")
 
 
 # ── flk 的 total 随参数换值：回显不许把它当命中数或可达页数 ──────────────────

@@ -396,7 +396,7 @@ def api_search():
     authority = (tax_type_info or {}).get("authority", "npc")
 
     if source == "aggregated":
-        # 聚合同样要换源：不换就会把用户原话丢给五源，NPC 侧取回的是含通用字的
+        # 聚合同样要换源：不换就会把用户原话丢给六源，NPC 侧取回的是含通用字的
         # 无关法规，总局侧又翻不到该专题的规范性文件。sta 专题改用条目自带的
         # search_term 并剔掉 NPC，npc 专题改用 parent_law 精确检索。
         # 日期区间这一维也要交给聚合层：聚合层不吃这两个参数时，界面上的日期控件

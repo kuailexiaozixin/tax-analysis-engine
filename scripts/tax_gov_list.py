@@ -15,7 +15,7 @@ tax_web_search.AGING_VALUES 逐项相同，也都在 tax_evidence.judge_validity
 这份分类状态正是 scripts/tax_evidence.py 的 judge_validity 要的输入，
 官方 url 又是 scripts/tax_cited.py 的文号→官方链接缓存要的落点。
 
-它不在 scripts/tax_aggregator.py 的五源聚合里（`DEFAULT_SOURCES` 没有这一路）：
+它不在 scripts/tax_aggregator.py 的六源聚合里（`DEFAULT_SOURCES` 没有这一路）：
 检索源回答"跟这个词相关的文件"，这一路回答"这一栏全部的文件"，两者不互相顶替。
 索引顶部另带该栏的官方栏目页直链（`CHANNEL_PAGES`，`stats` 印出来给读者自查条数）。
 

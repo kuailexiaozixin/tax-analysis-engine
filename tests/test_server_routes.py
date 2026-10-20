@@ -94,7 +94,7 @@ class TestSearchRoute(_RouteCase):
         m.assert_not_called()          # 参数没过关就不许去打源
 
     def test_rejects_blank_keyword(self):
-        """只有空格的关键词也要当成没给，否则会拿空串去打五源。"""
+        """只有空格的关键词也要当成没给，否则会拿空串去打六源。"""
         with mock.patch.object(tax_server, "search_tax") as m:
             r = self.client.post("/api/search", json={"keyword": "   "})
         self.assertEqual(400, r.status_code)

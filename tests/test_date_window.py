@@ -203,14 +203,14 @@ class TestExactDateRecheck(unittest.TestCase):
 
 
 def _stubbed_sources(calls, payloads=None):
-    """把聚合层的五个源函数换成预置清单，并记录各自被怎么调用。
+    """把聚合层的六个源函数换成预置清单，并记录各自被怎么调用。
 
     payloads: {源名: [条目]}，缺省给一个空清单。
     """
     payloads = payloads or {}
     mocks = []
     for name in ("search_tax", "search_chinatax", "so360_search",
-                 "search_shui5", "search_wechat"):
+                 "search_shui5", "search_wechat", "search_ctax"):
         def make(fn_name):
             def stub(*a, **kw):
                 calls[fn_name] = {"args": a, "kwargs": kw}
@@ -241,7 +241,7 @@ class _Group:
 
 _FN_SOURCE = {"search_tax": "npc", "search_chinatax": "chinatax",
               "so360_search": "so360", "search_shui5": "shui5",
-              "search_wechat": "wechat"}
+              "search_wechat": "wechat", "search_ctax": "ctax"}
 
 
 def _src_result(items, extra=None):
@@ -259,18 +259,24 @@ class TestAggregatorDateForward(unittest.TestCase):
         with _stubbed_sources(calls, payloads):
             return tax_aggregator.aggregate_search("增值税", **kw), calls
 
-    def test_forwards_to_both_server_sources(self):
+    def test_forwards_to_every_server_source(self):
         _, calls = self._run({}, date_from="2024-01-01", date_to="2026-12-31")
         self.assertEqual("2024-01-01", calls["search_tax"]["kwargs"]["date_from"])
         self.assertEqual("2026-12-31", calls["search_tax"]["kwargs"]["date_to"])
         self.assertEqual({"cwrqStart": "2024-01-01 00:00:00",
                           "cwrqEnd": "2026-12-31 23:59:59"},
                          calls["search_chinatax"]["kwargs"]["filters"])
+        # 中国税网服务端收 startDate/endDate（发布日期），所以也在下推那一档里，
+        # 不许退成本地补筛——那会把"这一轮窗口内没命中"说成"这个区间里没有"。
+        self.assertEqual("2024-01-01", calls["search_ctax"]["kwargs"]["date_from"])
+        self.assertEqual("2026-12-31", calls["search_ctax"]["kwargs"]["date_to"])
 
     def test_no_dates_leaves_chinatax_unfiltered(self):
         """不给日期时必须与改动前完全一致：filters 为空 dict，不发这一维。"""
         r, calls = self._run({})
         self.assertEqual({}, calls["search_chinatax"]["kwargs"]["filters"])
+        self.assertEqual("", calls["search_ctax"]["kwargs"]["date_from"])
+        self.assertEqual("", calls["search_ctax"]["kwargs"]["date_to"])
         self.assertNotIn("_date_filter", r)
         self.assertNotIn("_date_note", r)
 
@@ -292,6 +298,7 @@ class TestAggregatorLocalWindow(unittest.TestCase):
                       {"title": "解读F", "date": "2019-01-01"}],
             "wechat": [{"title": "公号G", "date": "2018-01-01"},
                        {"title": "公号H", "date": "2025-02-01"}],
+            "ctax": [{"title": "报社I", "date": "2025-03-01"}],
         }
 
     def _run(self, **kw):
@@ -360,7 +367,9 @@ class TestAggregatorLocalWindow(unittest.TestCase):
                                                 date_from="2024-01-01")
         self.assertEqual(("特别纳税调整",), calls["search_chinatax"]["args"])
         self.assertNotIn("NPC", r["_date_note"])
-        self.assertEqual(["chinatax"], r["_date_filter"]["server_side"])
+        self.assertEqual(["chinatax", "ctax"], r["_date_filter"]["server_side"])
+        # 下推成功的那一路不该再被本地补筛一遍：那会把同一维度算两次
+        self.assertNotIn("ctax", r["_date_filter"]["local_window"])
 
     def test_npc_recheck_note_is_carried_up(self):
         """NPC 复核掉条目那句话在子结果里，聚合输出必须把它抬上来，否则整源少了几条没人知道。"""
