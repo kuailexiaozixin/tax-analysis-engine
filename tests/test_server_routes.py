@@ -14,6 +14,7 @@ tax_server.py 是前端唯一的后端，9 个路由需要接口级测试钉住�
 不测的东西：下层的检索质量、真实站点的可用性——那些属于联网 e2e 与评测集。
 """
 
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -99,6 +100,55 @@ class TestSearchRoute(_RouteCase):
             r = self.client.post("/api/search", json={"keyword": "   "})
         self.assertEqual(400, r.status_code)
         m.assert_not_called()
+
+    def test_rejects_source_outside_the_ui_domain(self):
+        """「数据源」发来自界面取值域之外的值必须 400，不许当成 NPC 悄悄查完。
+
+        以前 ctax／shui5／wechat／so360 这些取数层的源名、以及 aggregate 这种
+        少个 d 的拼法，都会落进 api_search 的 else 分支按 NPC 检索并回 200：
+        调用方以为结果是自己点的那一源出来的。2026-10-20 只读复现：
+        source=ctax 与 source=aggregate 都回 200、被调的是 search_tax。
+        不给 source 才是默认 NPC，下一条款意钉住这一区分。
+        """
+        for bad in ("ctax", "shui5", "wechat", "so360", "aggregate", "chinatax ",
+                    "", "NPC", None):
+            with self.subTest(source=bad):
+                with mock.patch.object(tax_server, "search_tax") as npc, \
+                     mock.patch.object(tax_server, "aggregate_search") as agg, \
+                     mock.patch.object(tax_server, "search_chinatax") as s5, \
+                     mock.patch.object(tax_server, "search_fgk") as fgk:
+                    r = self._post({"keyword": "增值税", "source": bad})
+                self.assertEqual(400, r.status_code)
+                self.assertIn("source", r.get_json()["error"])
+                npc.assert_not_called()
+                agg.assert_not_called()
+                s5.assert_not_called()
+                fgk.assert_not_called()
+
+    def test_missing_source_still_defaults_to_npc(self):
+        """缺省才是默认 NPC；显式给错值走上一条的 400。"""
+        with mock.patch.object(tax_server, "search_tax", return_value={}) as m:
+            r = self._post({"keyword": "增值税"})
+        self.assertEqual(200, r.status_code)
+        m.assert_called_once()
+
+    def test_mutation_widening_the_source_domain_is_caught(self):
+        """上一条款是真的在读 SEARCH_SOURCES，不是碰巧回 400：把取值域加宽就放行。
+
+        注入的是内存里的常量，不落盘。加宽之后 "ctax" 落进 else 分支按 NPC 查完
+        回 200——那正是修复前的行为，也是 test_rejects_source_outside_the_ui_domain
+        要报红的样子。
+        """
+        bad = "ctax"
+        self.assertNotIn(bad, tax_server.SEARCH_SOURCES)
+        with mock.patch.object(tax_server, "SEARCH_SOURCES",
+                               tax_server.SEARCH_SOURCES + (bad,)), \
+             mock.patch.object(tax_server, "search_tax", return_value={}) as npc:
+            r = self._post({"keyword": "增值税", "source": bad}, tax_type=None)
+        self.assertEqual(200, r.status_code)
+        npc.assert_called_once()
+        self.assertEqual(("npc", "chinatax", "fgk", "aggregated"),
+                         tax_server.SEARCH_SOURCES)
 
     def test_swaps_keyword_for_body_law(self):
         """归类出税种就要按本体法名检索。
@@ -564,6 +614,174 @@ class TestWebRelatedRoute(_RouteCase):
             r = self.client.get("/api/web-related/abc123")
         self.assertEqual(200, r.status_code)
         self.assertEqual(2, r.get_json()["total"])
+
+
+SOURCE_UI_BLOCK_RE = re.compile(r"(?ms)^const SOURCE_UI=\{(.*?)^\};")
+# 词表里每一行的字段形态。少一个字段、多一个字段都当成形态漂移直接断言失败，
+# 免得解析静默返回空表让整组用例假绿。
+SOURCE_UI_ENTRY_RE = re.compile(
+    r"^(\w+):\{icon:'([^']*)',label:'([^']*)',short:'([^']*)',"
+    r"cls:'([^']*)',url:'([^']*)'\},?$")
+# 界面上每一处渲源名的地方：锚 → (全文只出现一次的子串, 这一行必须出现的取词写法,
+# 这一行不许出现写死的源名)。锚落到多行或取不到就报红，免得判据指不准是哪一行。
+# 提示那一行的取词写法是 AGG_SOURCE_HINT，它自己怎么从词表算出来由
+# test_aggregated_hint_is_derived_from_the_table 单独钉，这里不重复断言（写了就是同义反复）。
+RENDER_ANCHORS = {
+    "每源几条那一行": ("const chips=", "SOURCE_UI", True),
+    "区间内补筛计数那一行": ("lw[k].got", "SOURCE_UI", True),
+    "卡面来源角标那一行": ("item._source&&", "SOURCE_UI", True),
+    "空结果那句提示": ("${AGG_SOURCE_HINT}", None, True),
+    "弹窗页脚那一行": ("footerLabels={", "SOURCE_UI.npc.label", False),
+}
+
+
+def parse_source_ui(html):
+    """解出那张词表：键 → {icon,label,short,cls,url}，保持文件里的键序。"""
+    block = SOURCE_UI_BLOCK_RE.search(html)
+    assert block, "index.html 里找不到 const SOURCE_UI={...} 那张表，六源词表用例没法跑"
+    ui = {}
+    for line in block.group(1).split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        groups = SOURCE_UI_ENTRY_RE.match(line)
+        assert groups, "SOURCE_UI 有一行的字段形态不是 icon/label/short/cls/url：%s" % line
+        ui[groups.group(1)] = dict(zip(("icon", "label", "short", "cls", "url"),
+                                       groups.groups()[1:]))
+    assert ui, "SOURCE_UI 解出来是空表，用例已经失去意义"
+    return ui
+
+
+def label_drift(ui, source_labels):
+    """逐键比对：label 去掉图标前缀后必须与后端 SOURCE_LABELS 逐字一致。"""
+    return [k for k in ui
+            if "%s %s" % (ui[k]["icon"], ui[k]["label"]) != source_labels.get(k)]
+
+
+def hand_written_copies(html, keys):
+    """词表之外还有没有人写 `源名:'文本'`——第二份词表的形状。"""
+    block = SOURCE_UI_BLOCK_RE.search(html)
+    outside = html[:block.start()] + html[block.end():] if block else html
+    return [k for k in keys
+            if re.search(r"\b%s\s*:\s*['\"]" % re.escape(k), outside)]
+
+
+def renderer_lines(html, anchor):
+    """锚落在哪几行。返回行文本列表，调用方要求恰好一行。"""
+    return [line for line in html.split("\n") if anchor in line]
+
+
+def footer_function_body(html):
+    start = html.find("function renderFooterSources")
+    if start < 0:
+        return None
+    return html[start:html.index("\n}", start)]
+
+
+class TestFrontendSourceVocabulary(unittest.TestCase):
+    """前端那份六源词表与后端逐键对齐，且界面上只此一份。
+
+    改前 index.html 里存着 srcLabels 与 srcIcons 两张表，「每源几条」「区间内补筛」
+    两行又各抄了一份短名，四份里 npc 与 ctax 两处文本已与
+    tax_aggregator.SOURCE_LABELS 不一致（前端写"NPC国家法规库""中国税网(报社登载)"）；
+    页脚手写的站点清单只列 3 个，而多源聚合实际发的是六路。这一组钉两件事：
+    词表内容与后端一致、词表只有一份且渲染点都从它取。加一路源只改后端那一处
+    就会在这里报红。语料是 frontend/index.html，全离线，不启服务、不联网。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        html_path = Path(__file__).resolve().parent.parent / "frontend" / "index.html"
+        cls.html = html_path.read_text(encoding="utf-8")
+        cls.ui = parse_source_ui(cls.html)
+        from tax_aggregator import DEFAULT_SOURCES, SOURCE_LABELS
+        cls.default_sources = list(DEFAULT_SOURCES)
+        cls.source_labels = dict(SOURCE_LABELS)
+
+    def test_keys_are_the_backends_default_sources(self):
+        """键集合与顺序都跟 tax_aggregator.DEFAULT_SOURCES：界面计数那行按表序渲。"""
+        self.assertEqual(self.default_sources, list(self.ui))
+
+    def test_labels_and_icons_are_the_backends(self):
+        self.assertEqual([], label_drift(self.ui, self.source_labels))
+
+    def test_shorts_and_urls_are_usable(self):
+        shorts = [v["short"] for v in self.ui.values()]
+        urls = [v["url"] for v in self.ui.values()]
+        self.assertEqual(len(set(shorts)), len(shorts))
+        self.assertEqual(len(set(urls)), len(urls))
+        for k, v in self.ui.items():
+            self.assertTrue(v["short"], k)
+            self.assertTrue(v["cls"], k)
+            self.assertTrue(v["url"].startswith("https://"), k)
+
+    def test_no_second_copy_of_the_vocabulary(self):
+        """词表之外不许再出现 `源名:'文本'`，旧那两张表也不许重新声明。"""
+        self.assertEqual([], hand_written_copies(self.html, list(self.ui)))
+        self.assertIsNone(
+            re.search(r"(?:const|let|var)\s+(?:srcLabels|srcIcons)\b", self.html))
+
+    def test_each_renderer_line_takes_the_name_from_the_table(self):
+        for site, (anchor, token, no_literals) in RENDER_ANCHORS.items():
+            with self.subTest(site=site):
+                lines = renderer_lines(self.html, anchor)
+                self.assertEqual(1, len(lines),
+                                 "%s 的锚 %r 落在 %d 行，判据指不准是哪一行"
+                                 % (site, anchor, len(lines)))
+                if token:
+                    self.assertIn(token, lines[0], site)
+                if no_literals:
+                    for name in [v["label"] for v in self.ui.values()] + \
+                                [v["short"] for v in self.ui.values()]:
+                        self.assertNotIn(name, lines[0],
+                                         "%s 又自己写了一份源名：%r" % (site, name))
+
+    def test_footer_sites_are_rendered_not_hand_listed(self):
+        """页脚那行由词表渲出：静态标记里没有链接，函数体里没有站点名。"""
+        line = [l for l in self.html.split("\n") if 'id="footerSources"' in l]
+        self.assertEqual(1, len(line))
+        self.assertNotIn("<a href", line[0])
+        body = footer_function_body(self.html)
+        self.assertIsNotNone(body, "页脚渲染函数 renderFooterSources 不见了")
+        self.assertIn("SOURCE_UI", body)
+        for k, v in self.ui.items():
+            self.assertNotIn(v["label"], body, k)
+            self.assertNotIn(v["url"], body, k)
+
+    def test_aggregated_hint_is_derived_from_the_table(self):
+        line = renderer_lines(self.html, "const AGG_SOURCE_HINT=")
+        self.assertEqual(1, len(line))
+        self.assertIn("SOURCE_UI", line[0])
+        self.assertIn("short", line[0])
+
+    def test_source_select_offers_exactly_the_backends_branches(self):
+        """界面「数据源」的 option 值集合＝后端 SEARCH_SOURCES，两边不许各自长。"""
+        opts = re.findall(r'<option value="([^"]+)"',
+                          [l for l in self.html.split("\n") if 'id="filterSource"' in l][0])
+        self.assertEqual(set(tax_server.SEARCH_SOURCES), set(opts))
+
+    def test_mutation_rewritten_label_is_caught(self):
+        """把 npc 的 label 改回旧写法"NPC国家法规库"，比对必须报红。"""
+        mutated = self.html.replace("label:'NPC法规库'", "label:'NPC国家法规库'")
+        self.assertNotEqual(self.html, mutated)
+        drift = label_drift(parse_source_ui(mutated), self.source_labels)
+        self.assertEqual(["npc"], drift)
+
+    def test_mutation_second_vocabulary_is_caught(self):
+        """把补筛那一行改回手写的短名表，两条判据都必须报红。
+
+        注入的就是修复前那一句（`const nm={so360:'360 搜索',shui5:'税屋',…}`），
+        所以这两条不是空转：修复前它们确实是红的。
+        """
+        real = renderer_lines(self.html, "lw[k].got")[0]
+        injected = real.replace("(SOURCE_UI[k]||{label:k}).label",
+                                "{so360:'360 搜索',shui5:'税屋'}[k]||k")
+        self.assertNotIn("SOURCE_UI", injected)
+        mutated = self.html.replace(real, injected)
+        self.assertEqual(["so360", "shui5"], hand_written_copies(mutated, list(self.ui)))
+        offenders = [name for name in [v["label"] for v in self.ui.values()] +
+                     [v["short"] for v in self.ui.values()] if name in injected]
+        self.assertTrue(offenders, "改写后的那一行里没有源名，注入没打到点上")
 
 
 def main():

@@ -43,7 +43,10 @@ AI 直接调用网页同款后端接口完成取数，再用自动化打开页�
    - `POST /api/search` — 搜索法规。请求体字段：`keyword` / `scope`（title|fulltext）/
      `exact`（布尔）/ `status`（3=现行有效）/ `aging`（时效文本值，只对税务总局与法规库
      两源用）/ `sort`（relevance|date）/
-     `source`（npc|chinatax|fgk|aggregated）/ `province` / `date_from` / `date_to` / `size` / `body`
+     `source`（npc|chinatax|fgk|aggregated，取值域是 `tax_server.SEARCH_SOURCES`，
+     显式给这四个之外的值一律 400 并在 `error` 里列出取值域；不给这一维才是默认
+     NPC——改前这样的值会落进 `api_search` 的 else 分支按 NPC 查完回 200，调用方
+     以为结果出自自己点的那一源）/ `province` / `date_from` / `date_to` / `size` / `body`
      结果不在顶层：单源在 `result.results`，`source=aggregated` 在 `result.items`；
      每条的法规号字段叫 `id`，它就是后面三个接口要用的 `<bbbs_id>`。
      归类换源写在 `result._routed`，源被拦写在 `result.errors`（聚合）里。
@@ -166,6 +169,15 @@ AI 直接调用网页同款后端接口完成取数，再用自动化打开页�
   四标签弹窗；多源聚合里总局、税屋、公众号的条目没有这个 ID，卡面只给条目自带的
   原文链接，点开无弹窗。要这些条目的正文得回命令行——总局/法规库条目用
   `python scripts/tax_fgk.py "<关键词>" --body`，税屋与公众号用各自的取正文入口
+- 六源在界面上的名字只存一份：`frontend/index.html` 的 `SOURCE_UI`（键序、`label`、
+  `icon` 逐字对齐后端 `tax_aggregator.DEFAULT_SOURCES` 与 `SOURCE_LABELS`，`short`
+  供「每源几条」那一行，`url` 供页脚链接）。六处渲源名的地方全从这张表取：每源计数、
+  区间内补筛的逐源计数、卡面来源角标、页脚站点清单、空结果那句"切到多源聚合能查到
+  哪几路"的提示、弹窗页脚的法规源名。改前这四份抄本里 npc 与 ctax 两处文本已与后端
+  不一致（界面写"NPC国家法规库""中国税网(报社登载)"），页脚手写的站点清单只列 3 个
+  而聚合实际发六路，空结果提示只报两路。`tests/test_server_routes.py` 的
+  `TestFrontendSourceVocabulary` 逐键比对内容并查出词表之外的第二份，加一路源只改
+  后端那一处就会在这里显形
 - 4 Tab 法规弹窗：法规原文（关键词高亮）/ 官方解读 / AI 解读 / 相关网页；
   AI 解读这一页在切进去时会把闸门状态写在按钮下方——未开启时那里就是开启步骤，
   不是"生成失败"

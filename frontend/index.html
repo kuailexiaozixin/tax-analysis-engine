@@ -499,9 +499,7 @@ body{
 
 <!-- ═══ FOOTER ═══ -->
 <div class="page-footer">
-  数据源：<a href="https://flk.npc.gov.cn" target="_blank" rel="noopener">国家法律法规数据库</a> ·
-  <a href="https://www.chinatax.gov.cn" target="_blank" rel="noopener">国家税务总局</a> ·
-  财税实务公众号<br>
+  数据源：<span id="footerSources"></span><br>
   搜索结果仅供参考，以官方发布为准
 </div>
 
@@ -523,10 +521,48 @@ body{
 let lastResults=[],lastKeyword='',guideState={},activeTab='law';
 const NEXT_STEP={user_type:'tax_type',tax_type:'intent',intent:'conditions'};
 
+/* 六源在界面上的名字只有这一份。改动前这里存着 srcLabels 与 srcIcons 两张表，
+   「每源几条」那一行与「窗口内补筛」那一行又各抄了一份短名，四份里 npc 与 ctax
+   两处文本已经和后端 tax_aggregator.SOURCE_LABELS 不一致（前端写"NPC国家法规库"
+   与"中国税网(报社登载)"，后端是"NPC法规库"与"中国税网(报社转载与税案)"）。
+   label 逐字取 SOURCE_LABELS 去掉图标前缀，图标取同一条目前缀，短名只给计数那一行
+   用。键集合、label、图标三处由 tests/test_server_routes.py 与后端逐键比对，
+   加一路源只改后端那一处就会在这里报红。url 是这一路实际检索的站点。 */
+const SOURCE_UI={
+  npc:{icon:'📜',label:'NPC法规库',short:'NPC',cls:'src-npc',url:'https://flk.npc.gov.cn'},
+  chinatax:{icon:'🏛️',label:'国家税务总局',short:'总局',cls:'src-chinatax',url:'https://www.chinatax.gov.cn'},
+  so360:{icon:'🔎',label:'360站内搜索',short:'360',cls:'src-anysearch',url:'https://www.so.com'},
+  shui5:{icon:'🏠',label:'税屋(实务解读)',short:'税屋',cls:'src-anysearch',url:'https://www.shui5.cn'},
+  wechat:{icon:'💬',label:'微信公众号(实务解读)',short:'公众号',cls:'src-anysearch',url:'https://weixin.sogou.com'},
+  ctax:{icon:'📰',label:'中国税网(报社转载与税案)',short:'中国税网',cls:'src-anysearch',url:'https://www.ctaxnews.com.cn'}
+};
+
+/* 空结果那句提示以前手写"覆盖税屋与公众号"，只报了六路里的两路，
+   读的人会以为另外四路在聚合里本来就没有。现在从 SOURCE_UI 的短名渲出全量。 */
+const AGG_SOURCE_HINT=Object.keys(SOURCE_UI).map(k=>SOURCE_UI[k].short).join('、');
+
 document.addEventListener('DOMContentLoaded',()=>{
+  renderFooterSources();
   loadQuickTax();renderGuideStep('user_type');syncFilterControls();
   document.getElementById('searchInput').addEventListener('keydown',e=>{if(e.key==='Enter')doSearch();});
 });
+
+/* 页脚那行"数据源"以前手写，只列了三个站点，而多源聚合实际发的是六路——
+   少掉的那三路（360 搜索、税屋、中国税网）恰好是实务层与地方口径的补充，
+   读者按页脚去核对来源覆盖就会漏。现在由 SOURCE_UI 渲，加一路源只需要改那张表。
+   用 textContent 建节点，不把任何名字拼进 HTML。 */
+function renderFooterSources(){
+  const box=document.getElementById('footerSources');
+  if(!box)return;
+  box.textContent='';
+  Object.keys(SOURCE_UI).forEach((k,i)=>{
+    if(i)box.appendChild(document.createTextNode(' · '));
+    const a=document.createElement('a');
+    a.href=SOURCE_UI[k].url;a.target='_blank';a.rel='noopener';
+    a.textContent=SOURCE_UI[k].label;
+    box.appendChild(a);
+  });
+}
 
 /* ═══════════ GARBAGE FILTER ═══════════ */
 const _GARBAGE_TITLES=['游戏','小游戏','攻略','视频','电影','电视剧','综艺','下载','app下载','安装','破解','会员','充值','美女','八卦','娱乐','体育','足球','NBA','4399','7k7k'];
@@ -662,8 +698,6 @@ function renderResults(data){
   const c=document.getElementById('resultsContainer'),result=data.result,items=result?.results||result?.items||[];
   const total=result?.total||result?.total_items||items.length,searchedAt=result?.searched_at||'';
   const cacheTag=result?._from_cache?' [缓存]':'';
-  const srcLabels={npc:'NPC国家法规库',chinatax:'国家税务总局',so360:'360站内搜索',shui5:'税屋(实务解读)',wechat:'微信公众号(实务解读)',ctax:'中国税网(报社登载)'};
-  const srcIcons={npc:'📜',chinatax:'🏛️',so360:'🔎',shui5:'🏠',wechat:'💬',ctax:'📰'};
   const statusMap={1:'s-abolished',2:'s-amended',3:'s-effective',4:'s-pending'};
   const statusIcons={1:'🔴',2:'🟡',3:'🟢',4:'🔵'};
   const statusNames={1:'已废止',2:'已修改',3:'现行有效',4:'尚未生效'};
@@ -677,7 +711,13 @@ function renderResults(data){
     if(searchedAt)h+=`<span class="tag tag-time">🕐 ${searchedAt}${cacheTag}</span>`;
     h+='</div>';
   }
-  if(result?.source_summary){const s=result.source_summary;h+='<div class="meta-bar">';if(s.npc)h+=`<span class="source-label src-npc">📜 NPC ${s.npc}条</span>`;if(s.chinatax)h+=`<span class="source-label src-chinatax">🏛️ 总局 ${s.chinatax}条</span>`;if(s.so360)h+=`<span class="source-label src-anysearch">🔎 360 ${s.so360}条</span>`;if(s.shui5)h+=`<span class="source-label src-anysearch">🏠 税屋 ${s.shui5}条</span>`;if(s.wechat)h+=`<span class="source-label src-anysearch">💬 公众号 ${s.wechat}条</span>`;if(s.ctax)h+=`<span class="source-label src-anysearch">📰 中国税网 ${s.ctax}条</span>`;h+='</div>';}
+  // 每源取回几条：按 SOURCE_UI 那一份词表渲，顺序就是这张表的键序（与后端
+  // DEFAULT_SOURCES 同序，由用例逐键比对）。只列本轮真取回过条目的源，全为 0 时
+  // 这一行整行不出现——空的 meta-bar 会撑出一条没有内容的分隔线。
+  if(result?.source_summary){const s=result.source_summary;
+    const chips=Object.keys(SOURCE_UI).filter(k=>s[k])
+      .map(k=>`<span class="source-label ${SOURCE_UI[k].cls}">${SOURCE_UI[k].icon} ${SOURCE_UI[k].short} ${s[k]}条</span>`);
+    if(chips.length)h+=`<div class="meta-bar">${chips.join('')}</div>`;}
   // 缺了哪一层由后端给成句照抄（见 tax_aggregator._degraded_note）。这里不自己
   // 判断、也不把缺失渲染成普通的"0 条"——0 条看起来像"该层确实没有内容"。
   if(result?.degraded_note){h+=`<div class="meta-bar" style="border-bottom:none"><span class="source-label" style="border-color:var(--accent);color:var(--accent);white-space:normal">⚠️ ${esc(result.degraded_note)}</span></div>`;}
@@ -695,8 +735,9 @@ function renderResults(data){
   // （tax_aggregator.aggregate_search 的 _date_filter.local_window），这里照抄，
   // 不自己数条目。got=0 的源不列，上面那行"某源 0 条"已经说过取回多少。
   if(result?._date_filter?.local_window){const lw=result._date_filter.local_window;
-    const nm={so360:'360 搜索',shui5:'税屋',wechat:'微信公众号'};
-    const seg=Object.keys(lw).filter(k=>lw[k].got).map(k=>`${nm[k]||k}：取回 ${lw[k].got} 条，区间内 ${lw[k].in_range} 条，区间外剔除 ${lw[k].out_of_range} 条，无日期保留 ${lw[k].no_date} 条`);
+    // 源名同样取那一份词表；后端万一多出一个这里没登记的代号，就原样打代号，
+    // 不打成空白也不瞎猜名字（键集合与后端同源由 tests/test_server_routes.py 盯）。
+    const seg=Object.keys(lw).filter(k=>lw[k].got).map(k=>`${(SOURCE_UI[k]||{label:k}).label}：取回 ${lw[k].got} 条，区间内 ${lw[k].in_range} 条，区间外剔除 ${lw[k].out_of_range} 条，无日期保留 ${lw[k].no_date} 条`);
     if(seg.length)h+=`<div class="meta-bar" style="border-bottom:none"><span class="source-label" style="white-space:normal">📊 日期补筛 ${esc(seg.join('；'))}</span></div>`;}
   // 税法要件落在会计确认与计量上时，后端给整句提示（tax_analyze.accounting_note），
   // 这里照抄不自己判断：准则不在六源覆盖范围内，只能由子技能取，且不是税收依据。
@@ -718,7 +759,7 @@ function renderResults(data){
       h+=`<div class="empty-state"><div style="font-size:28px;margin-bottom:8px">⚠️</div><p><b>取数失败</b></p><p style="font-size:13px;color:var(--g400)">关键词:"${esc(data.keyword)}"</p><p style="font-size:12px;margin-top:8px;color:var(--accent)">${esc(result._error||'上游没有返回数据')}</p><p style="font-size:12px;margin-top:8px;color:var(--g400)">这是没取到数据，不代表库里没有；可稍后重试</p></div>`;
     } else {
       const why=(result&&(result._filter_note||result._empty_reason||result._error))||'';
-      h+=`<div class="empty-state"><div style="font-size:28px;margin-bottom:8px">🔍</div><p><b>未找到相关政策</b></p><p style="font-size:13px;color:var(--g400)">关键词:"${esc(data.keyword)}"</p>${why?`<p style="font-size:12px;margin-top:8px;color:var(--accent)">${esc(why)}</p>`:''}<p style="font-size:12px;margin-top:8px;color:var(--g400)">试试更短的关键词（如"增值税"而非"增值税优惠政策最新规定"） / 切换到"多源聚合"模式覆盖税屋与公众号</p></div>`;
+      h+=`<div class="empty-state"><div style="font-size:28px;margin-bottom:8px">🔍</div><p><b>未找到相关政策</b></p><p style="font-size:13px;color:var(--g400)">关键词:"${esc(data.keyword)}"</p>${why?`<p style="font-size:12px;margin-top:8px;color:var(--accent)">${esc(why)}</p>`:''}<p style="font-size:12px;margin-top:8px;color:var(--g400)">试试更短的关键词（如"增值税"而非"增值税优惠政策最新规定"） / 切换到"多源聚合"模式（一次查${AGG_SOURCE_HINT}）</p></div>`;
     }
   }
 
@@ -761,7 +802,7 @@ items.forEach((item,i)=>{
     const idRow=sid?`<div class="id-row">NPC ID: ${sid}</div>`
       :`<div class="id-row">${safeUrl?`🔗 原文：<a href="${esc(safeUrl)}" target="_blank" rel="noopener">${esc((safeUrl.match(/https?:\/\/(?:www\.)?([^/]+)/)||[,'非本库链接'])[1])}</a> · 非 NPC 库条目，点开无弹窗`:'非 NPC 库条目，点开无弹窗'}</div>`;
     h+=`${openTag}
-      <div class="title"><span style="font-size:11px;color:var(--g400);margin-right:6px">#${i+1}</span> ${item._source?`<span class="source-label src-${item._source}">${srcIcons[item._source]||''} ${srcLabels[item._source]||''}</span>`:''}${st}</div>
+      <div class="title"><span style="font-size:11px;color:var(--g400);margin-right:6px">#${i+1}</span> ${item._source&&SOURCE_UI[item._source]?`<span class="source-label ${SOURCE_UI[item._source].cls}">${SOURCE_UI[item._source].icon} ${SOURCE_UI[item._source].label}</span>`:''}${st}</div>
       <div class="meta"><span>${statusBadge(item)}</span>${item.document_number?`<span>文号:${esc(item.document_number)}</span>`:''}${item.effect_level?`<span>效力级别:${esc(item.effect_level)}</span>`:''}${(item.publish_date||item.date)?`<span>📅 公布:${esc(item.publish_date||item.date)}</span>`:''}${item.effective_date?`<span>施行:${esc(item.effective_date)}</span>`:''}${item.issuing_authority?`<span>🏛️ ${esc(item.issuing_authority)}</span>`:''}</div>
       ${item._reliability?`<div class="rel-note">提醒：${esc(item._reliability_note||`来源把这一条标为 ${item._reliability} 档存疑，未写明存疑在哪一处——引用前先核对这条到底有没有规定本题这件事`)}</div>`:''}
       ${idRow}</div>`;
@@ -874,7 +915,7 @@ async function viewLaw(bbbsId,title){
       <div class="tab-panel" id="tabWebContent"></div>
     </div>
     <div class="modal-footer">
-      <span style="font-size:11px;color:var(--g400);margin-right:auto" id="footerInfo">实时获取自NPC国家法规库</span>
+      <span style="font-size:11px;color:var(--g400);margin-right:auto" id="footerInfo">实时获取自${SOURCE_UI.npc.label}</span>
       <button class="primary" onclick="window.open('https://flk.npc.gov.cn/detail?id=${bbbsId}','_blank')">NPC 原页面</button>
       <button onclick="closeModal()">关闭</button>
     </div></div>`;
@@ -922,7 +963,7 @@ function switchTab(tab){
   // 措辞要说"实际直连了哪些源"：小颖言税/税海涛声/会计网/税小课/朴税只用来给
   // 命中条目打来源标签（TAX_PRACTICE_SOURCES），程序并不会去搜它们，写进这里会变成假承诺。
   // interp 的站点清单随省份变，所以走 interpFooterLabel() 现算，不写死。
-  const footerLabels={law:'实时获取自NPC国家法规库',interp:interpFooterLabel(),ai:'AI 生成 · 仅供参考 · 以官方为准',web:'直连税屋(shui5.cn) + 微信公众号，另经 360 全网补充；来源标签按命中条目的域名/标题识别'};
+  const footerLabels={law:`实时获取自${SOURCE_UI.npc.label}`,interp:interpFooterLabel(),ai:'AI 生成 · 仅供参考 · 以官方为准',web:'直连税屋(shui5.cn) + 微信公众号，另经 360 全网补充；来源标签按命中条目的域名/标题识别'};
   document.getElementById('footerInfo').textContent=footerLabels[tab]||'';
 }
 

@@ -44,6 +44,12 @@ FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 BIND_HOST = os.getenv("TAX_BIND", "127.0.0.1").strip() or "127.0.0.1"
 PORT = int(os.getenv("TAX_PORT", "5080"))
 
+# 界面「数据源」那一栏的取值域，也就是 /api/search 认的四条分支。请求体里显式给了
+# 这四个之外的值（包括空串）一律 400 并列出取值域：以前这样的值会落进 else 分支，
+# 按 NPC 查完回 200，调用方以为按自己点的那一源查过了（实测 source=ctax 与
+# source=aggregate 都回 200、走的是 search_tax）。不给 source 才是默认 NPC。
+SEARCH_SOURCES = ("npc", "chinatax", "fgk", "aggregated")
+
 # 检索意图在界面上显示成什么。取值域是 tax_search.INTENTS；这里的措辞比
 # tax_formatter.INTENT_HEADERS 短，因为界面那一栏是个标签，不是 markdown 标题。
 # 两张表各管一个界面，键集合由 tests/test_routing_terms.py::test_intent_vocabularies_agree 对齐。
@@ -385,6 +391,9 @@ def api_search():
     size = min(data.get("size", 20), 50)
     sort = data.get("sort", "relevance")
     source = data.get("source", "npc")
+    if source not in SEARCH_SOURCES:
+        return jsonify({"error": "source 只认 %s 这几个取值，收到的是 %r"
+                                 % ("／".join(SEARCH_SOURCES), source)}), 400
     # province 只回填给调用方，不参与本接口的检索：NPC 库是全国性法规，没有
     # 省级维度；地方口径要靠 /api/interpretations 的 province 参数换站点。
     # 前端"省份"下拉因此对搜索结果没有过滤作用，别让它看起来是生效的。
@@ -417,7 +426,7 @@ def api_search():
             elif authority == "overseas":
                 # 界面默认走聚合，这一路不接就和单源那一路同样的空转：税务总局在
                 # 聚合层仍按文件类标签检索，支柱二三个检索词各 0 条，取回的全是
-                # 其余三源的泛泛文章，界面显示的"没查到"其实是筛错了层。
+                # 其余五路的泛泛文章，界面显示的"没查到"其实是筛错了层。
                 agg_kw = (tax_type_info or {}).get("search_term") or keyword
                 agg_sources = [s for s in DEFAULT_SOURCES if s != "npc"]
                 result = aggregate_search(agg_kw, size=size, status=status,

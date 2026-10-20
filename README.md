@@ -129,7 +129,7 @@
 | **测试** | `test_rate_limit_ledger.py` | 限流记录实测台账契约：每条记录三字段齐全（最近实测日期 / 实测方法含连发数与线程数 / 当时结果按形态计数）、未复测的行明写"没有当次数据"、代码里每把串行闸所保护的站点都在台账占一行（读文档与源码，不联网） |
 | **探针** | `probe_rate_limit.py` | 限流记录复测：把生产路径实际要发的那一份请求抓出来重放（跳过串行闸，量的就是并行），按形态逐项计数并回吐台账那三字段；单次总量卡 `MAX_REQUESTS=60`，`--dry-run` 一个请求都不发 |
 | **测试** | `test_detail_cache.py` | 详情缓存用例：键算法与历史缓存逐字节一致、命名空间不越界、命中留痕、老条目读时转正、缓存不含条文正文（红线）、原子写不留半截文件 |
-| **测试** | `test_server_routes.py` | 服务端 9 路由用例：状态码与错误码、分支路由（npc/chinatax/fgk/aggregated）、付费闸门关着时不许碰模型、上游报错如实透出不吞成空结果、会计口径与立法阶段两条提示都按用户原话判定而非按改写后的检索词、全网那一趟在真实边界（`so360_search`）打桩断言 1/2/3 条都能到载荷（全打桩，不联网） |
+| **测试** | `test_server_routes.py` | 服务端 9 路由用例 51 条 + 前端词表用例 10 条（全打桩，不联网）：状态码与错误码、分支路由（npc/chinatax/fgk/aggregated）、`source` 发取值域外的值一律 400 且一个源都不许碰、付费闸门关着时不许碰模型、上游报错如实透出不吞成空结果、会计口径与立法阶段两条提示都按用户原话判定而非按改写后的检索词、全网那一趟在真实边界（`so360_search`）打桩断言 1/2/3 条都能到载荷；`TestFrontendSourceVocabulary` 拿 `frontend/index.html` 里那张 `SOURCE_UI` 与后端 `DEFAULT_SOURCES`/`SOURCE_LABELS` 逐键比对（键序、label、图标三件），并查出词表之外的第二份源名表、页脚手写站点清单与渲源名那六处里的写死源名。变异自检分两处：用例内部三处（加宽 `SEARCH_SOURCES` 放 `ctax` 进来、把 npc 的 label 改回旧写法"NPC国家法规库"、把补筛那一行改回手写的短名表），隔离副本树里三处（取值域闸门改成永不触发、空结果提示句改回手写两路、页脚改回手写站点清单），六处全打红 |
 | **测试** | `test_http_layer.py` | 统一请求层守门：AST 扫全项目、除白名单外禁止绕过 `tax_http` 的裸请求（含别名写法）、参数只透传不补全、`verify` 必填、取数失败那句错误说明的整形（丢链接与 `(Caused by ...)`、压平折行、截断不切词） |
 | **测试** | `test_frontend_province_ui.py` | 前端省份控件契约：控件长在"官方解读"页而非搜索栏、高级筛选恰为 6 组、搜索请求不带 `province`、结果头不再显示省市标签、前端站点清单与 `tax_server.search_interpretations` 的默认 sources 逐字一致（读文件断言，不开浏览器） |
 | **测试** | `test_frontend_aging_control.py` | 前端时效控件值域契约：`AGING_S5` 五档与后端 `tax_web_search.AGING_VALUES` 逐项一致、`AGING_FROM_NPC` 换出的文本必落在值域内、`syncFilterControls` 不再 `disabled`、拼 option 的两项数组不许写成空项（真浏览器里读到过 `undefined` 选项）、`filterStatus` 赋值只走 `setNpcStatus`、`doSearch` 按 `s5` 分流 `status`/`aging`（读文件断言，不开浏览器） |
@@ -143,7 +143,7 @@
 | **评测（诊断）** | `eval_retrieval.py` | 检索质量：路由覆盖 + 题库覆盖两级指标 |
 | **技能定义** | `SKILL.md` | 分析主线与禁止行为清单 |
 | **参考文档** | `references/*.md` | SKILL.md 主线判据的细节下沉：各源命令、输出模板、依据定级、税种映射、源缺陷、网页界面、评测方法、判型指标，另含搜索策略与风险框架 |
-| **前端** | `frontend/index.html` | 搜索界面 + 4 步向导 + 法规弹窗四标签页 |
+| **前端** | `frontend/index.html` | 搜索界面 + 4 步向导 + 法规弹窗四标签页。六源在界面上的名字只存 `SOURCE_UI` 一张表（键序与 label/图标逐字对齐后端 `tax_aggregator.SOURCE_LABELS`），每源计数、区间内补筛计数、卡面角标、页脚站点链接、空结果那句提示都从它渲出 |
 
 ---
 
@@ -579,7 +579,7 @@ tax-analysis-engine/
 │   ├── test_rate_limit_ledger.py   # 限流记录台账契约：三字段齐全 / 闸与记录一一对应（不联网）
 │   ├── probe_rate_limit.py         # 限流记录复测探针：重放生产请求，回吐台账三字段（联网，手动跑）
 │   ├── test_detail_cache.py        # 详情缓存用例：键一致 / 命名空间不越界 / 原子写（全打桩）
-│   ├── test_server_routes.py       # 服务端路由用例：9 个路由的状态码与分支、两条提示按原话判定、全网那趟在真实边界打桩（全打桩，不联网）
+│   ├── test_server_routes.py       # 服务端路由用例：9 个路由的状态码与分支、source 取值域、两条提示按原话判定、全网那趟在真实边界打桩；外加前端六源词表与后端逐键比对（全打桩，不联网）
 │   ├── test_http_layer.py          # 统一请求层守门：AST 扫全项目、禁止绕过 tax_http 的裸请求、错误说明整形
 │   ├── test_frontend_province_ui.py # 前端省份控件契约：控件在哪 / 筛选组数 / 站点清单与后端一致
 │   ├── test_frontend_aging_control.py # 前端时效控件值域契约：五档与后端一致 / option 两项齐全 / 赋值只走共享入口
