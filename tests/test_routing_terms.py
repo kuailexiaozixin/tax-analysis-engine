@@ -460,8 +460,9 @@ def test_aging_and_effect_level_domains():
 def test_doc_year_help_says_the_document_number_year():
     """`--doc-year` 的帮文要说"发文字号里的年份"，不能写成"成文年份"。
 
-    依据是 2026-10-20 两发对照（同词「个人所得税」×1994：`docYear` 82 条、
-    `xxgkFormulatedYear` 90 条，差的 8 条是没有文号的那批法律），逐发口径记在
+    依据是 2026-10-20 空词整档的两发对照（`docYear=2024` 回 82、`xxgkFormulatedYear=2024`
+    回 90，两发的 10 行里能逐条指出 1 条差异：《中华人民共和国增值税法》文号空、制定年 2024，
+    只被后者收到；其余 7 条差额要翻页才比得齐，本机没取），逐发口径记在
     `subskills/chinatax-npc/NOTE.md` 第五节。帮文写错时照着填的人会拿成文日期那年
     去填这一栏，命中的是另一批条目。成文日期那一维另有两枚开关（`--cwrq-from`／
     `--cwrq-to`），帮文里必须把这层分开。

@@ -148,7 +148,7 @@ NPC 法规库那个接口（`tax_search.py`）经实测是**从 1 起算**，两
 「四、search5 的可发参数与分面字段」是 2026-10-01、10-02 两批单发实测，「五、search5
 的值域、两族日期与行业键名单发读数（2026-10-20 取样）」按当日基线重发，两批各自的全站与
 文件类标签基数写在表头，**这两档基数随上游录入每天在漂，比对前先重发当日基线**；
-「六、站点自己发的那一串」是 `getSearch.js` 的逐行读数，键名以那里为准。
+「六、站点自己发的那一串」是 `getSearch.js` 与 `public.js` 两份脚本的逐行读数，键名以那里为准。
 判据收在 `subskills/chinatax-npc/SKILL.md` 第三步。
 这里只登记接进了什么：
 
@@ -156,9 +156,11 @@ NPC 法规库那个接口（`tax_search.py`）经实测是**从 1 起算**，两
   `wordPlace`、`participleRule`、`xxgkSonTaxPolicy`、`docType`+`docYear`+`docNo`、
   `cwrqStart`+`cwrqEnd`、`xxgkAging`、`xxgkEffectLevel`，都由 `tax_web_search.build_filters`
   拼参数、`search_chinatax(filters=…)` 并入请求，命令行开关见下文「search5 收窄维度的命令行」。
-  另有两项不是收窄维度而是检索选项，走 `search_chinatax` 的关键字参数：`label` 默认发
-  `FILE_LABELS` 那十个文件类标签（`--all-labels` 关），`orderBy` 由 `--order` 选（默认相关度）。
-- **仍未接**：`column`、`xxgkTaxPolicy`、`xxgkFormulatedYear`、`industrytypename`、`likeDoc`、
+  另有三项不是收窄维度而是检索选项，走 `search_chinatax` 的关键字参数：`label` 默认发
+  `FILE_LABELS` 那十个文件类标签（`--all-labels` 关），`orderBy` 由 `--order` 选（默认相关度），
+  `column` 由调用方直接给值（`tax_web_search.py` 自己的命令行没有这一枚开关，用它的是
+  `tax_cases.py` 的 `CASE_COLUMN=5741`）。
+- **函数层与命令行都不发**：`xxgkTaxPolicy`、`xxgkFormulatedYear`、`industrytypename`、`likeDoc`、
   `searchWordMd5`，以及 `startTime`／`endTime` 那一族（同一区间带完整时间戳时与 `cwrq` 那族收到
   同一个集合，页面自己发的是 `cwrq`）。往命令行加新维度时按 `subskills/chinatax-npc/NOTE.md`
   第四节那张单发参数表逐行核对，不要凭记忆改。

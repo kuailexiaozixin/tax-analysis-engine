@@ -76,12 +76,14 @@ FILE_LABELS = ("法律,行政法规,国务院文件,税务部门规章,税务规
 ALL_LABELS = ""
 
 # ── 时效与效力等级两维的取值域 ──
-# 每个值都实测过"发出去真的会收窄"，基线是 增值税×FILE_LABELS = 1908 条：
+# 每个值都实测过"发出去真的会收窄"，基线是 增值税×FILE_LABELS（这一档随上游录入在漂：
+# 2026-10-02 读到 1908、2026-10-20 读到 1910，下面那两行单发读数取的是 1908 那一次）：
 #   xxgkAging        全文有效 252 / 已修改 163 / 全文失效 9 / 全文废止 318 / 尚未生效 1
 #   xxgkEffectLevel  法律 9 / 行政法规 10 / 国务院文件 9 / 税务部门规章 30 /
 #                    税务规范性文件 681 / 财税文件 636 / 其他文件 61 / 工作通知 190
-# 域外的值不发出去，而是在 build_filters 里报错：接口对不认识的值是静默返回基线，
-# 调用方看不出区别，等于是把"筛过了"谎报成"筛不出"。
+# 域外的值不发出去，而是在 build_filters 里报错：接口对不认识的值回 total=0（实测
+# xxgkEffectLevel=法规 与 xxgkAging=有效 两发都回 0，同一次跑的基线是 1910），
+# 它与"这一维确实没有内容"在响应里是同一个形态——放过去等于把"没筛成功"读成"筛出来是空"。
 AGING_VALUES = ("全文有效", "已修改", "全文失效", "全文废止", "尚未生效")
 EFFECT_LEVEL_VALUES = ("法律", "行政法规", "国务院文件", "税务部门规章",
                        "税务规范性文件", "财税文件", "其他文件", "工作通知")
@@ -151,7 +153,7 @@ def build_filters(in_title: bool = False, precise: bool = False,
                              % "、".join(AGING_VALUES))
         if a not in AGING_VALUES:
             raise ValueError(f"aging 只认 {AGING_VALUES}，收到 {aging!r}——"
-                             "域外的值发出去接口静默返回基线，看不出没筛")
+                             "域外的值发出去接口回 total=0，与这一维真的筛空了分不开")
         out["xxgkAging"] = a
     if effect_level:
         e = effect_level.strip()
