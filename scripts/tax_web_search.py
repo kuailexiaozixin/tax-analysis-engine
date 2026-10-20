@@ -111,8 +111,8 @@ def build_filters(in_title: bool = False, precise: bool = False,
     """把可选的收窄维度拼成 search5 的过滤参数 dict。
 
     只发填了的维度，返回的 dict 直接喂给 search_chinatax(filters=…)。各项取值
-    来自本机 2026-10-01 与 2026-10-02 的单发实测（见 references/commands.md 的参数
-    表），不要凭记忆改。哪些维度真的会被发出去分两种：范围／匹配／日期／时效
+    来自本机单发实测：开关清单在 references/commands.md，逐档取值域与单发
+    读数在 subskills/chinatax-npc/NOTE.md。不要凭记忆改。哪些维度真的会被发出去分两种：范围／匹配／日期／时效
     （aging）由网页界面那四个控件驱动（tax_server._ui_filters），效力等级与文种、
     税种那几组目前只有命令行用得到（--effect-level / --doc-type / --tax-type）。
 
@@ -121,7 +121,7 @@ def build_filters(in_title: bool = False, precise: bool = False,
         precise: 精准分词（participleRule=5，默认 0 是模糊）
         tax_type: 税种分面，如「增值税」（xxgkSonTaxPolicy）
         doc_type: 文种，如「财政部税务总局公告」（docType）
-        doc_year: 成文年份四位（docYear）
+        doc_year: 发文字号里的年份四位（docYear，不是成文年份）
         doc_no: 文号数字（docNo）
         cwrq_from / cwrq_to: 成文日期区间，YYYY-MM-DD（cwrqStart/cwrqEnd）
         aging: 时效，取值限 AGING_VALUES 五项（xxgkAging）
@@ -187,8 +187,9 @@ def build_filters(in_title: bool = False, precise: bool = False,
             datetime.datetime.strptime(d, "%Y-%m-%d")
         except ValueError:
             raise ValueError(f"{key} 不是真实日期，收到 {val!r}")
-        # 接口这一维要完整时间戳，只给日期会命中量放大一个量级（实测 2024 全年
-        # 给日期是 2428 条，给带时间戳才是 207 条）。
+        # 接口这一维要完整时间戳：只给日期时日期值不参与比较，这一发换成"这一维有没有值"
+        # 的过滤——全站基数下「2024 全年」「只发起点」「只发终点」「2025 上半年」四种裸写法
+        # 同回 2432，带整点时间戳才按区间收到 207。逐发读数见 subskills/chinatax-npc/NOTE.md 第五节。
         out[key] = d + (" 00:00:00" if key == "cwrqStart" else " 23:59:59")
     return out
 
@@ -410,7 +411,7 @@ def add_filter_args(parser):
     --order 与 --all-labels 不是收窄维度，是 search_chinatax 的检索选项，
     由 search_opts_from_args 收。
     """
-    g = parser.add_argument_group("收窄维度（都可选，见 references/commands.md 的参数表）")
+    g = parser.add_argument_group("收窄维度（都可选；开关见 references/commands.md，值域读数见子技能 NOTE）")
     g.add_argument("--in-title", action="store_true",
                    help="仅标题匹配（wordPlace=1，默认全文）")
     g.add_argument("--precise", action="store_true",
@@ -419,7 +420,8 @@ def add_filter_args(parser):
                    help="税种分面，如「增值税」（xxgkSonTaxPolicy）")
     g.add_argument("--doc-type", default="",
                    help="文种，如「财政部税务总局公告」（docType，内部空格会被去掉）")
-    g.add_argument("--doc-year", default="", help="成文年份四位（docYear）")
+    g.add_argument("--doc-year", default="", metavar="YYYY",
+                   help="发文字号里的年份四位（docYear）；成文日期区间用 --cwrq-from/--cwrq-to")
     g.add_argument("--doc-no", default="", help="文号数字（docNo）")
     g.add_argument("--cwrq-from", default="", help="成文日期起 YYYY-MM-DD（cwrqStart）")
     g.add_argument("--cwrq-to", default="", help="成文日期止 YYYY-MM-DD（cwrqEnd）")

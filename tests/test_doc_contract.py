@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """文档内部契约的离线用例。不联网、不开浏览器、不调模型。
 
-守的是六类结构问题——都不问内容对错，只问"改了一处有没有忘了另一处"：
+守的是七类结构问题——都不问内容对错，只问"改了一处有没有忘了另一处"：
 
   1. `references/*.md` 顶部目录里每个锚点都必须落到本文某个真实二级标题；对
      `output_templates.md` 与 `out_of_library_layers.md` 这两份按"一节一行"维护
@@ -26,6 +26,10 @@
      所属步骤那一节或对应的 `references/` 段落。`tests/red_line_map.py` 逐条核对编号、
      锚、目的地三者是否互相对上，以及每条正文在全仓库是否只出现一次——搬文本最容易
      出的事是搬丢一份或留下两份，两者都要能报红。
+  7. 指向 `subskills/*/{NOTE.md,SKILL.md}` 的指针：主文档、`references/*.md` 与
+     `scripts/*.py` 里 `subskills/…` 后面 46 个字符窗口内的「第X节」与「小节名」，
+     都要在目标文件的小节标题里对得上。站点细节下沉子技能之后主文档只剩指针，
+     小节改名或重排序号而指针不动就是断链，且断链只在有人照着去读时才暴露。
 
 第 3 项的"文件 → 章节名"抽取只认 SKILL.md 现有的两种句式（`` `x.md` 的"Y"一节``
 与 `` `x.md`「Y」 ``，后者已是多数），扩句式前先加提取规则，否则新指针会静默逃过
@@ -36,7 +40,7 @@
 里注入对应的破坏（删枚举值、表格改名、矩阵塞域外取值、删整条交互 bullet、删候选
 总览档位、指针指向不存在的小节、「」式指针整体不认、半句贴两遍、归属表符号漂走、
 把留痕句改成"就整段不写"、删空红线正文格、红线锚记号改名、红线指针指错小节、
-红线抄进两份文件、删掉 ⑦ 里那一行指针等），断言那一条检查转红。自检改的是内存副本，
+红线抄进两份文件、删掉 ⑦ 里那一行指针、把子技能小节的序号或标题改了而指针不动等），断言那一条检查转红。自检改的是内存副本，
 不落盘，也不往仓库里留注入脚本。
 """
 
@@ -712,6 +716,143 @@ class TestRedLineOwnership(unittest.TestCase):
         p = red_line_map.problems(skill, self.refs)
         self.assertTrue(any("编号不连续" in x for x in p), f"少一条后编号不报红：{p}")
         self.assertTrue(any("被立了锚" in x for x in p), f"锚成了孤儿却不报红：{p}")
+
+
+SUB_DIR = ROOT / "subskills"
+POINTER_DOC_NAMES = ("NOTE.md", "SKILL.md")
+POINTER_WINDOW = 46
+SUB_PTR_RE = re.compile(r"subskills/([^\s`\u4e00-\u9fff（）()【】「」，。；：、]+)")
+CN_SECTION_RE = re.compile(r"第([一二三四五六七八九十]+)节")
+CN_H2_RE = re.compile(r"^[一二三四五六七八九十]+、")
+QUOTED_TITLE_RE = re.compile(r"「([^」]{4,60})」")
+
+
+def pointer_docs() -> dict:
+    """{仓库相对路径: 正文}，覆盖全仓会写 `subskills/` 指针的那几类文件。"""
+    files = ([SKILL, ROOT / "README.md"] + sorted(REF_DIR.glob("*.md"))
+             + sorted(SUB_DIR.glob("*/SKILL.md")) + sorted(SUB_DIR.glob("*/NOTE.md"))
+             + sorted((ROOT / "scripts").glob("*.py")))
+    return {f.relative_to(ROOT).as_posix(): f.read_text(encoding="utf-8") for f in files}
+
+
+def iter_pointers(docs: dict):
+    """逐条产出 (出处, 指针路径, 窗口)。
+
+    路径截到 `.md` 为止——`SKILL.md")` 这类跟在字符串或括号里的写法不截就会让目标
+    文件认不出来，指针于是静默逃过检查。窗口从原始匹配末尾起算。
+    """
+    for rel in sorted(docs):
+        for m in SUB_PTR_RE.finditer(docs[rel]):
+            path = m.group(1)
+            cut = path.find(".md")
+            yield rel, (path[:cut + 3] if cut != -1 else path), \
+                docs[rel][m.end():m.end() + POINTER_WINDOW]
+
+
+def section_pointer_count(docs: dict) -> int:
+    """窗口里带「第X节」或「小节名」写法、因而真会去比对小节的指针条数。"""
+    return len([1 for _, path, win in iter_pointers(docs)
+                if (CN_SECTION_RE.search(win) or QUOTED_TITLE_RE.search(win))
+                and next((p for p in path.split("/")[1:] if p in POINTER_DOC_NAMES), "")])
+
+
+def subskill_pointer_problems(docs: dict) -> list:
+    """指不到的每一条给一句说明；全指得到返回空表。"""
+    bad = []
+    for rel, path, win in iter_pointers(docs):
+        parts = path.split("/")
+        site = parts[0]
+        if not site or "<" in site:
+            continue
+        if not (SUB_DIR / site).is_dir():
+            bad.append("%s 指着 subskills/%s，这个目录不存在" % (rel, path))
+            continue
+        target = next((p for p in parts[1:] if p in POINTER_DOC_NAMES), "")
+        if not target:
+            continue
+        rel_target = "subskills/%s/%s" % (site, target)
+        if rel_target not in docs:
+            bad.append("%s 指着 %s，这个文件不在仓库里" % (rel, rel_target))
+            continue
+        heads = h2_titles(docs[rel_target])
+        numbered = [h for h in heads if CN_H2_RE.match(h)]
+        ms = CN_SECTION_RE.search(win)
+        if ms:
+            if not numbered:
+                bad.append("%s 指着 %s 的第%s节，但那份文件没有中文序号小节"
+                           % (rel, rel_target, ms.group(1)))
+            elif not any(h.startswith(ms.group(1) + "、") for h in heads):
+                bad.append("%s 指着 %s 的第%s节，那份文件里没有这一节（现有：%s）"
+                           % (rel, rel_target, ms.group(1), " / ".join(numbered)[:120]))
+        mq = QUOTED_TITLE_RE.search(win)
+        if mq and not (numbered and not CN_H2_RE.match(mq.group(1))):
+            title = mq.group(1)
+            if not any(h == title or h.startswith(title) for h in heads):
+                bad.append("%s 引的「%s」在 %s 的二级标题里找不到（现有：%s）"
+                           % (rel, title, rel_target, " / ".join(heads)[:160]))
+    return bad
+
+
+class TestSubskillPointers(unittest.TestCase):
+    """`subskills/` 指针的后向一跳：指向子技能文件的指针要指得到那一节。
+
+    站点细节下沉到 `subskills/*/NOTE.md` 之后，主文档与脚本里只剩指针；小节改名或
+    重排序号而指针不动，断链要到有人照着去读时才暴露。判据只看指针后面 46 个字符
+    窗口里的两种写法：「第X节」要在目标文件的中文序号小节里对得上，「小节名」要在
+    目标文件的二级标题里对得上（允许显示文字省掉标题后缀，与目录项同一把尺）。
+    目标文件带中文序号时，不带序号的引文当取值、不当小节名——`NOTE.md` 表格里
+    「科技创新」这类取值就落在窗口里，认成小节名就是一条常年假报警。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.docs = pointer_docs()
+
+    def test_every_subskill_pointer_resolves(self):
+        self.assertEqual([], subskill_pointer_problems(self.docs))
+
+    def test_the_rule_sees_a_nontrivial_number_of_pointers(self):
+        """提取规则空转就是假绿：要比对小节的指针条数得有下限。
+
+        口径：2026-10-20 这轮扫到 15 条（全仓 112 条 `subskills/` 指针里，窗口带
+        「第X节」或「小节名」且路径点到了 NOTE.md/SKILL.md 的那几条）。把正则的
+        排除字符类删宽、或不认「第X节」句式，这一条会先掉到下限以下。
+        """
+        n = section_pointer_count(self.docs)
+        self.assertGreaterEqual(n, 10, "只扫到 %d 条带小节写法的指针，提取规则被改坏了" % n)
+
+    def test_mutation_renumbered_section_is_caught(self):
+        """自检：目标文件里那一节的中文序号换了，指针必须报红。"""
+        docs = dict(self.docs)
+        key = "subskills/chinatax-npc/NOTE.md"
+        docs[key] = docs[key].replace("## 四、search5 的可发参数", "## 柒、search5 的可发参数", 1)
+        p = subskill_pointer_problems(docs)
+        self.assertTrue(any("第四节" in x for x in p), "序号改了却不报红：%s" % p)
+
+    def test_mutation_renamed_section_title_is_caught(self):
+        """自检：小节改名而引文不动，「小节名」那条判据必须报红。"""
+        docs = dict(self.docs)
+        key = "subskills/chinatax-npc/NOTE.md"
+        docs[key] = docs[key].replace("## 一、NPC（flk）命令行三处细节",
+                                      "## 一、NPC（flk）命令行细节", 1)
+        p = subskill_pointer_problems(docs)
+        self.assertTrue(any("命令行三处细节" in x for x in p), "改名却不报红：%s" % p)
+
+    def test_mutation_missing_site_directory_is_caught(self):
+        """自检：指针写到一个不存在的子技能目录，必须报红而不是被跳过。"""
+        docs = dict(self.docs)
+        key = "references/commands.md"
+        docs[key] = docs[key] + "\n见 `subskills/no-such-site/NOTE.md` 第一节。\n"
+        p = subskill_pointer_problems(docs)
+        self.assertTrue(any("no-such-site" in x and "目录不存在" in x for x in p),
+                        "目录不存在却不报红：%s" % p)
+
+    def test_mutation_missing_target_file_is_caught(self):
+        """自检：目标那份 NOTE.md 不在 docs 里（改名或漏收），要报文件不在仓库里。"""
+        docs = dict(self.docs)
+        del docs["subskills/ctaxnews/NOTE.md"]
+        p = subskill_pointer_problems(docs)
+        self.assertTrue(any("这个文件不在仓库里" in x for x in p), "缺文件却不报红：%s" % p)
 
 
 def _cn_count(token: str) -> int:

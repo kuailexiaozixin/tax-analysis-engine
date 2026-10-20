@@ -8,6 +8,7 @@
 用法：python tests/test_routing_terms.py
 """
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -393,7 +394,8 @@ def test_search5_zero_with_filters_says_it_might_be_too_narrow():
 
 
 def test_build_filters_rejects_malformed_values():
-    """build_filters 对非法年/号/日期报错，非法值发出去接口只会静默返回基线命中。"""
+    """build_filters 对非法年/号/日期在发出前报错——接口自己不为这一枚拦，
+    放过去只能从命中数反推这一枚参数到底生没生效。"""
     for bad in ({"doc_year": "18"}, {"doc_no": "abc"}, {"cwrq_from": "2024-1-1"},
                 {"cwrq_to": "2024/01/01"}, {"cwrq_from": "2024-13-01"}):
         try:
@@ -410,9 +412,10 @@ def test_build_filters_rejects_malformed_values():
 def test_aging_and_effect_level_domains():
     """时效与效力等级两维：域内的值原样进 filters，域外的值在发请求前报错。
 
-    为什么要在这一层拦：接口对不认识的取值不发错、也不报错，而是回未过滤的基线
-    命中（实测「增值税」白名单基线 1908）。调用方看到的是一堆结果，以为筛过了，
-    其实一档都没筛。
+    为什么要在这一层拦：接口对不认识的取值不发错误码，回的是 `total=0`，与"这一维
+    真的没有内容"在响应里是同一个形态（域外值那两发的读数与口径见
+    subskills/chinatax-npc/NOTE.md 第五节）。调用方看到的是一条筛得很干净的 0 条，
+    以为这一维收到底了，其实是值域写错。
     """
     assert W.build_filters(aging="全文有效") == {"xxgkAging": "全文有效"}
     assert W.build_filters(effect_level="财税文件") == {"xxgkEffectLevel": "财税文件"}
@@ -452,6 +455,24 @@ def test_aging_and_effect_level_domains():
         except ValueError:
             pass
     print("  [PASS] 时效五档、效力等级八档逐档放行，域外写法（含 NPC 值域）报错")
+
+
+def test_doc_year_help_says_the_document_number_year():
+    """`--doc-year` 的帮文要说"发文字号里的年份"，不能写成"成文年份"。
+
+    依据是 2026-10-20 两发对照（同词「个人所得税」×1994：`docYear` 82 条、
+    `xxgkFormulatedYear` 90 条，差的 8 条是没有文号的那批法律），逐发口径记在
+    `subskills/chinatax-npc/NOTE.md` 第五节。帮文写错时照着填的人会拿成文日期那年
+    去填这一栏，命中的是另一批条目。成文日期那一维另有两枚开关（`--cwrq-from`／
+    `--cwrq-to`），帮文里必须把这层分开。
+    变异验证：把 help 改回「成文年份四位（docYear）」，本条报红。
+    """
+    parser = argparse.ArgumentParser()
+    W.add_filter_args(parser)
+    text = parser.format_help()
+    assert "发文字号里的年份" in text, text
+    assert "成文年份" not in text, "docYear 读的是文号里的年份，不是成文年份"
+    print("  [PASS] --doc-year 帮文说的是文号里的年份，与成文日期两枚开关分开")
 
 
 def test_file_labels_is_the_default_scope():
@@ -795,6 +816,7 @@ def main():
         test_search5_zero_with_filters_says_it_might_be_too_narrow,
         test_build_filters_rejects_malformed_values,
         test_aging_and_effect_level_domains,
+        test_doc_year_help_says_the_document_number_year,
         test_file_labels_is_the_default_scope,
         test_all_labels_switch_reopens_the_whole_site,
         test_out_of_range_page_and_missing_list_are_told_apart,

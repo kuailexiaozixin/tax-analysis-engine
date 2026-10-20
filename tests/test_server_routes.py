@@ -188,8 +188,8 @@ class TestSearchRoute(_RouteCase):
                        tax_type=None)
         self.assertNotIn("wordPlace", m.call_args.kwargs["filters"])
 
-    def test_bad_date_on_chinatax_is_400_not_silent_baseline(self):
-        """手改请求体塞非法日期时，接口只会静默回基线命中，这一层必须挡成 400。"""
+    def test_bad_date_on_chinatax_is_400_not_silent_zero(self):
+        """手改请求体塞非法日期时，接口自己不为这一枚报错，这一层必须挡成 400。"""
         with mock.patch.object(tax_server, "search_chinatax") as m:
             r = self._post({"keyword": "增值税", "source": "chinatax",
                             "date_from": "2024-13-01"}, tax_type=None)
@@ -215,12 +215,13 @@ class TestSearchRoute(_RouteCase):
         self.assertTrue(f["cwrqStart"].startswith("2024-01-01"))
         self.assertEqual("date_desc", m.call_args.kwargs["order"])
 
-    def test_bad_aging_on_chinatax_is_400_not_silent_baseline(self):
+    def test_bad_aging_on_chinatax_is_400_not_silent_zero(self):
         """「时效」在 search5 那两源走的是文本值域，域外值必须挡成 400。
 
         用例故意发 NPC 那侧的"现行有效"：search5 认的是"全文有效"，两套值域不通用。
-        发错时接口不会报错，只会静默按未过滤回基线命中，界面照样显示一堆结果——
-        用户以为收窄了，其实一档都没筛，这是最难发现的一种空转。
+        发错时接口不发错误码，回的是 `total=0`——与"这一维真的没有内容"是同一个形态
+        （单发读数见 subskills/chinatax-npc/NOTE.md 第五节）。界面只会显示 0 条，看不出
+        是值域写错还是库里就这么多，所以原因必须在 400 这一层报出来。
         """
         with mock.patch.object(tax_server, "search_chinatax") as m:
             r = self._post({"keyword": "增值税", "source": "chinatax",

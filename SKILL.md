@@ -1,7 +1,7 @@
 ---
 name: tax-analysis-engine
 description: "税务问题分析引擎：先判定问题类型与缺失前提，再从上位法逐层向下检索到行政法规、地方口径与实务案例，多源聚合后按规范层级、时效与角色给每条依据定级（三根轴各判各的，不折算成分数），最后输出带限制条件的分析结论。适用于一切涉及税与费的问题——某个税怎么算、能不能享受优惠、该按什么税目归类、怎么办理、多久之内办、有什么风险、两个方案选哪个，以及法规原文的条款填空与选项判断、政策与案例检索。回答前一律实时联网核查，不使用训练数据中的政策记忆。"
-version: "3.48.1"
+version: "3.49.0"
 ---
 
 # 税务问题分析引擎 (Tax Analysis Engine)
@@ -22,7 +22,7 @@ version: "3.48.1"
 | 用户点名要查询/阅读/解读某一份文件 | ③ 末 | `references/out_of_library_layers.md` |
 | 题面把会计/审计/内控/评估/证券口径写进要件 | ③ 末 | `references/out_of_library_layers.md`，取证走子技能 |
 | 决定五源怎么聚合、缺一个漏什么 | ④ | — |
-| 查具体命令、看某个源失败了怎么办 | ⑤ | `references/commands.md` |
+| 查具体命令、看某个源失败了怎么办 | ⑤ | `references/commands.md`；官方法规原文那三站（总局站点／总局法规库／NPC 法规库）怎么把命中收窄到某一维、为什么回 0 条，在 `subskills/chinatax-npc/` |
 | 写最终回答（六段式/逐条比对/填空/条件矩阵/风险自检） | ⑥ | `references/output_templates.md` |
 | 判定某项优惠能否享受、多项能否同享 | ⑥ + ⑦ 第 22 条 | `references/output_templates.md`「资格判定条件矩阵式」 |
 | liability 题要出数 | ⑥ 前 | `scripts/tax_calc.py`（算式展开器；税率与扣除标准由 ③ 检回后当参数喂进） |
@@ -37,7 +37,7 @@ version: "3.48.1"
 | 判断一条依据在答案里顶哪一层、要提醒什么（层级、时效、角色） | ⑧ | `references/evidence_grading.md` |
 | 查税种/专题对应的检索词与依据源 | ⑨ | `references/tax_categories.md` |
 | 想知道源缺陷由哪段代码保证、还剩哪些边界 | ⑩ | `references/source_defects.md` |
-| 了解各数据源性质与覆盖 | ⑪ | 本节表格只到"这一源给什么、接主线哪一步"；边界登记在 `references/source_defects.md`「由代码保证的源缺陷」，子技能选路与命令在 `references/out_of_library_layers.md` |
+| 了解各数据源性质与覆盖 | ⑪ | 本节表格只到"这一源给什么、接主线哪一步"；边界登记在 `references/source_defects.md`「由代码保证的源缺陷」，不在 L1–L4 的那三层及其子技能选路在 `references/out_of_library_layers.md`，各站自己的取数机制在对应 `subskills/<站>/` |
 | 启动网页界面做可视化呈现 | ⑫ | `references/web_interface.md` |
 | 跑评测、看指标含义与判读标准 | ⑬ | `references/evaluation.md` |
 
@@ -50,10 +50,12 @@ python scripts/tax_aggregator.py "<关键词>" --size 10          # 五源聚合
 python tests/run_all.py                                        # 离线门禁，几秒出结果
 ```
 
-逐源命令与参数（`--exact` / `--status` / `--body` / `--cache` / `--pages` / `--site` /
-`--scope`，以及 chinatax/fgk 的五个收窄维度 `--in-title` / `--precise` / `--tax-type` /
-`--doc-type`+`--doc-year`+`--doc-no` / `--cwrq-from`+`--cwrq-to` 和 fgk 的 `--assoc`）
-见 `references/commands.md`。改完代码先跑离线门禁，联网 e2e 用 `--online` 追加。
+逐源命令与参数见 `references/commands.md`：NPC 那一路的 `--exact`／`--status`／`--sort`／
+`--from`+`--to`／`--scope`，chinatax 与 fgk 共用的那七组收窄维度开关（逐组列在「search5 收窄维度的命令行」
+那一节，另有 `--order` 与 `--all-labels` 两项检索选项），fgk 的 `--body`／`--pages`／`--assoc`，以及 `--cache`。
+这三站的参数在站点上到底怎么走、为什么回 0 条、条数为什么和界面不一样，属站点层细节，
+判据在 `subskills/chinatax-npc/SKILL.md`，逐项读数与取样口径在 `subskills/chinatax-npc/NOTE.md`。
+改完代码先跑离线门禁，联网 e2e 用 `--online` 追加。
 
 ---
 
@@ -175,7 +177,9 @@ python tests/probe_classify.py --stats --real --oracle    # 判型体检（离�
 
 **越上层的法律条文越严谨精炼也越晦涩。** 一部法律只给原则和要件，能落到用户情形
 上的口径在下层的实施条例、公告、办税指南与实务案例里。每层的具体命令、翻页与缓存
-参数、NPC 串行闸在 `references/commands.md`；此处只给判据。
+参数、NPC 串行闸在 `references/commands.md`；此处只给判据。L1/L2 那三站（NPC 法规库、
+总局站点、总局法规库）自己的取数机制——翻页基准为什么两站相反、收窄条件给越界值为什么
+回 0 条、清单层与正文层为什么各装一半——在 `subskills/chinatax-npc/`，本站不重复。
 
 【⑦ 第 2 条正文】**禁止只查上位法就作答**：必须完成 ③ 的 L1→L3 逐层下挖，资格认定、
 计算标准、风险定性、争议类问题必须走到 L4。
@@ -281,7 +285,8 @@ python scripts/tax_aggregator.py "<关键词>" --sources npc,chinatax --size 10 
   【⑦ 第 18 条正文】**禁止编造法规库正文**：取正文失败时只报告失败原因，不得据标题推测条文内容。
 - **"这份文件里没有那张表"要说全**：`media_only` 的条目正文本来就是视频/图片，重试无用，
   答案给出 `media_urls` 里的素材地址；条目带 `attachments` 时要给附件名与直链——随文的
-  税率表、纳税申报表常常只在附件里（实测「消费税 成品油」首屏 10 条里 6 条带附件），
+  税率表、纳税申报表常常只在附件里（这一栏的实测与边界登记在 `references/source_defects.md`，
+  清单层与正文层各装哪一半见 `subskills/chinatax-npc/` 第五步），
   只说"正文没有表"是把取得到的东西说成取不到。
 - **空清单有两种成因**（`_empty_reason`：翻页越界 vs 这一轮没取到清单），都不等于
   "库里没有这份文件"，答案里不得据空清单说无此规定。
@@ -544,9 +549,9 @@ repealed**；「财税文件」栏不录时效时靠**制定依据援引**补这
 
 | 数据源 | 覆盖范围 | 权威度 | 实时性 | 访问方式 |
 |--------|---------|--------|--------|---------|
-| NPC 国家法规库 | 法律、行政法规、地方法规、司法解释。**不收**国际税收专题与税收征管细则 | ⭐⭐⭐⭐⭐ | 实时 | API |
-| chinatax.gov.cn | 部门规章、公告、政策解读、操作指南。**检索分两层**：默认只发十类文件类标签，`--all-labels` 关掉标签取全站层——`authority="overseas"` 那一类只能在全站层取到条目（见 ⑨） | ⭐⭐⭐⭐ | 实时 | search5 JSON API（每页固定 10 条） |
-| fgk 法规库 | 税务总局法规目录与正文。国际税收、转让定价、税务行政处罚依据都在这 | ⭐⭐⭐⭐ | 实时 | search5 JSON API 翻页 + 详情页 |
+| NPC 国家法规库 | 法律、行政法规、地方法规、司法解释。**不收**国际税收专题与税收征管细则 | ⭐⭐⭐⭐⭐ | 实时 | API（`POST /law-search/search/list`）。`total` 会随 `pageSize`／`pageNum` 换值不能当命中数，分类编号只认叶节点、两棵树有 22 枚编号撞号，机制见 `subskills/chinatax-npc/` |
+| chinatax.gov.cn | 部门规章、公告、政策解读、操作指南。**检索分两层**：默认只发十类文件类标签，`--all-labels` 关掉标签取全站层——`authority="overseas"` 那一类只能在全站层取到条目（见 ⑨） | ⭐⭐⭐⭐ | 实时 | search5 JSON API（每页固定 10 条）。收窄维度给越界值回的是 0 条而不是错误码，成文日期只给裸日期时改的是集合不是区间，值域与逐发读数见 `subskills/chinatax-npc/` |
+| fgk 法规库 | 税务总局法规目录与正文。国际税收、转让定价、税务行政处罚依据都在这 | ⭐⭐⭐⭐ | 实时 | search5 JSON API 翻页 + 详情页。正文里的税率表与执行期限只在详情页、随文申报表只在清单层的附件链接里，两层的分工见 `subskills/chinatax-npc/` |
 | 360 站内搜索 | 省局子站、地方文件、全网补充 | ⭐⭐⭐ | 实时 | m.so.com HTML |
 | 税屋 shui5.cn | 实务解读、专栏、答疑。**正文可取，但要凭据**：没有放行 cookie 时首页、文章页、`robots.txt` 与一个不存在的路径返回同一份挑战页，HTTP 都是 200，请求成功不等于取到内容 | ⭐⭐⭐ | 实时 | 两条检索通道（360 `site:shui5.cn` 与站内原生检索，`--channel` 选路）+ 本机浏览器过一次 WAF 后 HTTP 连读；站内那一路另可按栏目、发布日期区间、匹配域限定并取全，栏目/标签可整页取清单，手上只有一枚文号时按半角→全角→去机关名三档回站内定位（`--find-doc`）；行标题的站点时效标记与正文开头批注会落进字段，只作定位提醒、不接定级；站点机制（凭据寿命、栏目分页、正文容器与续页、两份提示页）见 `subskills/shui5/` |
 | 中国税网 ctaxnews.com.cn（子技能 ctaxnews） | 中国税务报社站：政策转载、政策解读、税案通报、地方税收法规、报刊专栏。**登载件不是法定依据**，被它登的那份文件才是；定级那一步不替这一路把关（`rank_of` 按标题形态把转载件算成原文件的位阶，`PRACTICE_SOURCES` 里没有这一站），依据链的 url 要自己写官方那份 | 实务解读 ⭐⭐⭐ | 实时 | 开放 JSON `GET /xy/Search.do`，`scripts/tax_ctax.py` 直连：无凭据、不启浏览器、不调模型；可按栏目、成文日期区间、匹配域（`q`/`title`/`keyword`/`author`）限定并翻页取全，手上只有一枚文号时 `--find-doc` 回站内定位并把一稿多栏并成一条；`--list` 不检索按栏目列表页取清单，`--columns` 读本地栏目表。**域名后不足四段路径的行只给题录、取不到正文**（2023-02 前的旧地址），只有四段那一批可取全文。站点机制（参数值域、一稿多发、正文双块、老地址形状）见 `subskills/ctaxnews/`；**不进 ④ 的五源聚合**（`tax_aggregator.DEFAULT_SOURCES` 没有它） |

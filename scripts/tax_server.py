@@ -67,19 +67,18 @@ def _ui_filters(scope: str, exact, date_from, date_to, aging: str = "") -> dict:
     """把界面上的「范围/匹配/日期/时效」四个控件翻成 search5 的收窄维度。
 
     走 search5 的源（chinatax／fgk，含 NPC 分支里被自动换源到法规库的 sta 专题）
-    都调这一个，免得控件在某一条路径上又被静默丢掉。取值与实测命中见
-    references/commands.md 的参数表。
+    都调这一个，免得控件在某一条路径上又被静默丢掉。命令行开关与判据在
+    references/commands.md，逐档取值域与单发读数在 subskills/chinatax-npc/NOTE.md。
 
     aging 是「时效」控件在 search5 那一侧的取值（全文有效／已修改／全文失效／
     全文废止／尚未生效），与 NPC 的 status 码是两套值域，前端按数据源切换：
-    NPC 发 status 码，search5 发 aging 文本。这里不替 aging 兜默认值——实测
-    增值税 × 文件类标签 1908 条里只有 252 条录了「全文有效」，五个时效值合计
-    743 条，剩下 1165 条是空栏（解读类与其他文件本来就不填）。默认收窄会把
-    没录时效的现行文件一起筛掉，所以宁可让控件留空。
+    NPC 发 status 码，search5 发 aging 文本。这里不替 aging 兜默认值——「增值税」
+    × 文件类标签那一档里五个时效值合计只覆盖约四成条目，其余条目该栏为空（解读类
+    与其他文件本来就不填）。默认收窄会把没录时效的现行文件一起筛掉，所以宁可让控件留空。
 
     Raises:
         ValueError: 日期不合法，或 aging 不在 search5 的五个时效值里——调用方要
-            挡成 400，不能让接口对非法值静默回基线命中。
+            挡成 400：非法值发出去接口回的是 `total=0`，不回错误码，看着像这一维筛得很干净。
     """
     return build_filters(
         in_title=(scope == "title"),
@@ -452,7 +451,7 @@ def api_search():
                                      data.get("aging"))
         except ValueError as e:
             # 日期输入框正常给的是 YYYY-MM-DD；手改过的请求体给非法日期或非法时效时，
-            # 接口对非法值只会静默回基线命中，所以在这一层就报 400。
+            # 接口对非法值回 total=0 且不发错误码，所以在这一层就报 400。
             return jsonify({"error": f"筛选参数不合法：{e}"}), 400
         ui_order = SORT_TO_ORDER.get(sort, "relevance")
         if authority == "overseas":

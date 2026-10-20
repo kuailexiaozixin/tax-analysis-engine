@@ -37,10 +37,14 @@ TESTS_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = TESTS_DIR.parent
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 REFERENCES_DIR = PROJECT_ROOT / "references"
+SUBSKILLS_DIR = PROJECT_ROOT / "subskills"
 # 主线 SKILL.md + README.md，加上从 SKILL.md 搬出命令全文的 references/。
 # 命令搬进参考文件后，"文档用了、代码没有"这道契约必须跟着走，否则搬一次就脱管一次。
+# 站点子技能的 SKILL.md 也写命令行，同一道契约覆盖它们；NOTE.md 是读数台账、不写命令，不收。
 DOCS = ("SKILL.md", "README.md") + tuple(
     f"references/{p.name}" for p in sorted(REFERENCES_DIR.glob("*.md"))
+) + tuple(
+    f"subskills/{p.parent.name}/{p.name}" for p in sorted(SUBSKILLS_DIR.glob("*/SKILL.md"))
 )
 
 # 文档里形如  scripts/xxx.py "关键词" --flag 的命令；取到文件名与其后的同行文本

@@ -2953,6 +2953,75 @@ class TestCtaxSubSkillDocHooks(unittest.TestCase):
                         "SKILL ⑪ 那一行要写明不进五源聚合")
 
 
+# ── flk 的 total 随参数换值：回显不许把它当命中数或可达页数 ──────────────────
+class _NoCache:
+    def _key(self, *parts):
+        return "|".join(str(p) for p in parts)
+
+    def get(self, key, max_age=0):
+        return None
+
+    def set(self, key, value):
+        pass
+
+
+class _FlkResp:
+    """`POST /law-search/search/list` 的响应形状：`total` 与 `rows` 都在**根节点**上，
+    没有 `data` 那一层（同前缀下的 `enumData` 反倒包在 `data` 里，两条形态相反）。"""
+
+    def __init__(self, total, rows):
+        self._payload = {"total": total, "rows": rows, "code": 200, "msg": "查询成功",
+                         "searchType": 2, "searchContent": None}
+        self.status_code = 200
+        self.content = b"{}"
+        self.headers = {"Content-Type": "application/json"}
+        self.text = "{}"
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._payload
+
+
+class TestFlkTotalIsNotTheEchoedHitCount(unittest.TestCase):
+    """命令行的回显：flk 那一格 `total` 是接口随参数换值的回报，不是命中总数。
+
+    取样口径与逐发读数在 `subskills/chinatax-npc/NOTE.md` 第二节：同一枚「环境保护」在
+    `pageSize=5` 回 3,118、在 10／20／50 回 224，`pageSize=10` 翻到第 23 页它又回 3,118。
+    按 `⌈total/pageSize⌉` 报"一共几页"会在一份还能翻的集合上给出一个假的顶。
+    """
+
+    def _cli_out(self, total, rows, size):
+        buf = io.StringIO()
+        argv = ["tax_search.py", "环境保护", "--size", str(size)]
+        with mock.patch.object(T, "_request", lambda m, u, **k: _FlkResp(total, rows)), \
+                mock.patch.object(T, "_cache", _NoCache()), \
+                mock.patch.object(sys, "argv", argv), \
+                contextlib.redirect_stdout(buf):
+            T.main()
+        return buf.getvalue()
+
+    def _rows(self, n):
+        return [{"bbbs": "id%d" % i, "flfgname": "环境保护法条目%d" % i,
+                 "gbrq": "2024-01-01", "sxrq": "2024-02-01", "sxx": 3,
+                 "zdjgName": "全国人大常委会", "flxz": "法律"} for i in range(n)]
+
+    def test_rows_read_from_the_root_and_total_is_labelled_as_the_interface_value(self):
+        """根节点这一层不包 `data` 也要取到行；`total` 那一格要说成接口回报。"""
+        out = self._cli_out(224, self._rows(20), 20)
+        self.assertIn("环境保护法条目0", out, "按 data 统一解包会把整批读成空")
+        self.assertIn("接口 total 224 条", out)
+        self.assertNotIn("共 224 条", out, "这一枚不是命中总数，不许报成「共」")
+
+    def test_no_page_ceiling_derived_from_total(self):
+        """224 条按每页 20 行算出的"12 页"不许出现——同一集合按每页 5 行实测翻到 624 页。"""
+        out = self._cli_out(224, self._rows(20), 20)
+        self.assertIsNone(re.search(r"第 \d+/\d+ 页", out),
+                          "回显不许按 total 报可达页数：%s" % out)
+        self.assertIn("本屏 20 条", out)
+
+
 # ── 用例自身的能力自检：规则不能永远绿 ─────────────────────────────────────
 class TestRulesCanActuallyFail(unittest.TestCase):
     """把规则作用在构造的反例上，确认它真的拦得住。"""

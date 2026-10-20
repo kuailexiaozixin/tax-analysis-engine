@@ -199,7 +199,7 @@ chenyiwei 的其余接口差异（`recent?days=1` 可以整天空、`penalties` 
 不按被换成本体法名之后用来检索的 keyword 判——换了名"草案"两个字就没了。
 
 **取到之后放哪**：草案文本不在五源里，⑧ 的位阶表也没有它的位置。走出库取证时，
-检索轮次会自动改道（见 `commands.md` 与 SKILL.md ③ 的分轮编排）：第 1、2 轮取回的
+检索轮次会自动改道（见 SKILL.md ③ 的分轮编排，代码那一处是 `tax_answer.build_plan` 调 `_retarget_for_legislation`）：第 1、2 轮取回的
 同名现行版本一律重标为"修订基线"，追加的一轮去三个实位取草案解读——人大网站内
 （`legis` 源，`so360_search site:npc.gov.cn`）+ 税屋 + 公众号（草案逐条解读文章只在
 这两个实务源里）。这三源取回的条目都带 `legislative_process` 或 `medium`/`low` 标记，

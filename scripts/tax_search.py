@@ -1024,8 +1024,12 @@ def main():
     # Human-readable output
     status_icon = {1: "🔴", 2: "🟡", 3: "🟢", 4: "🔵"}
     cache_tag = " [缓存]" if result.get("_from_cache") else ""
+    # flk 的 total 随 pageSize／pageNum 换值，不能当命中总数报；只有日期复核那一路的
+    # total 是自己数出来的条数，那种情况下才说「共」。
+    total_tag = (f"共 {result['total']} 条" if result.get("_date_note")
+                 else f"接口 total {result['total']} 条")
     print(f"🔍 搜索 \"{args.keyword}\" | {args.scope}/{result['search_type']} | "
-          f"共 {result['total']} 条 | {result['searched_at']}{cache_tag}")
+          f"{total_tag} | {result['searched_at']}{cache_tag}")
     if result.get("_reliability"):
         print(f"  ⚠️ _reliability: {result['_reliability']} — "
               f"{result['_reliability_note']}")
@@ -1046,8 +1050,9 @@ def main():
         print()
 
     if result["total"] > args.size:
-        total_pages = (result["total"] + args.size - 1) // args.size
-        print(f"  📄 第 {args.page}/{total_pages} 页，共 {result['total']} 条")
+        print(f"  📄 第 {args.page} 页，本屏 {len(result['results'])} 条；"
+              f"可达页数不按接口 total 推算（它随 pageSize 与 pageNum 换值，"
+              f"判据见 subskills/chinatax-npc/NOTE.md 第二节）")
 
 
 if __name__ == "__main__":
