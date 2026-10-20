@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Flask API server for tax-analysis-engine frontend."""
+"""Flask API server for tax-analysis-skill frontend."""
 import os
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
@@ -1064,7 +1064,7 @@ if __name__ == "__main__":
         sys.stdout.reconfigure(encoding="utf-8")
     except (AttributeError, ValueError):
         pass                      # 容器里 stdout 是管道时可能不支持重配
-    print("\n  [tax-analysis-engine] API Server")
+    print("\n  [tax-analysis-skill] API Server")
     print(f"  监听 {BIND_HOST}:{PORT}")
     if BIND_HOST in ("127.0.0.1", "localhost"):
         print(f"  打开 http://localhost:{PORT}")

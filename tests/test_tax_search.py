@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end tests for tax-analysis-engine skill."""
+"""End-to-end tests for tax-analysis-skill skill."""
 import json
 import os
 import sys
@@ -1235,7 +1235,7 @@ def test_server_routing_all_sources():
 
 def main():
     print("=" * 60)
-    print("tax-analysis-engine: End-to-End Tests")
+    print("tax-analysis-skill: End-to-End Tests")
     print("=" * 60)
 
     tests = [

@@ -19,7 +19,7 @@
   5. 正文提取保留表格结构（合并格、跨格不拼假期限）、图片型条目带回素材地址、
      清单层附件字段透到条目上
 
-所有缓存用例都把缓存目录指到临时目录，**不碰 ~/.cache/tax-analysis-engine**。
+所有缓存用例都把缓存目录指到临时目录，**不碰 ~/.cache/tax-analysis-skill**。
 """
 
 import contextlib

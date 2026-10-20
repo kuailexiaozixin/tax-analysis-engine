@@ -1,6 +1,6 @@
 # 税务问题分析引擎 — 项目介绍
 
-> **Tax Analysis Engine**（包名 `tax-analysis-engine`，原名 `tax-policy-search`）—
+> **税务分析技能**（仓库 `tax-analysis-skill`）—
 > 先判问题类型与缺失前提，再多源实时取证、按效力位阶与时效给依据定级，最后输出
 > 带限制条件的分析结论。检索只是这道流水线的中间步骤，不是产品本身。
 
@@ -346,14 +346,14 @@ GET /api/text/ff808181927b083b0193fd65a0eb02cb
 | DOCX / PDF 全文 | **不缓存**，每次现下 | 体积大，且必须保证是现行版本 |
 | 服务端进程内缓存 | `tax_server.py` 的 `/api/text`、`/api/interpretations` | 仅在服务运行期间复用，重启即失效；与上面的磁盘缓存是两回事 |
 
-三个模块共用 `~/.cache/tax-analysis-engine`，靠条目里的 `_ns` 字段区分命名空间，
+三个模块共用 `~/.cache/tax-analysis-skill`，靠条目里的 `_ns` 字段区分命名空间，
 因此各自的 `--cache-stats` / `--cache-clear` 只作用于自己那一份。
 
 ---
 
 ## 六、与同类项目的对比
 
-| 维度 | tax-policy-knowledge | npc-law-db | **tax-analysis-engine** |
+| 维度 | tax-policy-knowledge | npc-law-db | **tax-analysis-skill** |
 |------|---------------------|------------|----------------------|
 | 架构 | 纯静态知识库 | API + 脚本引擎 | **API + 脚本引擎 + 前端 Demo** |
 | 数据新鲜度 | 静态（依赖手动更新） | 实时 API | **实时 API + 多源聚合** |
@@ -483,7 +483,7 @@ python scripts/tax_formatter.py --intent policy_lookup < result.json
 ## 九、项目目录结构
 
 ```
-tax-analysis-engine/
+tax-analysis-skill/
 ├── SKILL.md                        # 分析主线：判型 → 分轮检索 → 定级 → 比对 → 结论 → 输出
 ├── scripts/                        # 检索与分析模块（逐个职责见「代码构成」表）
 │   ├── tax_answer.py               # 编排层：判型→分轮检索→定级→依据分层

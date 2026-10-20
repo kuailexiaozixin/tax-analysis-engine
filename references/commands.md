@@ -398,7 +398,7 @@ python scripts/tax_detail.py --info <bbbs_id> --no-cache   # 本次强制现拉
    （实测：NPC 详情接口返回的 `content` 树只有章 / 节标题，条文只在 DOCX / PDF 里，
    所以详情缓存里也没有正文；`tests/test_detail_cache.py` 有一条用例守着这个契约。）
 2. **TTL 按源的变动频率定**：NPC 库政策更新快，取 5 分钟；总局法规库目录与
-   详情元数据变动慢，取 1 小时。缓存都落在 `~/.cache/tax-analysis-engine`。
+   详情元数据变动慢，取 1 小时。缓存都落在 `~/.cache/tax-analysis-skill`。
 3. **命中缓存会在输出里留痕**：`tax_search.py` 打 `[缓存]`，`tax_fgk.py` 打
    `[清单缓存 Ns 前]`，`tax_detail.py` 打 `[详情缓存 Ns 前]`。
    **别拿 `fetched_at` 当"刚查过"的证据**——命中时它记的是第一次抓取的时刻；

@@ -21,10 +21,10 @@
 
 | 源缺陷 | 现在由谁保证 | 保证到什么程度 |
 |--------|--------------|----------------|
-| NPC 限流，并行必现 | `tax_search.npc_gate`（实现为 `tax_http.SerialGate`）：`%TEMP%\tax-analysis-engine-npc.lock` 跨进程文件锁 + 进程内 `threading.Lock` | 多个进程同时开跑会自己排队，不用再记"别并行"。**这句记录是什么时候量的、今天还成不成立，见[限流记录的实测台账](#限流记录的实测台账)** |
+| NPC 限流，并行必现 | `tax_search.npc_gate`（实现为 `tax_http.SerialGate`）：`%TEMP%\tax-analysis-skill-npc.lock` 跨进程文件锁 + 进程内 `threading.Lock` | 多个进程同时开跑会自己排队，不用再记"别并行"。**这句记录是什么时候量的、今天还成不成立，见[限流记录的实测台账](#限流记录的实测台账)** |
 | 360 被封 → 地方口径这一层是空的，税屋只剩站内那一路 | `tax_aggregator` 返回的 `gaps` 与 `degraded_note` | 缺了哪层、为什么缺、能不能拿别的源顶，都写成一句可直接照抄的话；网页端渲染成警示条，不再冒充普通的"0 条" |
 | fgk 翻得越深相关性越差 | `tax_fgk` 第 2 页起标 `_reliability: medium`，并写上 `FGK_DEEP_NOTE`（`FGK_SHALLOW_PAGES = 1`） | 深页条目留在结果里参与分层，提醒就是那句写明"取自第几页、引用前要回上一级数据库核对上位法"的原文，不降权也不剔除 |
-| 公众号并发加压触发反爬 | `tax_wechat._sogou_get`：1 秒最小间隔 + 搜狗专用串行闸（`%TEMP%\tax-analysis-engine-sogou.lock`） | 打 `weixin.sogou.com` 的请求（检索、链接还原）统一进闸；离线并发用例断言同一时刻在跑的请求数峰值为 1 |
+| 公众号并发加压触发反爬 | `tax_wechat._sogou_get`：1 秒最小间隔 + 搜狗专用串行闸（`%TEMP%\tax-analysis-skill-sogou.lock`） | 打 `weixin.sogou.com` 的请求（检索、链接还原）统一进闸；离线并发用例断言同一时刻在跑的请求数峰值为 1 |
 | `_reliability: medium` 只能定位 | `tax_evidence.grade` / `_caveats` 解析该标记；`tax_aggregator` 把整源标记连同说明逐条带进聚合结果；`tax_formatter` 的两条渲染路径都会印出来 | 转成一条具体提醒，句子照抄条目自带的 `_reliability_note`，不参与 `pick_primary` 的排队；单源渲染路径吞掉这句就只剩一个角标，所以单源与多源归并两条路径都要先印警告 |
 | 同一个档位在不同来源指不同的事 | 原因由来源自己写（`tax_fgk.FGK_DEEP_NOTE`、`tax_search.RELIABILITY_NOTES`、`tax_answer._legis_round`），定级层、命令行摘要与界面卡面一律照抄，不按档位配固定文案 | `medium` 的三个出处（NPC 全文分词命中、法规库深页排序变松、立法过程件不在收录范围）各得各的提醒；按档位配一句就有一句是假的——全文检索与站内检索都没有"页位"这件事。`test_medium_reminder_is_the_sources_own_sentence`、`test_cli_prints_the_reminder_text_not_a_level_ban`、`test_frontend_prints_the_reminder_not_a_downweight_badge` 钉住 |
 | `_reliability: low` 在值域里却没有来源会发出来 | 标记值留在 `_reliability_of` 的值域里备用；`tax_search` 不发"不得作为依据引用"那句——那是降权模型的说法，与核对无关 | 带 `low` 的条目按同一规则处理：有说明照抄说明，没说明用 `RELIABILITY_CAVEAT["low"]` 那句中性提醒；`test_reliability_does_not_change_the_pick` 与 `test_pick_is_by_role_not_by_marker` 钉住"标记不改挑选结果" |
