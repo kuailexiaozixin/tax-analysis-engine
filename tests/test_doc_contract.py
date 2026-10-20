@@ -793,6 +793,38 @@ def subskill_pointer_problems(docs: dict) -> list:
     return bad
 
 
+STEP3_RE = re.compile(r"(?m)^## ③.*?\n(?=^## ④)", re.S)
+COMMAND_DOCS = ("references/commands.md", "references/out_of_library_layers.md")
+MIN_SUBSKILL_DIRS = 9
+MIN_SELF_OWNED_SCRIPTS = 3
+
+
+def subskill_dir_names() -> list:
+    return sorted(p.name for p in SUB_DIR.iterdir() if p.is_dir())
+
+
+def unrouted_subskills(step3: str, dirs: list) -> list:
+    """③（选路那一步）正文里没点到路径的目录名。"""
+    return [d for d in dirs if ("subskills/%s/" % d) not in step3]
+
+
+def self_owned_script_paths() -> list:
+    """各子技能自带的脚本，复测探针不算（它只在文档台账里被引用）。"""
+    out = []
+    for d in sorted(SUB_DIR.iterdir()):
+        if not d.is_dir():
+            continue
+        for f in sorted(d.glob("*.py")):
+            if not f.name.startswith("probe_"):
+                out.append("subskills/%s/%s" % (d.name, f.name))
+    return out
+
+
+def script_command_gaps(scripts: list, command_docs: dict) -> list:
+    """路径在两份命令文档里都不出现的脚本——能跑但文档没给命令，等于取不到。"""
+    return [s for s in scripts if not any(s in text for text in command_docs.values())]
+
+
 class TestSubskillPointers(unittest.TestCase):
     """`subskills/` 指针的后向一跳：指向子技能文件的指针要指得到那一节。
 
@@ -802,11 +834,19 @@ class TestSubskillPointers(unittest.TestCase):
     目标文件的二级标题里对得上（允许显示文字省掉标题后缀，与目录项同一把尺）。
     目标文件带中文序号时，不带序号的引文当取值、不当小节名——`NOTE.md` 表格里
     「科技创新」这类取值就落在窗口里，认成小节名就是一条常年假报警。
+
+    后两条往前向一跳：③ 是选路那一步，每个子技能目录都要在它正文里被点到；
+    子技能自带的脚本要在两份命令文档里至少出现一次。这两条把"子技能都纳入了
+    工作流"变成能查重合的动作，不靠人读一遍主文档。
     """
 
     @classmethod
     def setUpClass(cls):
         cls.docs = pointer_docs()
+        m = STEP3_RE.search(SKILL.read_text(encoding="utf-8"))
+        assert m, "主 SKILL.md 里找不到 `## ③` 到 `## ④` 这一段，选路步骤的用例没法跑"
+        cls.step3 = m.group(0)
+        cls.command_docs = {p: (ROOT / p).read_text(encoding="utf-8") for p in COMMAND_DOCS}
 
     def test_every_subskill_pointer_resolves(self):
         self.assertEqual([], subskill_pointer_problems(self.docs))
@@ -814,9 +854,9 @@ class TestSubskillPointers(unittest.TestCase):
     def test_the_rule_sees_a_nontrivial_number_of_pointers(self):
         """提取规则空转就是假绿：要比对小节的指针条数得有下限。
 
-        口径：2026-10-20 拆出 npc-flk 之后重扫，全仓 122 条 `subskills/` 指针里，窗口带
-        「第X节」或「小节名」且路径点到了 NOTE.md/SKILL.md 的有 17 条。把正则的
-        排除字符类删宽、或不认「第X节」句式，这一条会先掉到下限以下。
+        口径：2026-10-20 拆出 npc-flk、⑤ 补上六源之外那四路的指针之后重扫，全仓 126 条
+        `subskills/` 指针里，窗口带「第X节」或「小节名」且路径点到了 NOTE.md/SKILL.md 的
+        有 17 条。把正则的排除字符类删宽、或不认「第X节」句式，这一条会先掉到下限以下。
         """
         n = section_pointer_count(self.docs)
         self.assertGreaterEqual(n, 10, "只扫到 %d 条带小节写法的指针，提取规则被改坏了" % n)
@@ -853,6 +893,38 @@ class TestSubskillPointers(unittest.TestCase):
         del docs["subskills/ctaxnews/NOTE.md"]
         p = subskill_pointer_problems(docs)
         self.assertTrue(any("这个文件不在仓库里" in x for x in p), "缺文件却不报红：%s" % p)
+
+    def test_every_subskill_is_routed_from_the_source_choosing_step(self):
+        dirs = subskill_dir_names()
+        self.assertGreaterEqual(len(dirs), MIN_SUBSKILL_DIRS,
+                                "只扫到 %d 个子技能目录：%s" % (len(dirs), dirs))
+        self.assertEqual([], unrouted_subskills(self.step3, dirs),
+                         "③ 选路步骤没点到这些子技能目录")
+
+    def test_every_self_owned_script_is_named_in_a_command_doc(self):
+        scripts = self_owned_script_paths()
+        self.assertGreaterEqual(len(scripts), MIN_SELF_OWNED_SCRIPTS,
+                                "只扫到 %d 份自带脚本：%s" % (len(scripts), scripts))
+        self.assertEqual([], script_command_gaps(scripts, self.command_docs),
+                         "这些子技能脚本在两份命令文档里都查不到路径")
+
+    def test_mutation_subskill_dropped_from_routing_is_caught(self):
+        """自检：删掉 ③ 里那一路的两个指针，判据要报出被删的那个目录名。"""
+        self.assertEqual([], unrouted_subskills(self.step3, ["maodocs"]), "对照：本来点得到")
+        stripped = self.step3.replace("subskills/maodocs/", "subskills/other-docs/")
+        self.assertNotEqual(stripped, self.step3, "③ 里已经没有 subskills/maodocs/ 可删")
+        self.assertEqual(["maodocs"], unrouted_subskills(stripped, subskill_dir_names()),
+                         "删掉一路的指针却不报红")
+
+    def test_mutation_script_removed_from_command_docs_is_caught(self):
+        """自检：脚本路径从两份命令文档同时消失，gap 判据要抓到它。"""
+        target = "subskills/szse-lawrules/szse.py"
+        self.assertIn(target, self.command_docs["references/out_of_library_layers.md"],
+                      "注入点不在命令文档里，先改注入锚")
+        self.assertEqual([], script_command_gaps([target], self.command_docs),
+                         "对照：未破坏时这一路本来落地")
+        docs = {k: v.replace(target, "subskills/szse-lawrules/") for k, v in self.command_docs.items()}
+        self.assertEqual([target], script_command_gaps([target], docs), "两份都改了名却不报红")
 
 
 def _cn_count(token: str) -> int:

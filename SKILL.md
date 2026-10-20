@@ -1,7 +1,7 @@
 ---
 name: tax-analysis-engine
 description: "税务问题分析引擎：先判定问题类型与缺失前提，再从上位法逐层向下检索到行政法规、地方口径与实务案例，多源聚合后按规范层级、时效与角色给每条依据定级（三根轴各判各的，不折算成分数），最后输出带限制条件的分析结论。适用于一切涉及税与费的问题——某个税怎么算、能不能享受优惠、该按什么税目归类、怎么办理、多久之内办、有什么风险、两个方案选哪个，以及法规原文的条款填空与选项判断、政策与案例检索。回答前一律实时联网核查，不使用训练数据中的政策记忆。"
-version: "3.52.0"
+version: "3.53.0"
 ---
 
 # 税务问题分析引擎 (Tax Analysis Engine)
@@ -22,7 +22,7 @@ version: "3.52.0"
 | 用户点名要查询/阅读/解读某一份文件 | ③ 末 | `references/out_of_library_layers.md` |
 | 题面把会计/审计/内控/评估/证券口径写进要件 | ③ 末 | `references/out_of_library_layers.md`，取证走子技能 |
 | 决定六源怎么聚合、缺一个漏什么 | ④ | — |
-| 查具体命令、看某个源失败了怎么办 | ⑤ | `references/commands.md`；官方法规原文那三站怎么把命中收窄到某一维、为什么回 0 条，总局站点与总局法规库在 `subskills/chinatax/`、NPC 法规库在 `subskills/npc-flk/` |
+| 查具体命令、看某个源失败了怎么办 | ⑤ | `references/commands.md`（六源）；六源之外那四路的命令在 `references/out_of_library_layers.md`；官方法规原文那三站怎么把命中收窄到某一维、为什么回 0 条，总局站点与总局法规库在 `subskills/chinatax/`、NPC 法规库在 `subskills/npc-flk/` |
 | 写最终回答（六段式/逐条比对/填空/条件矩阵/风险自检） | ⑥ | `references/output_templates.md` |
 | 判定某项优惠能否享受、多项能否同享 | ⑥ + ⑦ 第 22 条 | `references/output_templates.md`「资格判定条件矩阵式」 |
 | liability 题要出数 | ⑥ 前 | `scripts/tax_calc.py`（算式展开器；税率与扣除标准由 ③ 检回后当参数喂进） |
@@ -287,8 +287,12 @@ python scripts/tax_aggregator.py "<关键词>" --sources npc,chinatax --size 10 
 
 ## ⑤ 各源命令与失败表现
 
-逐源命令全文、参数、NPC 跨进程串行闸（`NpcSerialGate` / `TAX_NPC_LOCK_TIMEOUT`）、
-各源失败表现与处理对照表，全部在 `references/commands.md`。此处只留三条硬规矩：
+六源的命令全文、参数、NPC 跨进程串行闸（`NpcSerialGate` / `TAX_NPC_LOCK_TIMEOUT`）、
+各源失败表现与处理对照表在 `references/commands.md`。③ 末选到的那四路不在六源里，命令
+写在 `references/out_of_library_layers.md` 对应小节（`subskills/maodocs/`、
+`subskills/chenyiwei-bbs/`、`subskills/szse-lawrules/`、`subskills/tax-preference/`），
+它们"没取到"与"取到了但读不得"（编号与文号都不证明版次）那些形态在本节不复述，
+记在所属目录的 `SKILL.md` 边界小节与 `NOTE.md` 台账里。此处只留四条硬规矩：
 
 - **失败先分诊**：区分"限流"与"代码坏了"——限流等退避重跑，代码问题才改代码。
   把限流误读成接口变更，会去改本来正常的代码。
