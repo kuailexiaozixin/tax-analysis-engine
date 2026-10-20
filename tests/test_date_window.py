@@ -445,7 +445,7 @@ class TestServerForwardsDates(unittest.TestCase):
 
 
 class TestFrontendDateNote(unittest.TestCase):
-    """后端给的日期说明要真到用户眼前，控件也要写清各源语义不同。"""
+    """后端给的日期说明要真到用户眼前；控件只声明有两种生效方式并指过去。"""
 
     def setUp(self):
         self.src = (Path(__file__).resolve().parent.parent /
@@ -459,13 +459,36 @@ class TestFrontendDateNote(unittest.TestCase):
         """说明里带用户输入的检索词，不转义就是 XSS 入口（与 _routed 同一条要求）。"""
         self.assertRegex(self.src, r"esc\(result\._date_note\)")
 
-    def test_date_control_documents_per_source_semantics(self):
-        """日期控件的悬浮说明要写明三种生效方式，否则用户会把补筛读成源端收窄。"""
+    def test_date_control_documents_the_two_effect_modes(self):
+        """日期控件的悬浮说明要写明两种生效方式，否则用户会把补筛读成源端收窄。
+
+        改前这句里还带着「公布日期」「成文日期」两枚字段名。控件是静态文案，而接口
+        自己收窄那三路各收不同的字段（tax_aggregator.DATE_SERVER_FIELDS：公布日期
+        gbrq／成文日期 cwrq／发布日期 startDate-endDate），把其中一枚写在控件上就成了
+        对整屏结果的断言。字段名改由后端逐轮渲进日期说明那一行，见
+        test_note_names_each_server_field；控件只负责指过去。
+        """
         label = re.search(r'<label title="([^"]*)">日期</label>', self.src)
         self.assertIsNotNone(label, "日期控件的 label 缺少 title 说明")
         text = label.group(1)
-        for phrase in ("公布日期", "成文日期", "窗口内补筛"):
+        for phrase in ("接口自己收窄", "窗口内补筛", "日期说明"):
             self.assertIn(phrase, text)
+
+    def test_note_names_each_server_field(self):
+        """字段名挪到逐轮说明里，就得真的在那句里出现，三路一枚都不许少。
+
+        上一条款只保证控件不再断言字段名；这一条保证用户仍然能在跑完的这一轮里读到
+        本轮每一路收的是哪一枚。口径：拿六源默认名单直接调 _date_scope_note，
+        逐键比对 DATE_SERVER_FIELDS 的值是不是原样出现在句子里。
+        """
+        from tax_aggregator import (DATE_SERVER_FIELDS, DEFAULT_SOURCES,
+                                    _date_scope_note)
+        stats = {s: {"got": 4, "in_range": 2, "out_of_range": 1, "no_date": 1}
+                 for s in ("so360", "shui5", "wechat")}
+        note = _date_scope_note("2024-01-01", "2026-12-31", list(DEFAULT_SOURCES),
+                                stats, "")
+        for source, field in DATE_SERVER_FIELDS.items():
+            self.assertIn(field, note, source)
 
     def test_local_counts_are_rendered(self):
         """说明里承诺"另列一行"，那一行必须由 _date_filter.local_window 真渲染出来。"""

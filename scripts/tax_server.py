@@ -15,7 +15,7 @@ from urllib.parse import quote
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from tax_search import search_tax, detect_intent, resolve_tax_type
+from tax_search import search_tax, detect_intent, resolve_tax_type, TAX_TYPE_KEYWORDS
 from tax_analyze import accounting_gap, accounting_note
 from tax_analyze import legislative_stage, legislative_note
 from tax_detail import fetch_detail, download_bytes, SXX_MAP, _parse_docx_from_bytes
@@ -25,6 +25,7 @@ from tax_so360 import so360_search
 from tax_shui5 import search_shui5
 from tax_wechat import search_wechat
 from tax_aggregator import aggregate_search, DEFAULT_SOURCES
+import tax_calc
 import tax_llm
 
 from flask import Flask, request, jsonify, send_from_directory
@@ -98,6 +99,21 @@ def _ui_filters(scope: str, exact, date_from, date_to, aging: str = "") -> dict:
 # 界面「排序」控件的取值 → search5 的 order 名。这个控件只对 NPC 那一路
 # 生效时，数据源切到税务总局／法规库就被静默丢掉，与「范围/匹配/日期」是同一个缺陷。
 SORT_TO_ORDER = {"relevance": "relevance", "date": "date_desc"}
+
+
+def _stamp_source(result: dict, source: str) -> None:
+    """给单源那三路取回的条目逐条标上真正的来源。
+
+    聚合那一路由 tax_aggregator.aggregate_search 写 `_source`，卡面的来源角标与
+    日期那一栏的读法都按它来；NPC／税务总局／法规库三条单源分支以前不写，于是
+    界面只能按"用户点的那一源"给日期起名。而这两路里有自动换源：归类成总局专题
+    （税收优惠、转让定价等）时按法规库取回，归类成境外辖区专题（支柱二等）时按
+    税务总局全站层取回——这时条目是 search5 那一层的，它的日期是成文日期（cwrq），
+    按 NPC 标就成了"公布日期"。引用时拿公布日去核，与文件上的成文日不是同一天。
+    """
+    for item in (result.get("results") or result.get("items") or []):
+        if isinstance(item, dict):
+            item.setdefault("_source", source)
 
 _text_cache = {}
 _interp_cache = {}
@@ -394,6 +410,10 @@ def api_search():
     if source not in SEARCH_SOURCES:
         return jsonify({"error": "source 只认 %s 这几个取值，收到的是 %r"
                                  % ("／".join(SEARCH_SOURCES), source)}), 400
+    # 真正取回这一批条目的那一层。用户点的是 source，但下面两处会换层（sta 专题
+    # 换到法规库、境外专题换到税务总局全站层），换层时这一栏跟着改，条目的来源
+    # 标注才不会停在用户点的那一源上。聚合那一路由 tax_aggregator 逐条写。
+    effective = source
     # province 只回填给调用方，不参与本接口的检索：NPC 库是全国性法规，没有
     # 省级维度；地方口径要靠 /api/interpretations 的 province 参数换站点。
     # 前端"省份"下拉因此对搜索结果没有过滤作用，别让它看起来是生效的。
@@ -471,6 +491,7 @@ def api_search():
             term = (tax_type_info or {}).get("search_term") or keyword
             result = search_chinatax(term, size=size, filters=ui_filters,
                                      file_only=False, order=ui_order)
+            effective = "chinatax"
             where = "法规库" if source == "fgk" else "税务总局的文件类标签"
             result["_routed"] = (
                 f"{tax_type_info['type']}的规则主体在境外辖区，{where}里没有对应文件，"
@@ -504,6 +525,7 @@ def api_search():
             result = search_fgk(term, size=size, with_body=bool(data.get("body")),
                                 filters=ui_filters,
                                 order=SORT_TO_ORDER.get(sort, "relevance"))
+            effective = "fgk"
             result["_routed"] = f"{tax_type_info['type']}属总局专题，已改查法规库：{term}"
         elif authority == "overseas":
             # 支柱二与全球最低税这一类不按 sta 那一路查：文件类标签下三个检索词
@@ -520,6 +542,7 @@ def api_search():
             result = search_chinatax(term, size=size, filters=ui_filters,
                                      file_only=False,
                                      order=SORT_TO_ORDER.get(sort, "relevance"))
+            effective = "chinatax"
             result["_routed"] = (
                 f"{tax_type_info['type']}的规则主体在境外辖区，已改查税务总局全站层"
                 f"（文件类标签之外）：{term}")
@@ -538,6 +561,9 @@ def api_search():
                 result["_routed"] = f"按{tax_type_info['type']}的本体法检索：{parent_law}"
             else:
                 result["_routed"] = UNROUTED_NOTE
+
+    if source != "aggregated":
+        _stamp_source(result, effective)
 
     # 会计口径缺口这句话由 tax_analyze 写成整句，前端只照抄——不在界面里自己
     # 判断准则能不能当依据（判据在 SKILL.md ③ 末）。按用户原话判，不看被改写后
@@ -811,20 +837,91 @@ def api_web_related(bbbs_id):
 
 @app.route("/api/quick-tax-types", methods=["GET"])
 def api_quick_tax_types():
-    return jsonify([
-        {"label": "增值税", "icon": "📊", "keyword": "增值税"},
-        {"label": "企业所得税", "icon": "🏢", "keyword": "企业所得税"},
-        {"label": "个人所得税", "icon": "👤", "keyword": "个人所得税"},
-        {"label": "消费税", "icon": "🛒", "keyword": "消费税"},
-        {"label": "关税", "icon": "🚢", "keyword": "关税"},
-        {"label": "房产税", "icon": "🏠", "keyword": "房产税"},
-        {"label": "印花税", "icon": "📝", "keyword": "印花税"},
-        {"label": "契税", "icon": "🔑", "keyword": "契税"},
-        {"label": "土地增值税", "icon": "🏗️", "keyword": "土地增值税"},
-        {"label": "税收优惠", "icon": "🎁", "keyword": "税收优惠"},
-        {"label": "发票管理", "icon": "🧾", "keyword": "发票管理办法"},
-        {"label": "税收征管", "icon": "⚖️", "keyword": "税收征收管理法"},
-    ])
+    """首页税种栏与引导面板第二步共用的清单，整份由归类词表渲出。
+
+    以前这里手写十二项，而归类与自动换源走的是 `tax_search.TAX_TYPE_KEYWORDS`
+    （现有 33 项）。手写那一份永远比词表少一截：全球最低税、税收协定、转让定价
+    这类专题在界面上点不到，命令行与 NPC 分支的换源却能走到，读界面的人会以为
+    引擎只认这十二个税种。
+    keyword 一律取键名本身：点下去发的是专题名，接下来按哪部本体法检索由
+    `resolve_tax_type` 归类和 `api_search` 的换源规则决定，界面不替它预判。
+    原先的 icon 字段一并去掉——前端只读 label 与 keyword，发出去没人读的字段
+    只会变成第二份要人维护、且迟早和词表对不上的清单。
+    发票这一类不在归类词表的键里（它是 tax_search.detect_intent 的五个意图之一），
+    界面上的入口在引导面板第三步的"发票问题"。
+    """
+    return jsonify([{"label": t, "keyword": t} for t in TAX_TYPE_KEYWORDS])
+
+
+@app.route("/api/calc", methods=["GET"])
+def api_calc_skeletons():
+    """算式展开面板的骨架清单，整份由 tax_calc.SKELETONS 渲出。
+
+    参数名与形态一律走引擎（tax_calc.inputs_spec：名与先后取 inputs()，税率表这一枚
+    取步骤串里那两个累进函数的末位实参与 RATE_TABLE_COLUMNS），不在这份路由里手写
+    第二遍：手写清单只认得写它那天用到的参数，后来往骨架里加一步就多一个框，界面
+    上会算出"缺少参数"却没有任何地方能填。
+    税率表要在界面上排成一行一档的编辑表，列名只能由引擎给——前端不知道超率累进
+    那一档记的是"速算扣除系数"而不是"速算扣除数"，猜错的那一列会被 row.get 当没填。
+    结果名直接取骨架的 结果 键——那是这一路要展示哪几个数的唯一出处。
+    """
+    return jsonify({
+        "骨架": [{"名称": name, "公式": sk["公式"],
+                  "参数": tax_calc.inputs_spec(name), "结果": sk["结果"]}
+                 for name, sk in tax_calc.SKELETONS.items()],
+        "限制": tax_calc.DISCLAIMER,
+    })
+
+
+@app.route("/api/calc", methods=["POST"])
+def api_calc_run():
+    """把一条骨架按给定参数值展开成算式。纯本地求值：不联网、不调外部模型。
+
+    这一路只补入口，不加判据：tax_calc.py 一直在命令行里，网页上没有地方进，
+    看界面的人不知道 ⑥ 那一步的算式能带着自己检回来的数复算一遍。
+
+    三道校验都排在调用 run 之前，因为 run 自身不拒绝多余的键：
+    1. 骨架名。run 对不存在的名字抛 KeyError，落到通用分支就成了 500，而这纯粹
+       是选错了一项，得回 400 并把可选值一起带回去。
+    2. 参数名。run 把调用方给的键并进求值命名空间（values.update(given)），于是
+       多给一个名为 max 的键就把算式允许调用的 max 换成一个 Decimal，随后
+       「应纳税额 = max(0, 一般计税应纳税额)」那步报
+       "'decimal.Decimal' object is not callable"——看着像引擎坏了，实际是请求里
+       多带了一个字段。实测：增值税一般计税 + {"max": 99} 其余参数齐全 → TypeError。
+    3. 取值形态。七种由参数写法决定的坏值，2026-10-20 逐条实测各抛哪一类：
+       非数值、布尔、空表、末档封顶、档界与速算扣除不自洽各抛 ValueError，
+       表行写成列表抛 AttributeError，表行少给 "税率" 这一枚键抛 KeyError
+       （str(KeyError) 只剩一个带引号的键名，取回时补上"税率表少给一列"这句原话）。
+       这些都由参数写法决定，一律 400 并把引擎原话带回，不折成 500。骨架名已在
+       第 1 道校验拦下，这里的 KeyError 只会来自请求体里的表行。
+    缺参数回 400 并给出整份名单：Missing.names 一次列全，不按步骤逐条挤，
+    否则用户要试好几轮才知道少填了什么。
+    """
+    data = request.get_json(silent=True) or {}
+    name = str(data.get("骨架") or "").strip()
+    if name not in tax_calc.SKELETONS:
+        return jsonify({"error": f"没有这个骨架：{name}",
+                        "可选": sorted(tax_calc.SKELETONS)}), 400
+    params = data.get("参数")
+    if not isinstance(params, dict):
+        return jsonify({"error": "参数必须是对象：{参数名: 值}，"
+                                 "或带出处的 {参数名: {值: …, 来源: …}}"}), 400
+    need = tax_calc.inputs(name)
+    extra = [k for k in params if k not in need]
+    if extra:
+        return jsonify({"error": f"「{name}」没有这些参数：{'、'.join(extra)}",
+                        "需要的参数": need}), 400
+    try:
+        return jsonify(tax_calc.run(name, params))
+    except tax_calc.Missing as e:
+        return jsonify({"error": f"缺少参数：{'、'.join(e.names)}",
+                        "缺的参数": e.names, "需要的参数": need}), 400
+    except (ValueError, TypeError, AttributeError, KeyError) as e:
+        # KeyError 的 str() 只剩一个带引号的键名（'税率'），对着界面那一栏读不出
+        # 是哪里缺；这一枚只可能来自表行，所以补一句归属，其余原话照抄。
+        why = (f"税率表少给一列：{e.args[0]}"
+               if isinstance(e, KeyError) and e.args else str(e))
+        return jsonify({"error": why, "需要的参数": need}), 400
 
 
 @app.route("/api/health", methods=["GET"])

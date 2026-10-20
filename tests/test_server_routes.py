@@ -53,14 +53,55 @@ class TestStaticRoutes(_RouteCase):
             self.assertEqual(200, r.status_code)
             self.assertIn(b"<html", r.data.lower())
 
-    def test_quick_tax_types_shape(self):
+    def test_quick_tax_types_are_exactly_the_taxonomy_keys(self):
+        """首页税种栏＝归类词表的键，一一对应、不许多也不许少。
+
+        改前这一份是手写的 12 项（含"发票管理""税收征管"两枚不属于归类词表的项），
+        而词表有 33 项：全球最低税、税收协定、转让定价这些在命令行和自动换源里都
+        走得通，界面上却没有入口，看页面的人以为引擎只认那 12 个。
+        键名同时就是发出去的检索词——归类由 resolve_tax_type 判，界面不替它预判，
+        所以这里不许出现第三个字段（旧 icon 字段就是第三份要人维护的清单）。
+        """
         r = self.client.get("/api/quick-tax-types")
         self.assertEqual(200, r.status_code)
         items = r.get_json()
-        self.assertEqual(12, len(items))
-        for it in items:
-            self.assertEqual({"label", "icon", "keyword"}, set(it))
-            self.assertTrue(it["keyword"])
+        self.assertEqual([{"label": t, "keyword": t}
+                          for t in tax_server.TAX_TYPE_KEYWORDS], items)
+
+    def test_every_quick_tax_keyword_routes_to_itself(self):
+        """这一栏点下去发的是键名，归类必须回到同一个专题。
+
+        归不出时 api_search 按原话字面检索并挂上"未能归类"，界面看起来像查过了：
+        2026-10-20 实测「税收争议救济」就是这样——它的六个别名（行政复议、行政
+        诉讼、纳税争议、起诉期限、复议前置，加键名本身）原本都不含键名这串字，
+        键名反被自己漏掉。修之前 33 个键里 32 个自归，只有它归不出。
+        """
+        for t in tax_server.TAX_TYPE_KEYWORDS:
+            with self.subTest(tax_type=t):
+                got = tax_server.resolve_tax_type(t)
+                self.assertIsNotNone(got, "%s 归不出任何专题" % t)
+                self.assertEqual(t, got["type"])
+
+    def test_mutation_dropping_the_key_name_alias_is_caught(self):
+        """上一条款不是空转：把每个键名从自己的别名里去掉，自归那条就报红。
+
+        注入的是 tax_search 模块里的那张表，不落盘。口径（2026-10-20 实测）：
+        33 个键逐一走 resolve_tax_type(键名)，看返回的 type 是否仍是键名自己。
+        注入后 23 个不再自归，「税收争议救济」是其中之一——它是这 23 个里唯一
+        在修复前就已经失归的那个，其余 22 个靠这次注入才现形：键名本身当别名用，
+        33 个键全都如此，删掉就露出别的别名压根接不住键名这件事。
+        所以这一条报的点是"上一条款读的是别名表，不是界面自己拼的字符串"。
+        """
+        import tax_search
+        alias = "税收争议救济"
+        self.assertIn(alias, tax_search.TAX_TYPE_KEYWORDS[alias]["aliases"])
+        stripped = {k: dict(v, aliases=[a for a in v["aliases"] if a != k])
+                    for k, v in tax_search.TAX_TYPE_KEYWORDS.items()}
+        with mock.patch.object(tax_search, "TAX_TYPE_KEYWORDS", stripped):
+            off = [k for k in stripped
+                   if (tax_search.resolve_tax_type(k) or {}).get("type") != k]
+        self.assertIn(alias, off, "注入没打到这一项，上一条款可能是空转")
+        self.assertEqual(23, len(off), "自归依赖键名别名的键数变了，口径要重测")
 
     def test_health_reports_gate_closed(self):
         with mock.patch.object(tax_server.tax_llm, "channel",
@@ -335,6 +376,76 @@ class TestSearchRoute(_RouteCase):
                        tax_type=NPC_TAX_TYPE)
         self.assertEqual("中华人民共和国增值税法", m.call_args[0][0])
         self.assertTrue(m.call_args.kwargs["exact"])
+
+    def test_single_source_items_are_stamped_with_the_layer_that_fetched(self):
+        """三路单源取回的条目逐条带上 _source，界面才有出处可标。
+
+        卡面的来源角标与日期那一栏都按 _source 取词。改前单源那三路不写这一枚
+        （只有聚合写），于是 数据源=税务总局 的一屏卡片既没有角标，日期又被
+        按 NPC 那一层的公布日期来念——而 search5 给的是成文日期（cwrq），
+        同一份文件上这两个日期可以差好几个月。
+        """
+        for source, fn in (("npc", "search_tax"),
+                           ("chinatax", "search_chinatax"),
+                           ("fgk", "search_fgk")):
+            with self.subTest(source=source):
+                with mock.patch.object(tax_server, fn,
+                                       return_value={"total": 2, "results": [
+                                           {"title": "a"}, {"title": "b"}]}) as m:
+                    r = self._post({"keyword": "增值税", "source": source},
+                                   tax_type=None)
+                got = [it.get("_source") for it in r.get_json()["result"]["results"]]
+                self.assertEqual([source, source], got)
+                m.assert_called_once()
+
+    def test_sta_reroute_under_npc_source_stamps_fgk(self):
+        """NPC 源下的 sta 专题被自动换到法规库，条目要标成实际那一层。
+
+        这条与筛选透传那条（test_sta_topic_routed_to_fgk_carries_ui_filters）
+        查的是同一次换源的两个面：参数要跟过去，出处也要跟着改。标成 npc 就
+        成了"角标写 NPC法规库、日期按公布念"，而取回的是法规库的成文日期。
+        """
+        fake = {"total": 1, "results": [{"title": "a"}]}
+        with mock.patch.object(tax_server, "search_fgk", return_value=fake), \
+             mock.patch.object(tax_server, "search_tax") as npc:
+            r = self._post({"keyword": "转让定价"}, tax_type=STA_TAX_TYPE)
+        self.assertEqual("fgk", r.get_json()["result"]["results"][0]["_source"])
+        npc.assert_not_called()
+
+    def test_overseas_reroute_stamps_chinatax_on_every_ui_source(self):
+        """境外专题在 NPC／总局／法规库三个入口下都换到全站层，标注跟着换。
+
+        三个入口都会去打 search_chinatax（file_only=False），所以三条都必须标
+        chinatax；把 search_tax 与 search_fgk 一起打桩是为了万一漏换，用例直接
+        打到真站点就会在被 stub 的那枚上暴露。
+        """
+        overseas = {"type": "全球最低税", "aliases": ["支柱二"],
+                    "authority": "overseas", "search_term": "支柱二"}
+        for source in ("npc", "chinatax", "fgk"):
+            with self.subTest(source=source):
+                with mock.patch.object(tax_server, "search_chinatax",
+                                       return_value={"total": 1, "results": [{"title": "a"}]}) as s5, \
+                     mock.patch.object(tax_server, "search_tax") as npc, \
+                     mock.patch.object(tax_server, "search_fgk") as fgk:
+                    r = self._post({"keyword": "支柱二对跨国企业的影响",
+                                    "source": source}, tax_type=overseas)
+                self.assertEqual(
+                    "chinatax", r.get_json()["result"]["results"][0]["_source"])
+                s5.assert_called_once()
+                npc.assert_not_called()
+                fgk.assert_not_called()
+
+    def test_aggregated_keeps_the_aggregators_own_stamp(self):
+        """聚合那一路的 _source 由 tax_aggregator 逐条写，这一层不许覆写。
+
+        覆写会把六源一起标成 aggregated——界面按源渲的"每源几条"与角标就成了
+        一句自相矛盾的话（计数行按 shui5 算，角标却写 aggregated）。
+        """
+        fake = {"total": 1, "results": [{"title": "a", "_source": "shui5"}]}
+        with mock.patch.object(tax_server, "aggregate_search", return_value=fake):
+            r = self._post({"keyword": "增值税", "source": "aggregated"},
+                           tax_type=None)
+        self.assertEqual("shui5", r.get_json()["result"]["results"][0]["_source"])
 
     def test_province_is_echoed_but_not_used(self):
         """province 只回填。
@@ -616,7 +727,224 @@ class TestWebRelatedRoute(_RouteCase):
         self.assertEqual(2, r.get_json()["total"])
 
 
+class TestCalcRoutes(_RouteCase):
+    """/api/calc 两路：清单整份由 tax_calc.SKELETONS 渲，求值把参数写法错误挡成 400。
+
+    界面新增的「算式展开」面板是 tax_calc.py 的入口（引擎原先只在命令行里）。这一组
+    钉三件事：清单不许在路由里手写第二份（手写那份会漏掉后来加进骨架的参数，界面上
+    就成了"算出缺参数却没有地方能填"）；请求体里多给的参数名不许进求值命名空间；
+    参数写法导致的报错一律 400 并带回引擎原话。全程离线，不联网、不碰模型闸门。
+    """
+
+    calc = tax_server.tax_calc
+
+    def _post(self, payload):
+        return self.client.post("/api/calc", json=payload)
+
+    def test_get_lists_every_skeleton_from_the_engine(self):
+        r = self.client.get("/api/calc")
+        self.assertEqual(200, r.status_code)
+        body = r.get_json()
+        self.assertEqual(self.calc.DISCLAIMER, body["限制"])
+        got = body["骨架"]
+        self.assertEqual(list(self.calc.SKELETONS), [s["名称"] for s in got])
+        for s in got:
+            sk = self.calc.SKELETONS[s["名称"]]
+            self.assertEqual({"名称", "公式", "参数", "结果"}, set(s))
+            self.assertEqual(sk["公式"], s["公式"])
+            self.assertEqual(sk["结果"], s["结果"])
+            self.assertEqual(self.calc.inputs_spec(s["名称"]), s["参数"])
+
+    def test_get_table_params_are_the_columns_the_engine_reads(self):
+        """税率表那一枚的列名要从常量表渲出，且只有用累进函数那三条骨架有表。
+
+        这一条管两件事：界面拿到的 列 就是 RATE_TABLE_COLUMNS（渲染不断链），
+        以及"哪几条骨架有表"这份名单不悄悄变长或变短。列名与引擎真正读的那枚
+        是不是同一枚，由下面两条从两个方向钉：一条拿引擎的报错原文回吐列名，
+        一条拿声明的列名喂回引擎。
+        """
+        spec = {s["名称"]: [p for p in self.calc.inputs_spec(s["名称"])
+                            if p["形态"] == "税率表"][0]["列"]
+                for s in self.client.get("/api/calc").get_json()["骨架"]
+                if any(p["形态"] == "税率表" for p in self.calc.inputs_spec(s["名称"]))}
+        self.assertEqual({"超额累进", "综合所得年度汇算", "超率累进"}, set(spec))
+        self.assertEqual(self.calc.RATE_TABLE_COLUMNS["分段累进"], spec["超额累进"])
+        self.assertEqual(self.calc.RATE_TABLE_COLUMNS["分段累进"], spec["综合所得年度汇算"])
+        self.assertEqual(self.calc.RATE_TABLE_COLUMNS["超率累进"], spec["超率累进"])
+
+    def test_table_columns_are_the_keys_the_progressive_functions_read(self):
+        """两个累进函数各读哪一枚速算扣除键，由它们的报错原文给出。"""
+        with self.assertRaises(ValueError) as cm:
+            self.calc.分段累进(100000, [{"上限": 36000, "税率": "0.03", "速算扣除数": "99999"},
+                                       {"上限": None, "税率": "0.45", "速算扣除数": "15160"}])
+        self.assertIn("速算扣除数", str(cm.exception))
+        with self.assertRaises(ValueError) as cm2:
+            self.calc.超率累进(600, 400, [{"上限": 1.0, "税率": "0.3", "速算扣除系数": "9.9"},
+                                        {"上限": None, "税率": "0.6", "速算扣除系数": "0"}])
+        self.assertIn("速算扣除系数", str(cm2.exception))
+
+    def test_declared_columns_are_read_by_the_skeletons(self):
+        """反方向再来一次：拿 /api/calc 声明的三枚列名排一张表，引擎报错时要报出它
+        声明的那一枚。
+
+        只写上面两条不够——spec 与 RATE_TABLE_COLUMNS 出自同一张常量表，把
+        RATE_TABLE_COLUMNS["超率累进"] 的第三枚改成 "速算扣除数" 那两条都还是绿的
+        （2026-10-20 在副本树里变异实测）。这一条把声明的列名当输入喂回引擎：
+        列名与引擎真正读的那枚一分叉，row.get(ded_key, 0) 静默取 0，报错原文里
+        出现的是引擎那枚而不是声明那枚，assertIn 就断。
+        """
+        numbers = {"超额累进": {"计税基数": 100000},
+                   "综合所得年度汇算": {"收入总额": 200000, "费用减除": 60000,
+                                        "专项扣除": 10000, "专项附加扣除": 0,
+                                        "已预缴税额": 0},
+                   "超率累进": {"转让收入": 1000, "扣除项目金额": 200}}
+        for name, given in numbers.items():
+            cols = [p["列"] for p in self.calc.inputs_spec(name)
+                    if p["形态"] == "税率表"][0]
+            # 两档，末档速算扣除故意给一个不可能的值，逼引擎走"不自洽"那条报错
+            table = [{cols[0]: 36000, cols[1]: "0.03", cols[2]: "0"},
+                     {cols[0]: None, cols[1]: "0.45", cols[2]: "99999"}]
+            if name == "超率累进":
+                # 这一路的档界是占扣除项目金额的倍数，速算那枚是系数
+                table = [{cols[0]: 1, cols[1]: "0.3", cols[2]: "0.5"},
+                         {cols[0]: None, cols[1]: "0.6", cols[2]: "999"}]
+            with self.subTest(skeleton=name):
+                with self.assertRaises(ValueError) as cm:
+                    self.calc.run(name, dict(given, 税率表=table))
+                self.assertIn(cols[2], str(cm.exception), name)
+
+    def test_post_returns_the_engines_own_expansion(self):
+        r = self._post({"骨架": "超额累进", "参数": {
+            "计税基数": {"值": 100000, "来源": "http://x/1"},
+            "税率表": {"值": [{"上限": 36000, "税率": 0.03, "速算扣除数": 0},
+                              {"上限": 144000, "税率": 0.10, "速算扣除数": 2520},
+                              {"上限": None, "税率": 0.45, "速算扣除数": 15160}],
+                      "来源": "http://x/2"}}})
+        self.assertEqual(200, r.status_code)
+        body = r.get_json()
+        self.assertEqual({"应纳税额"}, set(body["结果"]))
+        self.assertEqual(7480.0, body["结果"]["应纳税额"])
+        self.assertEqual(1, len(body["步骤"]))
+        self.assertEqual("分段累进(计税基数, 税率表)", body["步骤"][0]["算式"])
+        self.assertEqual(2, body["步骤"][0]["分档"]["适用档"])
+        self.assertEqual(2, len(body["步骤"][0]["分档"]["逐档"]))
+        # 两枚参数都带了来源，无来源名单该是空的
+        self.assertEqual([], body["无来源参数"])
+        self.assertEqual(self.calc.DISCLAIMER, body["限制"])
+
+    def test_post_marks_a_param_without_source(self):
+        r = self._post({"骨架": "从价计征",
+                        "参数": {"计税依据": {"值": 100, "来源": "http://x"}, "税率": 0.04}})
+        self.assertEqual(200, r.status_code)
+        self.assertEqual(["税率"], r.get_json()["无来源参数"])
+
+    def test_post_never_leaves_the_process(self):
+        """这一路纯本地求值：把 socket 钉死也必须回 200。
+
+        界面点「展开算式」不该产生任何对外请求，也不该碰付费闸门
+        （/api/health 报的 paid_llm.enabled 与这一路无关）。
+        """
+        with mock.patch("socket.socket",
+                        side_effect=AssertionError("算式展开不许联网")):
+            r = self._post({"骨架": "从价计征", "参数": {"计税依据": 100, "税率": 0.04}})
+        self.assertEqual(200, r.status_code)
+        self.assertEqual(4.0, r.get_json()["结果"]["应纳税额"])
+
+    def test_post_rejects_unknown_param_names(self):
+        """多给的参数名必须 400，不能让它进求值命名空间。
+
+        tax_calc.run 把调用方给的键并进 values（values.update(given)），名为 max 的
+        键就把算式允许调用的 max 换成一个 Decimal，随后「应纳税额 = max(0, …)」报
+        "'decimal.Decimal' object is not callable"——看着像引擎坏了，其实是请求里
+        多带一个字段。2026-10-20 实测：其余四枚参数齐全 + {"max": 99} → TypeError。
+        """
+        good = {"不含税销售额": 1000, "适用税率": 0.13, "进项税额": 0,
+                "进项税额转出": 0, "上期留抵税额": 0}
+        for extra, value in (("max", 99), ("abs", 99), ("min", 99), ("税率表", [])):
+            with self.subTest(extra=extra):
+                r = self._post({"骨架": "增值税一般计税",
+                                "参数": dict(good, **{extra: value})})
+                self.assertEqual(400, r.status_code)
+                self.assertIn(extra, r.get_json()["error"])
+                self.assertEqual(tax_server.tax_calc.inputs("增值税一般计税"),
+                                 r.get_json()["需要的参数"])
+
+    def test_post_lists_every_missing_param_at_once(self):
+        r = self._post({"骨架": "增值税一般计税",
+                        "参数": {"不含税销售额": 1, "适用税率": 0.13}})
+        self.assertEqual(400, r.status_code)
+        body = r.get_json()
+        self.assertEqual(["进项税额", "进项税额转出", "上期留抵税额"], body["缺的参数"])
+
+    def test_post_rejects_a_skeleton_that_does_not_exist(self):
+        """选错一项是请求问题，回 400 并给可选值；引擎这里抛的 KeyError 不能冒成 500。"""
+        r = self._post({"骨架": "印花税计算", "参数": {}})
+        self.assertEqual(400, r.status_code)
+        self.assertEqual(sorted(tax_server.tax_calc.SKELETONS), r.get_json()["可选"])
+
+    def test_post_rejects_a_body_that_is_not_a_param_object(self):
+        for payload in ({"骨架": "从价计征", "参数": [1, 2]},
+                        {"骨架": "从价计征", "参数": "计税依据=1"},
+                        {"骨架": "从价计征"},
+                        {}):
+            with self.subTest(payload=payload):
+                r = self._post(payload)
+                self.assertEqual(400, r.status_code)
+
+    def test_post_turns_engine_value_errors_into_400(self):
+        """参数写法决定的七种坏值，各抛各的异常，都必须是 400 而不是 500。
+
+        每种坏写法抛哪一类是 2026-10-20 逐条实测的：非数值与布尔与空表与末档封顶
+        与不自洽走 ValueError，表行写成列表走 AttributeError（row 没有 .get），
+        行里少给"税率"走 KeyError。并成一条是因为界面只关心一件事：能不能读回
+        一句人话；needle 那一列就是各条报错原文里必须出现的那句话。
+        """
+        def body(table):
+            return {"骨架": "超额累进", "参数": {"计税基数": 100000, "税率表": table}}
+        cases = [
+            ("非数值", {"骨架": "从价计征", "参数": {"计税依据": "abc", "税率": 0.04}},
+             "不是可解析的数值"),
+            ("布尔", {"骨架": "从价计征", "参数": {"计税依据": True, "税率": 0.04}},
+             "参数值不是数值"),
+            ("表行写成列表", body([[36000, 0.03, 0]]), "has no attribute 'get'"),
+            ("空表", body([]), "至少一档的列表"),
+            ("末档封顶", body([{"上限": 36000, "税率": 0.03}]), "最后一档必须不封顶"),
+            ("档界与速算不自洽", body([
+                {"上限": 36000, "税率": 0.03, "速算扣除数": 0},
+                {"上限": 144000, "税率": 0.10, "速算扣除数": 99999},
+                {"上限": None, "税率": 0.45, "速算扣除数": 15160}]),
+             "税率表不自洽"),
+            ("表行少给一列", body([{"上限": None}]), "税率表少给一列：税率"),
+        ]
+        for label, payload, needle in cases:
+            with self.subTest(case=label):
+                r = self._post(payload)
+                self.assertEqual(400, r.status_code, label)
+                self.assertIn(needle, r.get_json()["error"], label)
+
+    def test_mutation_dropping_the_unknown_name_guard_is_caught(self):
+        """这道闸买的是报错那句话，不是状态码——去掉它仍然 400，但那句话换了个人。
+
+        2026-10-20 在副本树里把 `extra = [...]` 改成 `extra = []` 实测：这一发还是
+        400，error 变成引擎原话 "'decimal.Decimal' object is not callable"。原因是
+        路由的兜底分支本来就接 TypeError。所以盯这道闸的不是 test_post_rejects_…
+        的状态码，是它有没有点名多带的那个字段。这里两件事一起断：run 自己抛
+        TypeError（闸不在引擎里），而路由那句里出现 "max"、引擎那句里没有。
+        """
+        payload = {"不含税销售额": 1000, "适用税率": 0.13, "进项税额": 0,
+                   "进项税额转出": 0, "上期留抵税额": 0, "max": 99}
+        with self.assertRaises(TypeError) as cm:
+            tax_server.tax_calc.run("增值税一般计税", payload)
+        self.assertNotIn("max", str(cm.exception))
+        r = self._post({"骨架": "增值税一般计税", "参数": payload})
+        self.assertEqual(400, r.status_code)
+        self.assertIn("max", r.get_json()["error"])
+
+
 SOURCE_UI_BLOCK_RE = re.compile(r"(?ms)^const SOURCE_UI=\{(.*?)^\};")
+# 卡面日期那一栏的取名表，整张在一行上。它按源分键，但不是第二份源名词表：
+# 值给的是这一路的日期取的是哪一枚字段（公布／成文／发布／站点发布），另一根轴。
+DATE_FIELD_RE = re.compile(r"(?m)^const DATE_FIELD=\{([^}]*)\};")
 # 词表里每一行的字段形态。少一个字段、多一个字段都当成形态漂移直接断言失败，
 # 免得解析静默返回空表让整组用例假绿。
 SOURCE_UI_ENTRY_RE = re.compile(
@@ -629,8 +957,9 @@ SOURCE_UI_ENTRY_RE = re.compile(
 RENDER_ANCHORS = {
     "每源几条那一行": ("const chips=", "SOURCE_UI", True),
     "区间内补筛计数那一行": ("lw[k].got", "SOURCE_UI", True),
-    "卡面来源角标那一行": ("item._source&&", "SOURCE_UI", True),
-    "空结果那句提示": ("${AGG_SOURCE_HINT}", None, True),
+    "卡面来源角标那一行": ("${sourceBadge(item)}", "sourceBadge", True),
+    "角标取词那一行": ("const ui=SOURCE_UI[s];", "SOURCE_UI", True),
+    "空结果那句提示": ("一次查${AGG_SOURCE_HINT}", None, True),
     "弹窗页脚那一行": ("footerLabels={", "SOURCE_UI.npc.label", False),
 }
 
@@ -658,10 +987,27 @@ def label_drift(ui, source_labels):
             if "%s %s" % (ui[k]["icon"], ui[k]["label"]) != source_labels.get(k)]
 
 
+def strip_vocab_tables(html):
+    """去掉界面上那两张按源分键的表，返回其余文本。为什么是两张而不是拼成一张，
+    见 hand_written_copies。两张表各用一份取词正则删，与读它们的用例共用同一份模式，
+    删掉的块与被断言的块不会分叉。
+    """
+    for name, rx in (("SOURCE_UI", SOURCE_UI_BLOCK_RE), ("DATE_FIELD", DATE_FIELD_RE)):
+        assert rx.search(html), "index.html 里找不到 %s 那张表，扫描范围已经对不上" % name
+    html = SOURCE_UI_BLOCK_RE.sub("", html, count=1)
+    return DATE_FIELD_RE.sub("", html, count=1)
+
+
 def hand_written_copies(html, keys):
-    """词表之外还有没有人写 `源名:'文本'`——第二份词表的形状。"""
-    block = SOURCE_UI_BLOCK_RE.search(html)
-    outside = html[:block.start()] + html[block.end():] if block else html
+    """词表之外还有没有人写 `源名:'文本'`——第二份源名词表的形状。
+
+    按源分键的表在界面上只有两张，扫描时整块跳过：SOURCE_UI 给六源的显示名，
+    DATE_FIELD 给每一路卡面日期那一栏的名字。后者量的是另一根轴（这一路的日期
+    取的是公布、成文、发布还是站点发布时间），值不是源名，与显示名不冲突；把它
+    算成第二份词表就会逼着两根轴挤进一张表，而 so360 根本没有日期字段、fgk 又不
+    是六源之一，那张表两头都装不下。
+    """
+    outside = strip_vocab_tables(html)
     return [k for k in keys
             if re.search(r"\b%s\s*:\s*['\"]" % re.escape(k), outside)]
 
@@ -753,6 +1099,92 @@ class TestFrontendSourceVocabulary(unittest.TestCase):
         self.assertEqual(1, len(line))
         self.assertIn("SOURCE_UI", line[0])
         self.assertIn("short", line[0])
+
+    def test_source_badge_falls_back_to_the_row_label(self):
+        """角标那枚函数：六源查词表，词表外的层（fgk）退回条目自带的 source_label。
+
+        SEARCH_SOURCES 里有 "fgk"，而 SOURCE_UI 只登记聚合的六路——法规库是
+        chinatax 那条链路换源后落到的一层，不是第七路源。改前角标只认 SOURCE_UI，
+        _source==='fgk' 的卡片整枚不渲染：屏上出现一批不报出处的条目，同一条卡片
+        的日期栏却按 fgk 写着「成文」。
+        """
+        start = self.html.find("function sourceBadge")
+        self.assertGreater(start, -1, "sourceBadge 函数不见了")
+        body = self.html[start:self.html.index("\n}", start)]
+        self.assertIn("SOURCE_UI[s]", body)
+        self.assertIn("item.source_label", body)
+        for k, v in self.ui.items():
+            self.assertNotIn(v["label"], body, k)
+            self.assertNotIn(v["short"], body, k)
+
+    def test_date_label_table_matches_what_each_layer_collects(self):
+        """卡面日期那一栏的取名，逐源对上后端登记的字段名。
+
+        DATE_SERVER_FIELDS 记的是接口自己收的那枚字段（公布日期 gbrq / 成文日期
+        cwrq / 发布日期 startDate-endDate），三者含义不同：同一份文件的公布日与
+        成文日可以差好几个月。界面以前不分源一律写"公布"。
+        so360 那一路的条目没有日期字段（tax_so360.py 里连 date 这个字都不出现），
+        所以它不进这张表、卡面退回中性的"日期"，不替它编一个名字。
+        """
+        block = DATE_FIELD_RE.search(self.html)
+        self.assertIsNotNone(block, "DATE_FIELD 那张表不见了")
+        date_field = dict(re.findall(r"(\w+):'([^']*)'", block.group(1)))
+        from tax_aggregator import DATE_SERVER_SOURCES, DATE_SERVER_FIELDS
+        for s in DATE_SERVER_SOURCES:
+            self.assertIn(s, date_field, s)
+            self.assertIn(date_field[s], DATE_SERVER_FIELDS[s],
+                          "%s 卡面写的「%s」对不上后端登记的 %r"
+                          % (s, date_field[s], DATE_SERVER_FIELDS[s]))
+        scripts = Path(__file__).resolve().parent.parent / "scripts"
+        so360_src = (scripts / "tax_so360.py").read_text(encoding="utf-8")
+        # 双向钉：这一路哪天真的开始给日期，就必须同时往 DATE_FIELD 里加一项
+        self.assertEqual(("date" in so360_src), ("so360" in date_field))
+        self.assertNotIn("so360", date_field)
+
+    def test_fgk_date_label_is_the_chinatax_layer_it_reroutes_to(self):
+        """换到法规库那层时卡面写「成文」，因为它抄的就是 chinatax 的 publish_date。
+
+        tax_fgk 从 search5 的行里原样复制 status/effect_level/publish_date 四栏，
+        所以这一层的日期与税务总局同一枚（cwrq）。抄的那枚一旦改名，这里要跟着改。
+        """
+        block = DATE_FIELD_RE.search(self.html)
+        date_field = dict(re.findall(r"(\w+):'([^']*)'", block.group(1)))
+        fgk_src = (Path(__file__).resolve().parent.parent / "scripts" /
+                   "tax_fgk.py").read_text(encoding="utf-8")
+        self.assertIn('"publish_date"', fgk_src)
+        self.assertEqual(date_field["chinatax"], date_field["fgk"])
+
+    def test_date_and_status_tooltips_name_no_source(self):
+        """筛选栏两枚控件的提示里不许出现源名，也不许出现某一源的字段名。
+
+        这两句在改前各写着一条源语义（日期那一栏写"由 NPC／总局的接口自己收窄"，
+        而三路各自收的字段不同名；时效那一栏的说明也只提一路）。写在页面上就成了
+        对整屏结果的断言，而本轮究竟哪一路收哪一枚字段、取回与剔除多少条，后端
+        已经逐轮写在结果上方（result._date_note 与 _filter_note）。提示只指过去。
+        """
+        names = [v["label"] for v in self.ui.values()] + \
+                [v["short"] for v in self.ui.values()]
+        date_line = [l for l in self.html.split("\n") if 'id="filterDateFrom"' in l]
+        self.assertEqual(1, len(date_line))
+        for n in names:
+            self.assertNotIn(n, date_line[0], "日期控件的提示又写了源名")
+        for word in ("公布", "成文", "发布"):
+            self.assertNotIn(word, date_line[0],
+                             "日期控件的提示把某一路的字段名当成了全局口径")
+        self.assertIn("日期说明", date_line[0])
+
+    def test_hero_subtitle_counts_the_sources_instead_of_naming_one(self):
+        """副标题从前写"数据源自国家法规库 · 实时同步 · 现行有效"：六路里只提到一路，
+        而"现行有效"是筛选栏在 NPC 侧的默认值、不是数据的属性。现在路数与源名都从
+        词表渲，句子里不许出现任何一路的名字。"""
+        start = self.html.find("function renderHeroSubtitle")
+        self.assertGreater(start, -1, "renderHeroSubtitle 不见了")
+        body = self.html[start:self.html.index("\n}", start)]
+        self.assertIn("SOURCE_UI", body)
+        self.assertIn("AGG_SOURCE_HINT", body)
+        for k, v in self.ui.items():
+            self.assertNotIn(v["label"], body, k)
+        self.assertNotIn("现行有效", body)
 
     def test_source_select_offers_exactly_the_backends_branches(self):
         """界面「数据源」的 option 值集合＝后端 SEARCH_SOURCES，两边不许各自长。"""

@@ -190,6 +190,16 @@ _FUNCS = {"分段累进": 分段累进, "超率累进": 超率累进,
           "max": lambda *a: max(_dec(x) for x in a),
           "min": lambda *a: min(_dec(x) for x in a), "abs": abs}
 
+# 税率表这一枚参数要按哪几列填。列名不是随便起的：前两枚是 _progressive 直接按键
+# 取的（row.get("上限")、row["税率"]），第三枚就是它收到的 ded_key 实参——分段累进
+# 传 "速算扣除数"、超率累进 传 "速算扣除系数"。这一处与那两个函数之间的对应由
+# tests/test_server_routes.py 的 TestCalcRoutes 钉住：拿一张不自洽的表触发报错，
+# 取回的原文里必须出现这里写的第三枚列名，改了 ded_key 而没改这张表就会报红。
+# 下游用途只有一个：/api/calc 把形态与列名一起给界面，让税率表这一枚参数排成
+# 一行一档的编辑表，而不是让前端照猜。
+RATE_TABLE_COLUMNS = {"分段累进": ["上限", "税率", "速算扣除数"],
+                      "超率累进": ["上限", "税率", "速算扣除系数"]}
+
 
 # ── 骨架：步骤写成「名字 = 算式」，逐条按序求值 ───────────────────────────────
 SKELETONS = {
@@ -273,6 +283,28 @@ def inputs(name: str) -> list:
                 out.append(ref)
         defined.add(_refs(step)[0])
     return out
+
+
+def inputs_spec(name: str) -> list:
+    """待填参数各收什么形态的值：数值，还是一张税率表（表按哪几列填）。
+
+    判据取自步骤串本身，不另立一份参数清单：只有 RATE_TABLE_COLUMNS 里那两个
+    函数的入参吃表，表固定在它们的最后一个实参上（两个函数的签名都把 税率表
+    放在末位）。名字与先后一律照 inputs()，所以这条规格不会跟缺参数报错脱节——
+    界面照它排表单，报错照 inputs() 念，两处同源。
+    """
+    tables = {}
+    for step in _skeleton(name)["步骤"]:
+        tree = ast.parse(_ascii(step.split("=", 1)[1]), mode="eval")
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id in RATE_TABLE_COLUMNS and node.args):
+                continue
+            last = node.args[-1]
+            if isinstance(last, ast.Name):
+                tables[last.id] = RATE_TABLE_COLUMNS[node.func.id]
+    return [{"名称": k, "形态": "税率表" if k in tables else "数值",
+             "列": tables.get(k, [])} for k in inputs(name)]
 
 
 def _split(params: dict) -> tuple:

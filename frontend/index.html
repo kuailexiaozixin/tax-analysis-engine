@@ -135,6 +135,13 @@ body{
   color:var(--black);
   background:var(--g50);
 }
+/* 展开／收起这一枚不是税种按钮，做成虚线框、字重压回常规，免得读的人把它
+   当成词表里的又一个专题点下去（点了它只会把剩下的清单铺开）。 */
+.quick-tax button.quick-more{
+  border-style:dashed;
+  font-weight:500;
+  color:var(--g500);
+}
 
 /* ── Toggle links ── */
 .toggle-row{
@@ -414,6 +421,37 @@ body{
 }
 .guidance-panel .gp-footer .reset:hover{color:var(--black);background:none}
 
+/* ── Calc Panel ── 外壳、页头页脚沿用 .guidance-panel 那一套，这里只补表单体 */
+.calc-label{display:block;font-size:12px;color:var(--g500);margin:12px 0 3px}
+.calc-label .cl-req{color:var(--accent)}
+.calc-form input,.calc-form select{
+  width:100%;padding:6px 8px;border:1px solid var(--g200);border-radius:2px;
+  font-size:13px;background:var(--white);color:var(--black);font-family:inherit;outline:none;
+}
+.calc-form input:focus,.calc-form select:focus{border-color:var(--black)}
+.calc-form input.calc-missing{border-color:var(--accent);background:#fff6f6}
+.calc-src{margin-top:3px!important;font-size:11px!important;color:var(--g400)}
+.calc-formula{font-size:12px;color:var(--g600);background:var(--g50);padding:8px 10px;border-left:2px solid var(--black);margin-top:6px;line-height:1.6;word-break:break-all}
+table.calc-table{width:100%;border-collapse:collapse;margin-top:4px}
+table.calc-table th{font-size:11px;font-weight:500;color:var(--g400);text-align:left;padding:0 3px 3px}
+table.calc-table td{padding:0 3px 4px}
+table.calc-table input{padding:5px 6px;font-size:12px}
+table.calc-table td.calc-del{width:26px}
+.calc-add{background:none;border:1px dashed var(--g200);color:var(--g500);font-size:11px;padding:3px 8px;cursor:pointer;font-family:inherit}
+.calc-add:hover{border-color:var(--black);color:var(--black)}
+.calc-out{margin-top:18px;border-top:1px solid var(--g200);padding-top:14px}
+.calc-out .co-err{font-size:12px;color:var(--accent);line-height:1.6;word-break:break-all}
+.calc-out .co-result{display:flex;flex-wrap:wrap;gap:6px 14px;margin-bottom:10px}
+.calc-out .co-result span{font-size:13px}
+.calc-out .co-result b{font-weight:600}
+table.calc-steps{width:100%;border-collapse:collapse;font-size:11px}
+table.calc-steps th{text-align:left;color:var(--g400);font-weight:500;padding:3px 6px;border-bottom:1px solid var(--g200)}
+table.calc-steps td{padding:4px 6px;border-bottom:1px solid var(--g50);vertical-align:top;word-break:break-all}
+table.calc-tiers{width:100%;border-collapse:collapse;font-size:11px;margin:4px 0 8px;background:var(--g50)}
+table.calc-tiers td{padding:2px 6px}
+.calc-warn{font-size:11px;color:var(--g500);line-height:1.6;margin-top:10px}
+.calc-note{font-size:12px;color:var(--g600);line-height:1.7}
+
 /* ── Footer ── */
 .page-footer{
   text-align:center;
@@ -471,13 +509,14 @@ body{
       <button class="search-btn" id="searchBtn" onclick="doSearch()">搜索</button>
     </div>
 
-    <p class="hero-subtitle">数据源自国家法规库 · 实时同步 · 现行有效</p>
+    <p class="hero-subtitle" id="heroSubtitle">实时检索税收法规与实务解读</p>
 
     <div class="quick-tax" id="quickTax"></div>
 
     <div class="toggle-row">
       <span onclick="toggleFilters()">高级筛选 ▾</span>
       <span onclick="toggleGuidance()">智能引导</span>
+      <span onclick="toggleCalc()">算式展开</span>
     </div>
   </div>
 </div>
@@ -489,7 +528,7 @@ body{
   <div class="filter-group"><label>时效</label><select id="filterStatus" title=""><option value="3" selected>现行有效</option><option value="">全部</option></select></div>
   <div class="filter-group"><label>排序</label><select id="filterSort"><option value="relevance">相关度</option><option value="date">日期↓</option></select></div>
   <div class="filter-group"><label>数据源</label><select id="filterSource" onchange="syncFilterControls()"><option value="npc">NPC法规库</option><option value="aggregated">多源聚合</option><option value="chinatax">税务总局</option><option value="fgk">税务法规库</option></select></div>
-  <div class="filter-group"><label title="这一栏的语义按数据源不同：NPC 法规库按公布日期收窄，税务总局与法规库按成文日期收窄，360 搜索／税屋／微信公众号没有日期参数、只在取回的条目窗口内补筛（各源计数与判读规则见结果上方那句说明）">日期</label><input type="date" id="filterDateFrom">—<input type="date" id="filterDateTo"></div>
+  <div class="filter-group"><label title="这一维按数据源分两种生效方式：有的由接口自己收窄，有的只在本轮取回的条目窗口内补筛。本轮哪一路收的是哪一枚日期字段、取回与剔除多少条，写在结果上方那行日期说明里">日期</label><input type="date" id="filterDateFrom">—<input type="date" id="filterDateTo"></div>
 </div>
 
 <!-- ═══ RESULTS ═══ -->
@@ -511,6 +550,16 @@ body{
   </div>
   <div class="gp-body" id="guideBody"></div>
   <div class="gp-footer" id="guideFooter"></div>
+</div>
+
+<!-- ═══ CALC PANEL ═══ -->
+<div class="guidance-panel" id="calcPanel">
+  <div class="gp-header">
+    <h3>算式展开</h3>
+    <button style="background:none;border:none;font-size:18px;cursor:pointer;color:var(--g500)" onclick="toggleCalc()">✕</button>
+  </div>
+  <div class="gp-body calc-form" id="calcBody"></div>
+  <div class="gp-footer" id="calcFooter"></div>
 </div>
 
 <!-- ═══ MODAL ═══ -->
@@ -541,11 +590,56 @@ const SOURCE_UI={
    读的人会以为另外四路在聚合里本来就没有。现在从 SOURCE_UI 的短名渲出全量。 */
 const AGG_SOURCE_HINT=Object.keys(SOURCE_UI).map(k=>SOURCE_UI[k].short).join('、');
 
+/* 卡面「📅」那一栏该叫什么。这一栏填的是条目自带的日期，而各路给的不是同一件事：
+   NPC 是公布日期（gbrq），税务总局与税务法规库是成文日期（cwrq，tax_web_search
+   把它写进 publish_date），中国税网是站点自己的发布日期，税屋与公众号的行日期是
+   这两家发文页上的时间、不是文件的公布或成文日期，360 那一路的条目根本没有日期
+   字段。以前不分源一律写"公布"，于是总局与法规库那一栏把成文日期标成了公布日期：
+   拿它去核对文件的公布日就对不上，而这两个日期在同一份文件上可以差好几个月。
+   哪一路收的是哪一枚字段，后端写在 tax_aggregator.DATE_SERVER_FIELDS 与
+   DATE_LOCAL_SOURCES；这一份由 tests/test_server_routes.py 逐键比对。
+   表里没有的源（so360）退成中性的"日期"，不猜它是什么日期。 */
+const DATE_FIELD={npc:'公布',chinatax:'成文',fgk:'成文',ctax:'发布',shui5:'站点发布',wechat:'站点发布'};
+function dateFieldLabel(item){
+  return DATE_FIELD[(item&&item._source)||'']||'日期';
+}
+
+/* 卡面标题前那一枚来源角标。
+   条目上的 _source 由后端写：聚合那一路由 tax_aggregator 逐条标，四路单源（含
+   api_search 里那两处自动换源）由 tax_server._stamp_source 标，所以屏上每一条都
+   带着"这一批实际是谁取回的"。
+   词表却比它少一枚：SOURCE_UI 记的是聚合的六路（后端 DEFAULT_SOURCES），而
+   SEARCH_SOURCES 里的 "fgk" 是税务总局那条链路换源后落到的一层，不在六路之内。
+   以前这一处只认 SOURCE_UI 且写在行内，_source==='fgk' 的卡片整枚角标不渲染——
+   屏幕上出现一批不报出处的条目，而同一条卡片的日期栏却按 fgk 标成了「成文」，
+   等于一边承认这一路有身份、一边把身份藏起来。
+   退路取条目自带的 source_label（tax_fgk 给这一层写的是「税务总局法规库」），
+   这一串字由后端给出，页面不另起一名；配色沿用总局那一路，因为两者同域。 */
+function sourceBadge(item){
+  const s=(item&&item._source)||'';
+  const ui=SOURCE_UI[s];
+  if(ui)return `<span class="source-label ${ui.cls}">${ui.icon} ${ui.label}</span>`;
+  const lbl=(item&&item.source_label)||'';
+  return lbl?`<span class="source-label ${SOURCE_UI.chinatax.cls}">${esc(lbl)}</span>`:'';
+}
+
 document.addEventListener('DOMContentLoaded',()=>{
-  renderFooterSources();
+  renderFooterSources();renderHeroSubtitle();
   loadQuickTax();renderGuideStep('user_type');syncFilterControls();
   document.getElementById('searchInput').addEventListener('keydown',e=>{if(e.key==='Enter')doSearch();});
 });
+
+/* 页首那句副标题写的是"这个界面把结果从哪儿取来"，所以它必须跟着数据源词表走。
+   以前它手写"数据源自国家法规库 · 实时同步 · 现行有效"：六路里只有一路是 NPC 的
+   国家法规库，另外五路（总局、360、税屋、公众号、中国税网）都没被提到；而"现行
+   有效"是筛选栏在 NPC 那一侧的默认值，不是数据的属性——税务总局与法规库两路默认
+   是"全部"，聚合里也照常取回已修改、已废止的文本。写在副标题里就成了对整份结果
+   的一句断言，读者会以为屏上出现的每一条都现行有效。 */
+function renderHeroSubtitle(){
+  const el=document.getElementById('heroSubtitle');
+  if(!el)return;
+  el.textContent=`实时检索 ${Object.keys(SOURCE_UI).length} 路数据源：${AGG_SOURCE_HINT} · 时效与日期在筛选栏里收窄`;
+}
 
 /* 页脚那行"数据源"以前手写，只列了三个站点，而多源聚合实际发的是六路——
    少掉的那三路（360 搜索、税屋、中国税网）恰好是实务层与地方口径的补充，
@@ -584,20 +678,20 @@ function toggleFilters(){
    时效的现行文件一起筛掉，所以那两源默认退回「全部」。 */
 const AGING_S5=['全文有效','已修改','全文失效','全文废止','尚未生效'];
 const AGING_FROM_NPC={'3':'全文有效','2':'已修改','1':'全文废止','4':'尚未生效'};
-function statusSpaceIsS5(){
-  const s=document.getElementById('filterSource').value;
-  return s==='chinatax'||s==='fgk';
-}
+function currentSource(){return document.getElementById('filterSource').value;}
+function statusSpaceIsS5(){const s=currentSource();return s==='chinatax'||s==='fgk';}
 function syncFilterControls(){
   const st=document.getElementById('filterStatus');
-  const s5=statusSpaceIsS5();
+  const s5=statusSpaceIsS5(),sv=currentSource();
   const want=st.value;                       // 换栏前用户选中的值
   const opts=s5?[['','全部'],...AGING_S5.map(v=>[v,v])]:[['3','现行有效'],['','全部']];
   st.innerHTML=opts.map(o=>`<option value="${o[0]}">${o[1]}</option>`).join('');
   // 换数据源后旧值多半不在新值域里，退回该源的默认而不是留个空白选项
   st.value=([...st.options].some(o=>o.value===want)?want:(s5?'':'3'));
   st.title=s5?'按法规库录入的时效收窄；默认「全部」，因为多数条目该栏为空'
-             :'按 NPC 库的时效码收窄，默认「现行有效」';
+             :(sv==='aggregated'
+               ?'按 NPC 库的时效码收窄。聚合里这一栏只约束走 NPC 的那一路，其余各路没有这个参数、按各自默认范围取回，逐条看卡面上的时效标记'
+               :'按 NPC 库的时效码收窄，默认「现行有效」');
 }
 /* 按 NPC 的时效码设置那一栏，落到哪个值域看当前数据源。向导（step 4「只看现行有效」）
    与主搜索栏共用这一个入口，免得当源是 search5 时把「3」写进一个不含该选项的
@@ -608,16 +702,237 @@ function setNpcStatus(code){
 }
 
 /* ═══════════ QUICK TAX ═══════════ */
+/* 税种／专题这一栏整份来自 /api/quick-tax-types，而那个接口是把 tax_search 的
+   归类词表原样列出来——界面前些字手写过一份"常用税种"清单，词表里有 33 项、
+   页面上只有 12 项，点不到的那些在命令行和自动换源里都走得通，看页面的人却
+   会以为引擎只认这 12 个。
+   默认只铺前 QUICK_TAX_SHOWN 项（词表按流转税、所得税排在前面），其余收起来：
+   三十几枚按钮一起铺开会把搜索框顶出首屏。 */
+const QUICK_TAX_SHOWN = 12;
+let QUICK_TYPES = [];
+let quickTaxOpen = false;
 async function loadQuickTax(){
-  try{const types=await fetchWithRetry('/api/quick-tax-types');
-  document.getElementById('quickTax').innerHTML=types.map(t=>
-    `<button onclick="pickTax('${t.keyword}')">${t.label}</button>`
-  ).join('');
+  try{
+    QUICK_TYPES = await fetchWithRetry('/api/quick-tax-types');
   }catch(e){
-    document.getElementById('quickTax').innerHTML='<span style="font-size:12px;color:var(--g400)">加载中…</span>';
+    QUICK_TYPES = [];
+  }
+  renderQuickTax();
+  // 引导面板第二步用的就是这一份清单：取回来时若正停在第二步，重渲一次，
+  // 不然那里会一直挂着"还在取"的占位。
+  if(guideState.step==='tax_type')renderGuideStep('tax_type');
+}
+function renderQuickTax(){
+  const box=document.getElementById('quickTax');
+  if(!box)return;
+  box.innerHTML='';
+  // 按钮用 DOM 建、标签走 textContent：检索词是从后端来的字符串，不拼进 onclick
+  // 字符串字面量就少一处要防的引号截断。
+  if(!QUICK_TYPES.length){
+    const s=document.createElement('span');
+    s.style.cssText='font-size:12px;color:var(--g400)';
+    s.textContent='税种清单未取到，请刷新重试';
+    box.appendChild(s);return;
+  }
+  (quickTaxOpen?QUICK_TYPES:QUICK_TYPES.slice(0,QUICK_TAX_SHOWN)).forEach(t=>{
+    const b=document.createElement('button');
+    b.textContent=t.label;
+    b.onclick=()=>pickTax(t.keyword);
+    box.appendChild(b);
+  });
+  if(QUICK_TYPES.length>QUICK_TAX_SHOWN){
+    const m=document.createElement('button');
+    m.className='quick-more';
+    m.textContent=quickTaxOpen?'收起':`展开其余 ${QUICK_TYPES.length-QUICK_TAX_SHOWN} 项`;
+    m.onclick=()=>{quickTaxOpen=!quickTaxOpen;renderQuickTax();};
+    box.appendChild(m);
   }
 }
 function pickTax(kw){document.getElementById('searchInput').value=kw;document.getElementById('searchInput').focus();}
+
+/* ═══════════ CALC ═══════════ */
+/* 「算式展开」是 tax_calc.py 在界面上的入口。引擎本身一直在命令行里跑，页面上没有
+   地方进，看页面的人就不知道第⑥步那条算式能把自己检回来的数带进去复算一遍。
+   这一栏里不出现任何税率、扣除标准或档界：骨架名、参数名、参数形态、税率表的列名、
+   结果名，全部取自 /api/calc（后端整份由 tax_calc.SKELETONS 渲出），数值由填表的人
+   从检回的文件里抄，来源一并填进去。引擎回的就是「算式—代入—结果」三列，页面照抄，
+   不自己算、不自己四舍五入。 */
+let CALC={sk:[],picked:-1,tables:{},note:''};
+
+function toggleCalc(){
+  const p=document.getElementById('calcPanel');
+  const opening=!p.classList.contains('open');
+  // 两块面板都是靠右滑出的同一位置，同时打开会让后开的盖住先开的却看不见标题，
+  // 所以互斥：开一块就把另一块收掉。
+  if(opening){
+    document.getElementById('guidancePanel').classList.remove('open');
+    if(!CALC.sk.length){loadCalcSkeletons();}else{renderCalc();}
+  }
+  p.classList.toggle('open');
+}
+
+async function loadCalcSkeletons(){
+  const body=document.getElementById('calcBody');
+  body.innerHTML='<div class="calc-note">骨架清单加载中…</div>';
+  let resp;
+  try{resp=await fetchWithRetry('/api/calc');}
+  catch(e){body.innerHTML=`<div class="co-err">${esc(e.message)}</div>`;return;}
+  CALC.sk=(resp&&resp['骨架'])||[];
+  CALC.note=(resp&&resp['限制'])||'';
+  if(!CALC.sk.length){body.innerHTML='<div class="co-err">骨架清单为空，接口未返回任何骨架</div>';return;}
+  CALC.picked=0;
+  renderCalc();
+}
+
+function calcSpec(){return CALC.sk[CALC.picked]||null;}
+
+function renderCalc(){
+  const sk=calcSpec();
+  if(!sk)return;
+  document.getElementById('calcBody').innerHTML=
+    `<div class="step"><label class="calc-label">骨架</label>
+      <select id="calcSkeleton" onchange="calcPick(this.value)">
+        ${CALC.sk.map((s,i)=>`<option value="${i}"${i===CALC.picked?' selected':''}>${esc(s['名称'])}</option>`).join('')}
+      </select>
+      <div class="calc-formula" id="calcFormula"></div>
+      <div id="calcParams"></div></div>
+     <div class="calc-out" id="calcOut"></div>`;
+  document.getElementById('calcFooter').innerHTML='<button onclick="submitCalc()">展开算式</button>';
+  calcInitParams();
+}
+
+function calcPick(v){CALC.picked=Number(v)||0;calcInitParams();document.getElementById('calcOut').innerHTML='';}
+
+function calcInitParams(){
+  const sk=calcSpec();
+  if(!sk)return;
+  document.getElementById('calcFormula').textContent=sk['公式'];
+  CALC.tables={};
+  sk['参数'].forEach((p,i)=>{if(p['形态']==='税率表')CALC.tables[i]=[{}];});
+  document.getElementById('calcParams').innerHTML=sk['参数'].map((p,i)=>{
+    if(p['形态']==='税率表'){
+      return `<label class="calc-label">${esc(p['名称'])}（一行一档；最后一档的「${esc(p['列'][0])}」留空，表示不封顶）</label>
+        <table class="calc-table" id="calcTbl_${i}"><thead><tr>
+          ${p['列'].map(c=>`<th>${esc(c)}</th>`).join('')}<th></th></tr></thead>
+          <tbody id="calcTbody_${i}"></tbody></table>
+        <button type="button" class="calc-add" onclick="calcAddRow(${i})">加一档</button>
+        <input class="calc-src" id="calcSrc_${i}" placeholder="这张表的来源（文号或链接）">`;
+    }
+    return `<label class="calc-label">${esc(p['名称'])}</label>
+      <input id="calcVal_${i}" inputmode="decimal" placeholder="数值">
+      <input class="calc-src" id="calcSrc_${i}" placeholder="这个数的来源（文号或链接）">`;
+  }).join('');
+  Object.keys(CALC.tables).forEach(i=>calcRepaintTable(Number(i)));
+}
+
+/* 单元格里的值一律用 DOM 属性读写，不拼进 value="…"：esc() 走的是
+   textContent→innerHTML，它转义 & < > 却不转义双引号，而这一栏里的文本会
+   回到页面上（重排表格时要把已填的值带回去）。 */
+function calcRepaintTable(i){
+  const spec=calcSpec()['参数'][i],rows=CALC.tables[i]||[];
+  const tb=document.getElementById('calcTbody_'+i);
+  tb.innerHTML=rows.map((r,ri)=>
+    `<tr>${spec['列'].map((c,ci)=>'<td><input inputmode="decimal" data-col="'+ci+'"></td>').join('')}
+     <td class="calc-del">${rows.length>1?`<button type="button" class="calc-add" onclick="calcDelRow(${i},${ri})">删</button>`:''}</td></tr>`).join('');
+  [...tb.querySelectorAll('tr')].forEach((tr,ri)=>{
+    spec['列'].forEach((c,ci)=>{tr.querySelector('input[data-col="'+ci+'"]').value=CALC.tables[i][ri][c]||'';});
+  });
+}
+
+function calcGrabTable(i){
+  const spec=calcSpec()['参数'][i];
+  const out=[];
+  document.querySelectorAll('#calcTbl_'+i+' tbody tr').forEach(tr=>{
+    const o={};
+    spec['列'].forEach((c,ci)=>{const el=tr.querySelector('input[data-col="'+ci+'"]');o[c]=el?el.value:'';});
+    out.push(o);
+  });
+  return out;
+}
+
+function calcAddRow(i){CALC.tables[i]=calcGrabTable(i);CALC.tables[i].push({});calcRepaintTable(i);}
+function calcDelRow(i,ri){CALC.tables[i]=calcGrabTable(i);CALC.tables[i].splice(ri,1);if(!CALC.tables[i].length)CALC.tables[i].push({});calcRepaintTable(i);}
+
+/* 留空的格子整枚键不发送，页面不替它补 0、也不替它写 null：
+   「上限」缺失时 _progressive 的 row.get("上限") 取回 None，正是"这一档不封顶"；
+   「速算扣除数」缺失时 row.get(ded_key, 0) 取回 0，正是第一档那种不扣的档；
+   「税率」缺失则由引擎报「税率表少给一列：税率」，回 400 并点名哪一枚。
+   数值栏留空同样不发送，让引擎的 Missing 名单去指哪几个框没填。 */
+function calcPayload(){
+  const sk=calcSpec(),params={};
+  sk['参数'].forEach((p,i)=>{
+    let raw;
+    if(p['形态']==='税率表'){
+      const rows=calcGrabTable(i).map(r=>{
+        const o={};Object.keys(r).forEach(c=>{const v=String(r[c]||'').trim();if(v)o[c]=v;});
+        return o;
+      }).filter(r=>Object.keys(r).length);          // 整行全空：当作没这一档
+      if(!rows.length)return;                       // 一档都没填：交给引擎报缺参数
+      raw=rows;
+    }else{
+      const v=(document.getElementById('calcVal_'+i)?.value||'').trim();
+      if(!v)return;
+      raw=v;
+    }
+    params[p['名称']]={'值':raw,'来源':(document.getElementById('calcSrc_'+i)?.value||'').trim()};
+  });
+  return {'骨架':sk['名称'],'参数':params};
+}
+
+async function submitCalc(){
+  const out=document.getElementById('calcOut');
+  if(!out)return;
+  document.querySelectorAll('.calc-missing').forEach(el=>el.classList.remove('calc-missing'));
+  out.innerHTML='<div class="calc-note">展开中…</div>';
+  let res,body;
+  try{
+    res=await fetch('/api/calc',{method:'POST',headers:{'Content-Type':'application/json'},
+                                body:JSON.stringify(calcPayload())});
+    body=await res.json();
+  }catch(e){out.innerHTML=`<div class="co-err">${esc(e.message)}</div>`;return;}
+  if(!res.ok){
+    const lack=body['缺的参数']||[];
+    (calcSpec()['参数']||[]).forEach((p,i)=>{
+      if(!lack.includes(p['名称']))return;
+      const el=document.getElementById(p['形态']==='税率表'?('calcTbl_'+i):('calcVal_'+i));
+      if(el)el.classList.add('calc-missing');
+    });
+    out.innerHTML=`<div class="co-err">${esc(body.error||('请求失败：HTTP '+res.status))}</div>`;
+    return;
+  }
+  renderCalcResult(body);
+}
+
+function calcNum(v){
+  if(v===null||v===undefined||v==='')return '—';
+  if(typeof v==='object')return JSON.stringify(v);
+  return String(v);
+}
+
+function renderCalcResult(r){
+  const out=document.getElementById('calcOut');
+  const res=r['结果']||{};
+  let h='<div class="co-result">'+Object.keys(res).map(k=>
+    `<span>${esc(k)} = <b>${esc(calcNum(res[k]))}</b></span>`).join('')+'</div>';
+  h+='<table class="calc-steps"><tr><th>步骤</th><th>算式</th><th>代入</th><th>结果</th></tr>';
+  (r['步骤']||[]).forEach((s,i)=>{
+    h+=`<tr><td>${i+1}. ${esc(s['名称'])}</td><td>${esc(s['算式'])}</td>`+
+       `<td>${esc(s['代入'])}</td><td><b>${esc(calcNum(s['结果']))}</b></td></tr>`;
+    const t=s['分档'];
+    if(t&&t['逐档']){
+      h+=`<tr><td colspan="4">适用第 ${esc(calcNum(t['适用档']))} 档，速算式 ${esc(calcNum(t['速算式']))}<br>`+
+         '<table class="calc-tiers">'+t['逐档'].map(d=>'<tr>'+Object.keys(d).map(k=>
+           `<td>${esc(k)} ${esc(calcNum(d[k]))}</td>`).join('')+'</tr>').join('')+'</table></td></tr>';
+    }
+  });
+  h+='</table>';
+  const noSrc=r['无来源参数']||[];
+  if(noSrc.length){
+    h+=`<div class="calc-warn">这些参数没填来源：${esc(noSrc.join('、'))}。数值要对着检回的文件核，页面不替你判断它出自哪份文件。</div>`;
+  }
+  h+=`<div class="calc-note">${esc(r['限制']||CALC.note)}</div>`;
+  out.innerHTML=h;
+}
 
 /* ═══════════ PROVINCES ═══════════ */
 // 省份清单只有这一处：多处各存一份就会改一处漏一处，两份清单迟早对不上。
@@ -802,8 +1117,8 @@ items.forEach((item,i)=>{
     const idRow=sid?`<div class="id-row">NPC ID: ${sid}</div>`
       :`<div class="id-row">${safeUrl?`🔗 原文：<a href="${esc(safeUrl)}" target="_blank" rel="noopener">${esc((safeUrl.match(/https?:\/\/(?:www\.)?([^/]+)/)||[,'非本库链接'])[1])}</a> · 非 NPC 库条目，点开无弹窗`:'非 NPC 库条目，点开无弹窗'}</div>`;
     h+=`${openTag}
-      <div class="title"><span style="font-size:11px;color:var(--g400);margin-right:6px">#${i+1}</span> ${item._source&&SOURCE_UI[item._source]?`<span class="source-label ${SOURCE_UI[item._source].cls}">${SOURCE_UI[item._source].icon} ${SOURCE_UI[item._source].label}</span>`:''}${st}</div>
-      <div class="meta"><span>${statusBadge(item)}</span>${item.document_number?`<span>文号:${esc(item.document_number)}</span>`:''}${item.effect_level?`<span>效力级别:${esc(item.effect_level)}</span>`:''}${(item.publish_date||item.date)?`<span>📅 公布:${esc(item.publish_date||item.date)}</span>`:''}${item.effective_date?`<span>施行:${esc(item.effective_date)}</span>`:''}${item.issuing_authority?`<span>🏛️ ${esc(item.issuing_authority)}</span>`:''}</div>
+      <div class="title"><span style="font-size:11px;color:var(--g400);margin-right:6px">#${i+1}</span> ${sourceBadge(item)}${st}</div>
+      <div class="meta"><span>${statusBadge(item)}</span>${item.document_number?`<span>文号:${esc(item.document_number)}</span>`:''}${item.effect_level?`<span>效力级别:${esc(item.effect_level)}</span>`:''}${(item.publish_date||item.date)?`<span>📅 ${dateFieldLabel(item)}:${esc(item.publish_date||item.date)}</span>`:''}${item.effective_date?`<span>施行:${esc(item.effective_date)}</span>`:''}${item.issuing_authority?`<span>🏛️ ${esc(item.issuing_authority)}</span>`:''}</div>
       ${item._reliability?`<div class="rel-note">提醒：${esc(item._reliability_note||`来源把这一条标为 ${item._reliability} 档存疑，未写明存疑在哪一处——引用前先核对这条到底有没有规定本题这件事`)}</div>`:''}
       ${idRow}</div>`;
   });
@@ -1004,7 +1319,12 @@ async function generateAiInterpret(){
 function closeModal(){document.getElementById('modalOverlay').style.display='none';}
 
 /* ═══════════ GUIDANCE PANEL ═══════════ */
-function toggleGuidance(){document.getElementById('guidancePanel').classList.toggle('open');}
+function toggleGuidance(){
+  const p=document.getElementById('guidancePanel');
+  // 与「算式展开」互斥，理由见 toggleCalc
+  if(!p.classList.contains('open'))document.getElementById('calcPanel').classList.remove('open');
+  p.classList.toggle('open');
+}
 
 function guidePick(field,value){
   guideState[field]=(guideState[field]===value)?null:value;renderGuideStep(guideState.step);
@@ -1014,12 +1334,17 @@ function guidePick(field,value){
 function renderGuideStep(step){
   guideState.step=step;const body=document.getElementById('guideBody'),foot=document.getElementById('guideFooter');
   if(step==='user_type'){body.innerHTML=`<div class="step"><div class="step-label">Step 1/4</div><div class="step-question">你的身份是？</div><div class="choice-grid"><div class="choice${guideState.user_type==='enterprise'?' picked':''}" onclick="guidePick('user_type','enterprise')"><span class="ci">🏢</span>企业</div><div class="choice${guideState.user_type==='individual'?' picked':''}" onclick="guidePick('user_type','individual')"><span class="ci">👤</span>个人 / 个体户</div><div class="choice${guideState.user_type==='agent'?' picked':''}" onclick="guidePick('user_type','agent')"><span class="ci">📋</span>代理记账 / 税务师</div><div class="choice${guideState.user_type==='other'?' picked':''}" onclick="guidePick('user_type','other')"><span class="ci">💬</span>其他</div></div></div>`;foot.innerHTML='<button disabled>点击选项自动进入下一步</button>';}
-  else if(step==='tax_type'){const idLabels={enterprise:'企业',individual:'个人/个体户',agent:'代理记账/税务师',other:''};const idLabel=idLabels[guideState.user_type]||'';let ch=[{v:'vat',icon:'📊',label:'增值税',desc:'流转税核心'},{v:'cit',icon:'🏢',label:'企业所得税',desc:'利润征税'},{v:'iit',icon:'👤',label:'个人所得税',desc:'工资/劳务/经营'},{v:'invoice',icon:'🧾',label:'发票管理',desc:'开票/抵扣/红冲'},{v:'prefer',icon:'🎁',label:'税收优惠',desc:'减免/退税'},{v:'stamp',icon:'📝',label:'印花税',desc:'合同/账簿'},{v:'deed',icon:'🔑',label:'契税',desc:'不动产登记'},{v:'property',icon:'🏠',label:'房产税',desc:'房屋租赁'},{v:'consumption',icon:'🛒',label:'消费税',desc:'特定消费品'},{v:'tariff',icon:'🚢',label:'关税',desc:'进出口'},{v:'land_vat',icon:'🏗️',label:'土地增值税',desc:'房地产'},{v:'admin',icon:'⚖️',label:'税收征管',desc:'登记/申报/稽查'}];body.innerHTML=`<div class="step"><div class="step-label">Step 2/4 ${idLabel?'· '+idLabel:''}</div><div class="step-question">你想了解哪个税种？</div><div class="choice-grid">${ch.map(c=>`<div class="choice${guideState.tax_type===c.v?' picked':''}" onclick="guidePick('tax_type','${c.v}')"><span class="ci">${c.icon}</span>${c.label}<span class="cl">${c.desc}</span></div>`).join('')}</div></div>`;foot.innerHTML=`<button onclick="renderGuideStep('intent')">跳过手动选择 →</button>${guideState.user_type?`<button class="reset" onclick="renderGuideStep('user_type')">← 返回修改</button>`:''}`;}
-  else if(step==='intent'){const tl={vat:'增值税',cit:'企业所得税',iit:'个人所得税',invoice:'发票管理',prefer:'税收优惠',stamp:'印花税',deed:'契税',property:'房产税',consumption:'消费税',tariff:'关税',land_vat:'土地增值税',admin:'税收征管'};const tLabel=tl[guideState.tax_type]||guideState.tax_type||'';body.innerHTML=`<div class="step"><div class="step-label">Step 3/4${tLabel?' · '+tLabel:''}</div><div class="step-question">你想了解什么？</div><div class="choice-grid"><div class="choice${guideState.intent==='policy'?' picked':''}" onclick="guidePick('intent','policy')"><span class="ci">📖</span>查政策 / 税率<span class="cl">具体规定、税率标准</span></div><div class="choice${guideState.intent==='preference'?' picked':''}" onclick="guidePick('intent','preference')"><span class="ci">🎁</span>优惠资格<span class="cl">能否享受减免/退税</span></div><div class="choice${guideState.intent==='risk'?' picked':''}" onclick="guidePick('intent','risk')"><span class="ci">⚠️</span>风险自查<span class="cl">金税四期/合规</span></div><div class="choice${guideState.intent==='filing'?' picked':''}" onclick="guidePick('intent','filing')"><span class="ci">📋</span>申报流程<span class="cl">怎么申报/截止日期</span></div><div class="choice${guideState.intent==='invoice'?' picked':''}" onclick="guidePick('intent','invoice')"><span class="ci">🧾</span>发票问题<span class="cl">开票/遗失/红冲</span></div><div class="choice${guideState.intent==='calc'?' picked':''}" onclick="guidePick('intent','calc')"><span class="ci">🔢</span>计算/标准<span class="cl">起征点/扣除标准</span></div></div></div>`;foot.innerHTML=`<button onclick="renderGuideStep('conditions')">跳过手动选择 →</button><button class="reset" onclick="renderGuideStep('tax_type')">← 返回修改</button>`;}
-  else{const tl={vat:'增值税',cit:'企业所得税',iit:'个人所得税',invoice:'发票管理',prefer:'税收优惠'};const il={policy:'查政策',preference:'优惠资格',risk:'风险自查',filing:'申报流程',invoice:'发票问题',calc:'计算标准'};const tLabel=tl[guideState.tax_type]||guideState.tax_type||'';const iLabel=il[guideState.intent]||guideState.intent||'';body.innerHTML=`<div class="step"><div class="step-label">Step 4/4${tLabel?' · '+tLabel:''}${iLabel?' · '+iLabel:''}</div><div class="step-question">补充条件（可选，可多选）</div><div class="choice-grid"><div class="choice${guideState.enterprise_type==='small'?' picked':''}" onclick="guidePick('enterprise_type','small')"><span class="ci">🏪</span>小规模纳税人<span class="cl">年应税≤500万</span></div><div class="choice${guideState.enterprise_type==='general'?' picked':''}" onclick="guidePick('enterprise_type','general')"><span class="ci">🏭</span>一般纳税人</div><div class="choice${guideState.enterprise_type==='micro'?' picked':''}" onclick="guidePick('enterprise_type','micro')"><span class="ci">🌱</span>小微企业<span class="cl">利润≤300万</span></div><div class="choice${guideState.enterprise_type==='hitech'?' picked':''}" onclick="guidePick('enterprise_type','hitech')"><span class="ci">🔬</span>高新技术企业</div><div class="choice${guideState.timeframe==='latest'?' picked':''}" onclick="guidePick('timeframe','latest')"><span class="ci">🆕</span>只看最新政策</div><div class="choice${guideState.timeframe==='2024'?' picked':''}" onclick="guidePick('timeframe','2024')"><span class="ci">📅</span>2024年以来的</div><div class="choice${guideState.scope==='national'?' picked':''}" onclick="guidePick('scope','national')"><span class="ci">✅</span>只看现行有效<span class="cl">默认</span></div><div class="choice${guideState.scope==='all_status'?' picked':''}" onclick="guidePick('scope','all_status')"><span class="ci">🗂</span>含已修改·已废止</div></div><div style="margin-top:14px"><div style="font-size:12px;color:var(--g500);margin-bottom:4px">或直接输入关键词：</div><input type="text" id="customKeyword" style="width:100%;padding:8px 12px;border:1px solid var(--g200);font-size:13px;background:var(--white);color:var(--black)" placeholder="例如：研发费用加计扣除、留抵退税…"></div></div>`;foot.innerHTML=`<button onclick="executeGuidedSearch()">🔍 生成搜索 →</button><button class="reset" onclick="renderGuideStep('intent')">← 返回修改</button>`;}
+  else if(step==='tax_type'){const idLabels={enterprise:'企业',individual:'个人/个体户',agent:'代理记账/税务师',other:''};const idLabel=idLabels[guideState.user_type]||'';body.innerHTML=`<div class="step"><div class="step-label">Step 2/4${idLabel?' · '+idLabel:''}</div><div class="step-question">你想了解哪个税种或专题？</div><div class="choice-grid">${QUICK_TYPES.length?QUICK_TYPES.map((t,i)=>`<div class="choice${guideState.tax_type===t.keyword?' picked':''}" onclick="guidePickTaxType(${i})">${esc(t.label)}</div>`).join(''):'<div style="font-size:12px;color:var(--g400)">税种清单还在取，可先跳过这一步到第四步直接填关键词</div>'}</div></div>`;foot.innerHTML=`<button onclick="renderGuideStep('intent')">跳过手动选择 →</button>${guideState.user_type?`<button class="reset" onclick="renderGuideStep('user_type')">← 返回修改</button>`:''}`;}
+  else if(step==='intent'){const tLabel=guideState.tax_type||'';body.innerHTML=`<div class="step"><div class="step-label">Step 3/4${tLabel?' · '+tLabel:''}</div><div class="step-question">你想了解什么？</div><div class="choice-grid"><div class="choice${guideState.intent==='policy'?' picked':''}" onclick="guidePick('intent','policy')"><span class="ci">📖</span>查政策 / 税率<span class="cl">具体规定、税率标准</span></div><div class="choice${guideState.intent==='preference'?' picked':''}" onclick="guidePick('intent','preference')"><span class="ci">🎁</span>优惠资格<span class="cl">能否享受减免/退税</span></div><div class="choice${guideState.intent==='risk'?' picked':''}" onclick="guidePick('intent','risk')"><span class="ci">⚠️</span>风险自查<span class="cl">金税四期/合规</span></div><div class="choice${guideState.intent==='filing'?' picked':''}" onclick="guidePick('intent','filing')"><span class="ci">📋</span>申报流程<span class="cl">怎么申报/截止日期</span></div><div class="choice${guideState.intent==='invoice'?' picked':''}" onclick="guidePick('intent','invoice')"><span class="ci">🧾</span>发票问题<span class="cl">开票/遗失/红冲</span></div><div class="choice${guideState.intent==='calc'?' picked':''}" onclick="guidePick('intent','calc')"><span class="ci">🔢</span>计算/标准<span class="cl">起征点/扣除标准</span></div></div></div>`;foot.innerHTML=`<button onclick="renderGuideStep('conditions')">跳过手动选择 →</button><button class="reset" onclick="renderGuideStep('tax_type')">← 返回修改</button>`;}
+  else{const il={policy:'查政策',preference:'优惠资格',risk:'风险自查',filing:'申报流程',invoice:'发票问题',calc:'计算标准'};const tLabel=guideState.tax_type||'';const iLabel=il[guideState.intent]||guideState.intent||'';body.innerHTML=`<div class="step"><div class="step-label">Step 4/4${tLabel?' · '+tLabel:''}${iLabel?' · '+iLabel:''}</div><div class="step-question">补充条件（可选，可多选）</div><div class="choice-grid"><div class="choice${guideState.enterprise_type==='small'?' picked':''}" onclick="guidePick('enterprise_type','small')"><span class="ci">🏪</span>小规模纳税人</div><div class="choice${guideState.enterprise_type==='general'?' picked':''}" onclick="guidePick('enterprise_type','general')"><span class="ci">🏭</span>一般纳税人</div><div class="choice${guideState.enterprise_type==='micro'?' picked':''}" onclick="guidePick('enterprise_type','micro')"><span class="ci">🌱</span>小微企业</div><div class="choice${guideState.enterprise_type==='hitech'?' picked':''}" onclick="guidePick('enterprise_type','hitech')"><span class="ci">🔬</span>高新技术企业</div><div class="choice${guideState.timeframe==='latest'?' picked':''}" onclick="guidePick('timeframe','latest')"><span class="ci">🆕</span>只看最新政策</div><div class="choice${guideState.timeframe==='2024'?' picked':''}" onclick="guidePick('timeframe','2024')"><span class="ci">📅</span>2024年以来的</div><div class="choice${guideState.scope==='national'?' picked':''}" onclick="guidePick('scope','national')"><span class="ci">✅</span>只看现行有效<span class="cl">默认</span></div><div class="choice${guideState.scope==='all_status'?' picked':''}" onclick="guidePick('scope','all_status')"><span class="ci">🗂</span>含已修改·已废止</div></div><div style="margin-top:14px"><div style="font-size:12px;color:var(--g500);margin-bottom:4px">或直接输入关键词：</div><input type="text" id="customKeyword" style="width:100%;padding:8px 12px;border:1px solid var(--g200);font-size:13px;background:var(--white);color:var(--black)" placeholder="例如：研发费用加计扣除、留抵退税…"></div></div>`;foot.innerHTML=`<button onclick="executeGuidedSearch()">🔍 生成搜索 →</button><button class="reset" onclick="renderGuideStep('intent')">← 返回修改</button>`;}
 }
 
-function executeGuidedSearch(){const taxMap={vat:'增值税',cit:'企业所得税',iit:'个人所得税',invoice:'发票管理办法',prefer:'税收优惠',stamp:'印花税',deed:'契税',property:'房产税',consumption:'消费税',tariff:'关税',land_vat:'土地增值税',admin:'税收征收管理法'};const intentMap={policy:'',preference:'优惠',risk:'风险 合规',filing:'申报',invoice:'发票',calc:'标准 扣除'};const entMap={small:'小规模纳税人',general:'一般纳税人',micro:'小微企业',hitech:'高新技术企业'};let parts=[];const taxK=guideState.tax_type?taxMap[guideState.tax_type]||guideState.tax_type:'';if(taxK)parts.push(taxK);if(guideState.intent&&intentMap[guideState.intent])parts.push(intentMap[guideState.intent]);if(guideState.enterprise_type&&entMap[guideState.enterprise_type])parts.push(entMap[guideState.enterprise_type]);const custom=document.getElementById('customKeyword')?.value?.trim();if(custom)parts.push(custom);document.getElementById('searchInput').value=parts.join(' ')||'增值税';if(guideState.timeframe==='latest')document.getElementById('filterSort').value='date';if(guideState.timeframe==='2024')document.getElementById('filterDateFrom').value='2024-01-01';setNpcStatus(guideState.scope==='national'?'3':'');toggleGuidance();doSearch();}
+/* 第二步存的是后端清单里的检索词本身（增值税／税收优惠／全球最低税……），
+   不再是界面自造的代号。这样第三步的标题、第四步拼出来的检索词和首页那一栏
+   点下去发出去的词是同一个值，界面里也就不用再存一份代号→中文的对照表。 */
+function guidePickTaxType(i){const t=QUICK_TYPES[i];if(t)guidePick('tax_type',t.keyword);}
+
+function executeGuidedSearch(){const intentMap={policy:'',preference:'优惠',risk:'风险 合规',filing:'申报',invoice:'发票',calc:'标准 扣除'};const entMap={small:'小规模纳税人',general:'一般纳税人',micro:'小微企业',hitech:'高新技术企业'};let parts=[];if(guideState.tax_type)parts.push(guideState.tax_type);if(guideState.intent&&intentMap[guideState.intent])parts.push(intentMap[guideState.intent]);if(guideState.enterprise_type&&entMap[guideState.enterprise_type])parts.push(entMap[guideState.enterprise_type]);const custom=document.getElementById('customKeyword')?.value?.trim();if(custom)parts.push(custom);document.getElementById('searchInput').value=parts.join(' ')||'增值税';if(guideState.timeframe==='latest')document.getElementById('filterSort').value='date';if(guideState.timeframe==='2024')document.getElementById('filterDateFrom').value='2024-01-01';setNpcStatus(guideState.scope==='national'?'3':'');toggleGuidance();doSearch();}
 
 function esc(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
 </script>
