@@ -473,6 +473,53 @@ table.calc-tiers td{padding:2px 6px}
 .calc-warn{font-size:11px;color:var(--g500);line-height:1.6;margin-top:10px}
 .calc-note{font-size:12px;color:var(--g600);line-height:1.7}
 
+/* ── Workbench Panel ── 分析主线、类案、检查工具与输出模板共用一个右侧面板。
+   外壳沿用 .guidance-panel；这里只加标签页、表单与结果区。比前两块宽，
+   因为取证结果与模板正文是整段文本，420px 里读不全。 */
+.wb-panel{width:min(620px,100vw)}
+.wb-tabs{display:flex;gap:2px;border-bottom:1px solid var(--g200);margin-bottom:14px}
+.wb-tabs button{
+  flex:1;padding:8px 4px;background:none;border:none;border-bottom:2px solid transparent;
+  font-size:12px;color:var(--g500);cursor:pointer;font-family:inherit;
+}
+.wb-tabs button.on{border-bottom-color:var(--black);color:var(--black);font-weight:600}
+.wb-pane{display:none}
+.wb-pane.on{display:block}
+.wb-hint{font-size:11px;line-height:1.65;color:var(--g400);margin-bottom:10px}
+.wb-label{display:block;font-size:12px;color:var(--g500);margin:10px 0 4px}
+.wb-panel textarea,.wb-panel input[type=text],.wb-panel input[type=number],.wb-panel input[type=date],.wb-panel select{
+  width:100%;padding:6px 8px;border:1px solid var(--g200);border-radius:2px;
+  font-size:13px;background:var(--white);color:var(--black);font-family:inherit;outline:none;
+}
+.wb-panel textarea{resize:vertical;line-height:1.55}
+.wb-panel textarea:focus,.wb-panel input:focus,.wb-panel select:focus{border-color:var(--black)}
+.wb-row{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
+.wb-btn{
+  padding:6px 11px;border:1px solid var(--g200);background:var(--white);color:var(--g700);
+  font-size:12px;cursor:pointer;font-family:inherit;
+}
+.wb-btn:hover{border-color:var(--black);color:var(--black)}
+.wb-btn.primary{background:var(--black);border-color:var(--black);color:#fff}
+.wb-btn.primary:hover{background:var(--g800)}
+.wb-btn:disabled{opacity:.4;cursor:not-allowed}
+.wb-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.wb-check{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--g500);margin:5px 0}
+.wb-check input{accent-color:var(--black)}
+.wb-out{margin-top:14px;border-top:1px solid var(--g200);padding-top:12px;font-size:12px;line-height:1.65;color:var(--g700);word-break:break-word}
+.wb-out h4{font-size:12.5px;margin:10px 0 4px;color:var(--black)}
+.wb-out ul{margin:4px 0 8px 18px}
+.wb-out li{margin-bottom:3px}
+.wb-out .wb-k{color:var(--g400)}
+.wb-out .wb-err{color:var(--accent);word-break:break-all}
+.wb-out pre{background:var(--g50);padding:8px;font-size:11px;line-height:1.5;overflow:auto;max-height:320px;white-space:pre-wrap;word-break:break-all;font-family:Consolas,monospace}
+.wb-out table{width:100%;border-collapse:collapse;font-size:11.5px;margin:4px 0 10px}
+.wb-out th{text-align:left;font-weight:500;color:var(--g400);border-bottom:1px solid var(--g200);padding:3px 4px}
+.wb-out td{padding:3px 4px;border-bottom:1px solid var(--g50);vertical-align:top}
+.wb-out a{color:var(--g600)}
+.wb-details{margin:8px 0}
+.wb-details summary{cursor:pointer;font-size:12px;color:var(--g500)}
+.wb-loading{font-size:12px;color:var(--g500)}
+
 /* ── Footer ── */
 .page-footer{
   text-align:center;
@@ -538,6 +585,7 @@ table.calc-tiers td{padding:2px 6px}
       <span onclick="toggleFilters()">高级筛选 ▾</span>
       <span onclick="toggleGuidance()">智能引导</span>
       <span onclick="toggleCalc()">算式展开</span>
+      <span onclick="toggleWorkbench()">分析工作台</span>
     </div>
   </div>
 </div>
@@ -583,6 +631,115 @@ table.calc-tiers td{padding:2px 6px}
   </div>
   <div class="gp-body calc-form" id="calcBody"></div>
   <div class="gp-footer" id="calcFooter"></div>
+</div>
+
+<!-- ═══ WORKBENCH PANEL ═══ -->
+<div class="guidance-panel wb-panel" id="workbenchPanel">
+  <div class="gp-header">
+    <h3>分析工作台</h3>
+    <button style="background:none;border:none;font-size:18px;cursor:pointer;color:var(--g500)" onclick="toggleWorkbench()">✕</button>
+  </div>
+  <div class="gp-body">
+    <div class="wb-tabs">
+      <button type="button" class="on" data-wb="analysis" onclick="wbTab('analysis')">分析主线</button>
+      <button type="button" data-wb="cases" onclick="wbTab('cases')">类案</button>
+      <button type="button" data-wb="law" onclick="wbTab('law')">法规</button>
+      <button type="button" data-wb="tools" onclick="wbTab('tools')">检查工具</button>
+      <button type="button" data-wb="templates" onclick="wbTab('templates')">输出模板</button>
+    </div>
+
+    <div class="wb-pane on" id="wbAnalysis">
+      <p class="wb-hint">① 判型、② 覆盖率与 ⑤ 计划不联网；⑤ 取证与 ⑥ 成稿底稿会发真实检索，慢的时候先看「每轮条数」。</p>
+      <label class="wb-label" for="wbQuestion">要分析的税务问题</label>
+      <textarea id="wbQuestion" rows="2" placeholder="例如：研发费用加计扣除比例是多少"></textarea>
+      <div class="wb-row">
+        <button type="button" class="wb-btn" onclick="wbClassify(this)">① 判型</button>
+        <button type="button" class="wb-btn" onclick="wbCoverage(this)">② 覆盖率</button>
+        <button type="button" class="wb-btn" onclick="wbPlan(this)">⑤ 计划</button>
+        <button type="button" class="wb-btn primary" onclick="wbGather(this)">⑤ 取证</button>
+        <button type="button" class="wb-btn primary" onclick="wbAnswer(this)">⑥ 成稿底稿</button>
+      </div>
+      <div class="wb-grid">
+        <label class="wb-label" for="wbAt">观测时点（可选）<input type="date" id="wbAt"></label>
+        <label class="wb-label" for="wbMax">每轮每源条数（1–200）<input type="number" id="wbMax" min="1" max="200" placeholder="引擎默认"></label>
+      </div>
+      <label class="wb-check"><input type="checkbox" id="wbReadBody" checked>取税屋正文（慢，关掉只拿标题与地址）</label>
+      <label class="wb-check"><input type="checkbox" id="wbCheckCit" checked>把实务材料援引的文号回官方库核对</label>
+      <details class="wb-details">
+        <summary>② 覆盖率的依据清单（JSON 数组；空着＝还没检，[]＝检了没有）</summary>
+        <textarea id="wbEvidence" rows="4" placeholder="空着表示还没检；[] 表示检了一圈没有这类材料"></textarea>
+        <div class="wb-row">
+          <button type="button" class="wb-btn" onclick="wbUseResults()">用上次检索结果</button>
+          <button type="button" class="wb-btn" onclick="document.getElementById('wbEvidence').value='';">清空</button>
+        </div>
+      </details>
+      <div class="wb-out" id="wbAnalysisOut"></div>
+    </div>
+
+    <div class="wb-pane" id="wbCases">
+      <p class="wb-hint">类案检索发真实请求。税屋那一路较慢，默认不开；筛选与排序由引擎判，改坏值会回 400 并说清取值域。</p>
+      <label class="wb-label" for="wbCaseTopic">主题</label>
+      <input type="text" id="wbCaseTopic" placeholder="例如：骗取出口退税">
+      <label class="wb-label" for="wbCaseElements">要素（逗号分隔，可空）</label>
+      <input type="text" id="wbCaseElements" placeholder="例如：虚构业务、买单配票">
+      <div class="wb-grid">
+        <label class="wb-label" for="wbCaseMode">模式
+          <select id="wbCaseMode"><option value="exhaustive">穷尽（全要素）</option><option value="recent">最近有没有查过</option></select>
+        </label>
+        <label class="wb-label" for="wbCaseOrder">排序
+          <select id="wbCaseOrder"><option value="relevance">相关度</option><option value="date_desc">日期↓</option><option value="category">栏目</option></select>
+        </label>
+        <label class="wb-label" for="wbCasePages">翻页轮数（1–20）<input type="number" id="wbCasePages" min="1" max="20" value="1"></label>
+        <label class="wb-label" for="wbCaseLimit">最多几条（1–100）<input type="number" id="wbCaseLimit" min="1" max="100" value="10"></label>
+      </div>
+      <label class="wb-check"><input type="checkbox" id="wbCaseShui5">加税屋那一路（经 360 site: 检索）</label>
+      <div class="wb-row"><button type="button" class="wb-btn primary" onclick="wbCases(this)">检索类案</button></div>
+      <div class="wb-out" id="wbCasesOut"></div>
+    </div>
+
+    <div class="wb-pane" id="wbLaw">
+      <p class="wb-hint">按法规 ID（NPC bbbs）取元数据、正文、官方解读与实务网页。四条入口都发真实请求；正文与相关网页较慢。实务网页是线索，不能替代官方原文。</p>
+      <label class="wb-label" for="wbLawId">法规 ID（bbbs 编号）</label>
+      <input type="text" id="wbLawId" placeholder="检索结果里 NPC 条目的链接末尾即是">
+      <label class="wb-label" for="wbLawKeyword">关键词（可选，给官方解读与相关网页补检索词）</label>
+      <input type="text" id="wbLawKeyword" placeholder="例如：研发费用">
+      <div class="wb-row">
+        <button type="button" class="wb-btn" onclick="wbLawInfo(this)">元数据</button>
+        <button type="button" class="wb-btn" onclick="wbLawText(this)">正文</button>
+        <button type="button" class="wb-btn primary" onclick="wbLawInterp(this)">官方解读</button>
+        <button type="button" class="wb-btn primary" onclick="wbLawRelated(this)">相关网页</button>
+      </div>
+      <div class="wb-out" id="wbLawOut"></div>
+    </div>
+
+    <div class="wb-pane" id="wbTools">
+      <p class="wb-hint">五组检查工具全部离线：按请求体里的账套、合同、回答或诊断判，不联网、不调模型。请求体形态以「填入示例」给出的为准。</p>
+      <label class="wb-label" for="wbToolSel">工具
+        <select id="wbToolSel" onchange="wbToolPick(this.value)">
+          <option value="ledger">账套巡检</option>
+          <option value="inspection">稽查模拟问询</option>
+          <option value="intake">多合同受理</option>
+          <option value="reconcile">合同条款与履行对账</option>
+          <option value="controls">内控九要素生成</option>
+        </select>
+      </label>
+      <textarea id="wbToolBody" rows="10" placeholder="请求体 JSON"></textarea>
+      <div class="wb-row">
+        <button type="button" class="wb-btn" onclick="wbFillToolExample(this)">填入示例</button>
+        <button type="button" class="wb-btn" onclick="wbBlankIntake(this)">取空白受理表</button>
+        <button type="button" class="wb-btn primary" onclick="wbRunTool(this)">运行</button>
+      </div>
+      <div class="wb-out" id="wbToolsOut"></div>
+    </div>
+
+    <div class="wb-pane" id="wbTemplates">
+      <p class="wb-hint">这是 references/output_templates.md 里对应小节的原文，给模型照着组织答案；页面不替它套格式。</p>
+      <label class="wb-label" for="wbTemplateSel">模板
+        <select id="wbTemplateSel" onchange="wbLoadTemplate(this.value)"><option value="">加载中…</option></select>
+      </label>
+      <div class="wb-out" id="wbTemplateOut"><pre id="wbTemplateText"></pre></div>
+    </div>
+  </div>
 </div>
 
 <!-- ═══ MODAL ═══ -->
@@ -830,6 +987,7 @@ function toggleCalc(){
   // 所以互斥：开一块就把另一块收掉。
   if(opening){
     document.getElementById('guidancePanel').classList.remove('open');
+    document.getElementById('workbenchPanel').classList.remove('open');
     if(!CALC.sk.length){loadCalcSkeletons();}else{renderCalc();}
   }
   p.classList.toggle('open');
@@ -996,6 +1154,555 @@ function renderCalcResult(r){
   }
   h+=`<div class="calc-note">${esc(r['限制']||CALC.note)}</div>`;
   out.innerHTML=h;
+}
+
+/* ═══════════ WORKBENCH ═══════════ */
+/* 「分析工作台」把 ① 判型、② 覆盖率、⑤ 计划／取证、⑥ 成稿底稿、类案台账、
+   五组检查工具与输出模板接成页面入口。此前这些能力只在脚本与命令行里，
+   网页只能检索：拿到一屏法条后，没有地方能回答"这道题判成什么、依据够不够"。
+   页面只传参、只显示引擎回的结构，不在这里重排依据、不替引擎判覆盖。 */
+let WB={qtype:'',templates:null,lastInspection:null};
+
+function toggleWorkbench(){
+  const p=document.getElementById('workbenchPanel');
+  const opening=!p.classList.contains('open');
+  if(opening){
+    document.getElementById('guidancePanel').classList.remove('open');
+    document.getElementById('calcPanel').classList.remove('open');
+    const q=document.getElementById('wbQuestion');
+    if(q&&!q.value.trim())q.value=document.getElementById('searchInput').value.trim();
+  }
+  p.classList.toggle('open');
+}
+
+function wbTab(name){
+  document.querySelectorAll('.wb-tabs button').forEach(b=>b.classList.toggle('on',b.dataset.wb===name));
+  const id='wb'+name[0].toUpperCase()+name.slice(1);
+  document.querySelectorAll('.wb-pane').forEach(p=>p.classList.toggle('on',p.id===id));
+  if(name==='templates')wbLoadTemplateIndex();
+}
+
+function wbQuestionText(){
+  const el=document.getElementById('wbQuestion');
+  return el?el.value.trim():'';
+}
+
+function wbWarn(outId,msg){
+  const out=document.getElementById(outId);
+  if(out)out.innerHTML='<div class="wb-err">'+esc(msg)+'</div>';
+}
+
+async function wbPost(url,payload){
+  const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},
+                             body:JSON.stringify(payload)});
+  let body;
+  try{body=await res.json();}
+  catch(e){throw new Error('服务返回的不是 JSON（HTTP '+res.status+'）');}
+  if(!res.ok)throw new Error(body.error||('请求失败：HTTP '+res.status));
+  return body;
+}
+
+async function wbRun(btn,outId,loading,url,payload,render){
+  const out=document.getElementById(outId);
+  if(!out)return;
+  if(btn)btn.disabled=true;
+  out.innerHTML='<div class="wb-loading">'+esc(loading)+'…</div>';
+  try{
+    const data=await wbPost(url,payload);
+    render(out,data);
+  }catch(e){
+    out.innerHTML='<div class="wb-err">'+esc(e.message)+'</div>';
+  }finally{
+    if(btn)btn.disabled=false;
+  }
+}
+
+function wbRaw(obj){
+  let text;
+  try{text=JSON.stringify(obj,null,2);}catch(e){text=String(obj);}
+  return '<details class="wb-details"><summary>原始 JSON</summary><pre>'+esc(text)+'</pre></details>';
+}
+
+function wbAnalysisPayload(){
+  const p={question:wbQuestionText(),read_body:document.getElementById('wbReadBody').checked,
+           check_citations:document.getElementById('wbCheckCit').checked};
+  const at=document.getElementById('wbAt').value;
+  if(at)p.at=at;
+  const max=document.getElementById('wbMax').value;
+  if(max)p.max_per_round=Number(max);
+  return p;
+}
+
+function wbClassify(btn){
+  const q=wbQuestionText();
+  if(!q)return wbWarn('wbAnalysisOut','先填要分析的税务问题');
+  wbRun(btn,'wbAnalysisOut','判型','/api/classify',{question:q},wbRenderClassify);
+}
+
+function wbCoverage(btn){
+  const q=wbQuestionText();
+  if(!q)return wbWarn('wbAnalysisOut','先填要分析的税务问题');
+  if(!WB.qtype)return wbWarn('wbAnalysisOut','先点「① 判型」拿到题型：覆盖率按题型查依据要件，没有题型就没有分母');
+  let evidence=null;
+  const raw=document.getElementById('wbEvidence').value.trim();
+  if(raw){
+    try{evidence=JSON.parse(raw);}
+    catch(e){return wbWarn('wbAnalysisOut','依据清单不是合法 JSON：'+e.message);}
+    if(!Array.isArray(evidence))return wbWarn('wbAnalysisOut','依据清单要是一个 JSON 数组');
+  }
+  wbRun(btn,'wbAnalysisOut','计算覆盖率','/api/coverage',
+        {qtype:WB.qtype,question:q,evidence},wbRenderCoverage);
+}
+
+function wbUseResults(){
+  if(!lastResults.length){
+    return wbWarn('wbAnalysisOut','当前没有检索结果。先在页首搜一轮，或直接把依据清单粘进文本框');
+  }
+  const rows=lastResults.map(r=>({title:r.title||'',url:r.url||'',
+                                  document_number:r.document_number||'',
+                                  summary:r.snippet||r.summary||''}));
+  document.getElementById('wbEvidence').value=JSON.stringify(rows,null,2);
+}
+
+function wbPlan(btn){
+  const q=wbQuestionText();
+  if(!q)return wbWarn('wbAnalysisOut','先填要分析的税务问题');
+  wbRun(btn,'wbAnalysisOut','编排检索计划','/api/analysis/plan',{question:q},wbRenderPlan);
+}
+
+function wbGather(btn){
+  const q=wbQuestionText();
+  if(!q)return wbWarn('wbAnalysisOut','先填要分析的税务问题');
+  wbRun(btn,'wbAnalysisOut','按计划逐轮取证（可能要几十秒）','/api/analysis/gather',
+        wbAnalysisPayload(),wbRenderGather);
+}
+
+function wbAnswer(btn){
+  const q=wbQuestionText();
+  if(!q)return wbWarn('wbAnalysisOut','先填要分析的税务问题');
+  wbRun(btn,'wbAnalysisOut','取证并分层（可能要几十秒）','/api/analysis/answer',
+        wbAnalysisPayload(),wbRenderAnswer);
+}
+
+function wbRenderClassify(out,r){
+  const t=r.type||{};
+  WB.qtype=t.type||'';
+  let h='<h4>① 判型</h4>';
+  h+='<div><b>'+esc(t.label||t.type||'未判出')+'</b> <span class="wb-k">'+esc(t.type||'')+
+     ' · 把握 '+esc(t.confidence==null?'—':String(t.confidence))+'</span></div>';
+  if(t.reason)h+='<div class="wb-k">'+esc(t.reason)+'</div>';
+  if(r.must_answer)h+='<h4>结论应包含</h4><div>'+esc(r.must_answer)+'</div>';
+  if((r.sources||[]).length)h+='<h4>这类题要取哪类依据</h4><ul>'+
+    r.sources.map(s=>'<li>'+esc(s)+'</li>').join('')+'</ul>';
+  if((r.unanswered||[]).length)h+='<h4>题面没交代的前提</h4><div>'+esc(r.unanswered.join('、'))+'</div>';
+  if((r.probes||[]).length)h+='<h4>建议先问</h4><ul>'+r.probes.map(p=>
+    '<li>'+esc(p.probe||'')+(p.why?'<div class="wb-k">'+esc(p.why)+'</div>':'')+'</li>').join('')+'</ul>';
+  if(r.rule_note)h+='<div class="wb-k">'+esc(r.rule_note)+'</div>';
+  if((r.accounting_gap||[]).length)h+='<h4>会计口径缺口</h4><ul>'+
+    r.accounting_gap.map(g=>'<li>'+esc(g)+'</li>').join('')+'</ul>';
+  if((r.legislative_stage||[]).length)h+='<h4>立法阶段</h4><div>'+esc(r.legislative_stage.join('、'))+'</div>';
+  h+='<div class="wb-k">下一步：点「② 覆盖率」按这个题型判依据缺哪几项。</div>'+wbRaw(r);
+  out.innerHTML=h;
+}
+
+function wbRenderCoverage(out,r){
+  const c=r['计数']||{},pct=Math.round((Number(r['覆盖率'])||0)*100);
+  let h='<h4>② 依据覆盖率 '+pct+'%</h4>';
+  if(r['分母说明'])h+='<div class="wb-k">'+esc(r['分母说明'])+'</div>';
+  h+='<div>'+['已满足','待核','缺','不适用'].map(k=>
+    esc(k)+' '+esc(String(c[k]==null?0:c[k]))).join(' · ')+'</div>';
+  const items=(r['分项']||[]).filter(x=>x['状态']!=='不适用');
+  if(items.length){
+    h+='<table><tr><th>项</th><th>状态</th><th>判据</th></tr>'+items.map(x=>
+      '<tr><td>'+esc(x['项']||'')+'</td><td>'+esc(x['状态']||'')+'</td><td>'+
+      esc(x['判据']||'')+'</td></tr>').join('')+'</table>';
+  }
+  if((r['待办']||[]).length)h+='<h4>待办</h4><ul>'+r['待办'].map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul>';
+  if((r['补问']||[]).length)h+='<h4>要先问清</h4><ul>'+r['补问'].map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul>';
+  if(r['边界'])h+='<div class="wb-k">'+esc(r['边界'])+'</div>';
+  h+=wbRaw(r);
+  out.innerHTML=h;
+}
+
+function wbRenderPlan(out,r){
+  const t=r.type||{};
+  let h='<h4>⑤ 分析计划</h4><div><b>'+esc(t.label||t.type||'')+'</b> <span class="wb-k">'+
+        esc(t.type||'')+'</span></div>';
+  if(r.must_answer)h+='<div class="wb-k">结论应包含：'+esc(r.must_answer)+'</div>';
+  h+='<h4>检索轮次</h4>';
+  (r.rounds||[]).forEach(x=>{
+    h+='<div><b>第'+esc(String(x.round||''))+'轮</b> '+esc(x.goal||'')+'</div>';
+    h+='<div class="wb-k">源：'+esc((x.sources||[]).join(' / '))+'</div>';
+    if(x.call)h+='<div class="wb-k">'+esc(x.call)+'</div>';
+  });
+  if((r.unanswered||[]).length)h+='<h4>题面没交代</h4><div>'+esc(r.unanswered.join('、'))+'</div>';
+  if((r.probes||[]).length)h+='<h4>建议先问</h4><ul>'+
+    r.probes.map(p=>'<li>'+esc(p.probe||'')+'</li>').join('')+'</ul>';
+  if(r.overseas_note)h+='<div class="wb-k">'+esc(r.overseas_note)+'</div>';
+  h+=wbRaw(r);
+  out.innerHTML=h;
+}
+
+function wbEvidenceTable(ev){
+  if(!(ev||[]).length)return '<div class="wb-k">这一轮没有取回材料。</div>';
+  let h='<table><tr><th>#</th><th>标题</th><th>层级 / 时效</th></tr>';
+  h+=ev.slice(0,12).map((e,i)=>{
+    const title=esc(e.title||'');
+    const url=e.url||'',safe=/^https?:\/\/[^\s"'<>\\]+$/.test(url)?url:'';
+    const cell=safe?'<a href="'+esc(safe)+'" target="_blank" rel="noopener">'+title+'</a>':title;
+    return '<tr><td>'+(i+1)+'</td><td>'+cell+'</td><td>'+
+      esc([e.rank_label,e.validity_label].filter(Boolean).join(' · '))+'</td></tr>';
+  }).join('')+'</table>';
+  if(ev.length>12)h+='<div class="wb-k">只列前 12 条，共 '+ev.length+' 条；完整清单在原始 JSON 里。</div>';
+  return h;
+}
+
+function wbRenderGather(out,r){
+  const ev=r.evidence||[];
+  let h='<h4>⑤ 取证：'+ev.length+' 条材料</h4>';
+  h+='<div class="wb-k">完成 '+(r.rounds_done||[]).length+' 轮；判型：'+
+     esc((r.type&&r.type.label)||'')+'</div>';
+  if((r.errors||[]).length)h+='<div class="wb-err">部分源失败：'+esc(r.errors.join('；'))+
+    '。这一批条数不能读成"库里只有这些"。</div>';
+  h+=wbEvidenceTable(ev);
+  const cit=r.citation_check;
+  if(cit&&cit.checked!=null){
+    h+='<div class="wb-k">引文核对：查了 '+esc(String(cit.checked))+' 个文号；'+
+       (cit.skipped?('略过 '+esc(String(cit.skipped))+' 个'):'无略过')+'</div>';
+  }
+  h+=wbRaw(r);
+  out.innerHTML=h;
+}
+
+function wbRenderAnswer(out,r){
+  const p=r.primary||{},c=r.counts||{};
+  let h='<h4>⑥ 成稿底稿</h4><div><b>判型：</b>'+esc((r.type&&r.type.label)||'')+'</div>';
+  h+='<h4>主依据</h4>';
+  h+=p.title?'<div><b>'+esc(p.title)+'</b></div>':'<div class="wb-k">本轮没有挑出主依据。</div>';
+  if(p.why)h+='<div class="wb-k">'+esc(p.why)+'</div>';
+  if((p.caveats||[]).length)h+='<div class="wb-k">注意：'+esc(p.caveats.join('；'))+'</div>';
+  h+='<div class="wb-k">本轮共 '+esc(String(c.total||0))+' 条：法定 '+esc(String(c.statutory||0))+
+     ' · 实务 '+esc(String(c.practice||0))+' · 待核 '+esc(String(c.to_verify||0))+'</div>';
+  if(r.fetch_note)h+='<div class="wb-err">'+esc(r.fetch_note)+'</div>';
+  if(r.evidence_gap)h+='<div class="wb-err">'+esc(r.evidence_gap)+'</div>';
+  if(r.cited_note)h+='<div class="wb-k">'+esc(r.cited_note)+'</div>';
+  const rows=(label,list)=>{
+    if(!(list||[]).length)return '';
+    return '<h4>'+label+'（'+list.length+'）</h4><ul>'+list.slice(0,8).map(x=>
+      '<li>'+esc(x.title||'')+(x.rank_label?'<span class="wb-k"> · '+esc(x.rank_label)+'</span>':'')+
+      '</li>').join('')+'</ul>';
+  };
+  h+=rows('其余法定依据',r.supporting);
+  h+=rows('执行口径与实务认定',r.practice);
+  h+=rows('待核对线索',r.to_verify);
+  if((r.conditions||[]).length)h+='<h4>答案必须写明的限制</h4><div>'+esc(r.conditions.join('、'))+'</div>';
+  if(r.citation_note)h+='<div class="wb-k">'+esc(r.citation_note)+'</div>';
+  h+=wbRaw(r);
+  out.innerHTML=h;
+}
+
+function wbCases(btn){
+  const topic=document.getElementById('wbCaseTopic').value.trim();
+  if(!topic)return wbWarn('wbCasesOut','先填要查的类案主题');
+  const payload={
+    topic,
+    mode:document.getElementById('wbCaseMode').value,
+    order:document.getElementById('wbCaseOrder').value,
+    pages:Number(document.getElementById('wbCasePages').value||1),
+    limit:Number(document.getElementById('wbCaseLimit').value||10),
+    shui5:document.getElementById('wbCaseShui5').checked
+  };
+  const els=document.getElementById('wbCaseElements').value.split(/[,，、;;]/)
+    .map(s=>s.trim()).filter(Boolean);
+  if(els.length)payload.elements=els;
+  wbRun(btn,'wbCasesOut','检索类案（可能要几十秒）','/api/cases',payload,wbRenderCases);
+}
+
+function wbRenderCases(out,r){
+  const list=r.candidates||[];
+  let h='<h4>类案候选 '+list.length+' 条</h4>';
+  h+='<div class="wb-k">模式 '+esc(r.mode||'')+' · 排序 '+esc(r.order||'')+
+     ' · 去重后保留 '+esc(String(r.candidate_count||0))+' 条 · 支撑 '+esc(r.case_support||'')+'</div>';
+  if((r.fetch_failures||[]).length)h+='<div class="wb-err">取数失败：'+
+    esc(r.fetch_failures.map(f=>(f.word||'')+'：'+(f.error||'')).join('；'))+'</div>';
+  if(list.length){
+    h+='<table><tr><th>#</th><th>标题</th><th>日期 / 机关</th></tr>';
+    h+=list.map((x,i)=>{
+      const title=esc(x['标题']||''),url=x['链接']||'',
+            safe=/^https?:\/\/[^\s"'<>\\]+$/.test(url)?url:'';
+      const cell=safe?'<a href="'+esc(safe)+'" target="_blank" rel="noopener">'+title+'</a>':title;
+      return '<tr><td>'+(i+1)+'</td><td>'+cell+'<div class="wb-k">'+
+        esc([x['子类型'],x['来源等级'],x['核验状态']].filter(Boolean).join(' · '))+
+        '</div></td><td>'+esc([x['日期'],x['机关']].filter(Boolean).join(' / '))+'</td></tr>';
+    }).join('')+'</table>';
+  }else{
+    h+='<div class="wb-k">这一轮没有候选。没有候选不等于没有这类案件：先看上面的取数失败与原始 JSON 里的检索式。</div>';
+  }
+  if((r.limitations||[]).length)h+='<details class="wb-details"><summary>边界（'+
+    r.limitations.length+' 条）</summary><ul>'+r.limitations.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul></details>';
+  h+=wbRaw(r);
+  out.innerHTML=h;
+}
+
+function wbLink(url,title){
+  const raw=String(url||''),safe=/^https?:\/\/[^\s"'<>\\]+$/.test(raw)?raw:'';
+  return safe?'<a href="'+esc(safe)+'" target="_blank" rel="noopener">'+esc(title||safe)+'</a>':
+              esc(title||raw);
+}
+
+async function wbGet(btn,outId,loading,url,render){
+  const out=document.getElementById(outId);
+  if(!out)return;
+  if(btn)btn.disabled=true;
+  out.innerHTML='<div class="wb-loading">'+esc(loading)+'…</div>';
+  try{
+    const r=await fetchWithRetry(url);
+    if(r&&r.error)throw new Error(r.error);
+    render(out,r);
+  }catch(e){
+    out.innerHTML='<div class="wb-err">'+esc(e.message)+'</div>';
+  }finally{
+    if(btn)btn.disabled=false;
+  }
+}
+
+function wbLawId(){
+  const el=document.getElementById('wbLawId');
+  const id=el?el.value.trim():'';
+  if(!id){wbWarn('wbLawOut','先填法规 ID（NPC bbbs 编号）');return '';}
+  return id;
+}
+
+function wbLawKeyword(){
+  const el=document.getElementById('wbLawKeyword');
+  return el?el.value.trim():'';
+}
+
+function wbLawQuery(){
+  const kw=wbLawKeyword();
+  return kw?'?keyword='+encodeURIComponent(kw):'';
+}
+
+function wbLawInfo(btn){
+  const id=wbLawId();
+  if(!id)return;
+  wbGet(btn,'wbLawOut','取法规元数据','/api/detail/'+encodeURIComponent(id),wbRenderLawInfo);
+}
+
+function wbLawText(btn){
+  const id=wbLawId();
+  if(!id)return;
+  wbGet(btn,'wbLawOut','下载并解析正文（可能要几十秒）','/api/text/'+encodeURIComponent(id),wbRenderLawText);
+}
+
+function wbLawInterp(btn){
+  const id=wbLawId();
+  if(!id)return;
+  wbGet(btn,'wbLawOut','检索官方解读','/api/interpretations/'+encodeURIComponent(id)+wbLawQuery(),
+        (out,r)=>wbRenderLawList(out,'官方解读',r));
+}
+
+function wbLawRelated(btn){
+  const id=wbLawId();
+  if(!id)return;
+  wbGet(btn,'wbLawOut','检索实务网页（可能要几十秒）','/api/web-related/'+encodeURIComponent(id)+wbLawQuery(),
+        (out,r)=>wbRenderLawList(out,'实务解读与相关网页',r));
+}
+
+function wbRenderLawInfo(out,r){
+  const d=r.detail||{};
+  let h='<h4>法规元数据</h4><div><b>'+esc(d.title||'（标题未取到）')+'</b></div>';
+  const rows=[['文号',d.document_number],['类别',d.category],['公布日期',d.publish_date],
+              ['施行日期',d.effective_date],['时效',d.status],['制定机关',d.issuing_authority],
+              ['法规 ID',d.id]];
+  const shown=rows.filter(x=>x[1]);
+  if(shown.length){
+    h+='<table>'+shown.map(x=>'<tr><th>'+esc(x[0])+'</th><td>'+esc(String(x[1]))+'</td></tr>').join('')+'</table>';
+  }
+  const rel=d.related||{};
+  const relCounts=[['修改',rel.amendments],['立法解释',rel.interpretation],
+                   ['相关资料',rel.drafts],['法律依据',rel.legal_basis]]
+                  .filter(x=>Array.isArray(x[1])&&x[1].length)
+                  .map(x=>x[0]+' '+x[1].length+' 条');
+  if(relCounts.length)h+='<div class="wb-k">关联：'+esc(relCounts.join(' · '))+'</div>';
+  if((d.content_tree||[]).length)h+='<div class="wb-k">接口自带内容树 '+d.content_tree.length+' 个节点；正文请点「正文」。</div>';
+  h+='<div class="wb-k">'+(d._from_cache?'本次命中详情缓存。':'本次实时抓取。')+'</div>';
+  out.innerHTML=h;
+}
+
+function wbRenderLawText(out,r){
+  const d=r.detail||{},sections=r.sections||[];
+  let h='<h4>法规正文</h4><div><b>'+esc(d.title||'')+'</b></div>';
+  h+='<div class="wb-k">段落 '+esc(String(r.total_paragraphs||0))+' · 条文 '+
+     esc(String(r.article_count||0))+'</div>';
+  if(!sections.length){
+    h+='<div class="wb-k">这次没有解析出正文段落。下载或解析失败时不能读成"这部法规没有正文"。</div>';
+  }else{
+    const shown=sections.slice(0,80);
+    const text=shown.map(s=>{
+      if(s.type==='chapter')return '\n【章】'+(s.text||'');
+      if(s.type==='heading')return '\n【节】'+(s.text||'');
+      return s.text||'';
+    }).join('\n');
+    h+='<pre>'+esc(text)+'</pre>';
+    if(sections.length>shown.length){
+      h+='<div class="wb-k">只显示前 '+shown.length+' 段，共 '+sections.length+' 段。</div>';
+    }
+  }
+  out.innerHTML=h;
+}
+
+function wbRenderLawList(out,heading,r){
+  const list=r.sources||[];
+  let h='<h4>'+esc(heading)+'：'+esc(String(r.total==null?list.length:r.total))+' 条</h4>';
+  const meta=[r.law_title,r.keyword?('关键词 '+r.keyword):'',r.searched_at].filter(Boolean);
+  if(meta.length)h+='<div class="wb-k">'+esc(meta.join(' · '))+'</div>';
+  if(r.engine_error){
+    h+='<div class="wb-err">搜索引擎异常：'+esc(r.engine_error)+
+       (r.queries_blocked?'（阻挡 '+esc(String(r.queries_blocked))+' 次查询）':'')+
+       '。这表示取数没完成，不能读成"没有相关内容"。</div>';
+  }
+  if(!list.length){
+    h+='<div class="wb-k">这一轮没有取回条目。</div>';
+  }else{
+    h+='<table><tr><th>#</th><th>标题 / 来源</th><th>日期</th></tr>';
+    list.forEach((x,i)=>{
+      const tags=[x.source_label||x.source,x.date].filter(Boolean).join(' · ');
+      h+='<tr><td>'+(i+1)+'</td><td>'+wbLink(x.url,x.title||x.url)+
+         (tags?'<div class="wb-k">'+esc(tags)+'</div>':'')+
+         (x.snippet?'<div class="wb-k">'+esc(String(x.snippet).slice(0,160))+'</div>':'')+
+         '</td><td>'+esc(x.date||'')+'</td></tr>';
+    });
+    h+='</table>';
+  }
+  h+=wbRaw(r);
+  out.innerHTML=h;
+}
+
+const WB_TOOL_LABEL={ledger:'账套巡检',inspection:'稽查模拟问询',intake:'多合同受理',
+                     reconcile:'合同条款与履行对账',controls:'内控九要素生成'};
+const WB_TOOL_ROUTES={ledger:'/api/ledger',inspection:'/api/inspection',intake:'/api/intake',
+                      reconcile:'/api/reconcile',controls:'/api/controls'};
+const WB_TOOL_EXAMPLES={
+  ledger:{ledger:{行:[{行号:1,科目:'管理费用—业务招待费',金额:380000,税前扣除额:380000}]},
+          params:{},codes:[]},
+  inspection:{answers:{},domains:[],codes:[],tolerance:0},
+  controls:{assumptions:['缺少书面合同']}
+};
+
+async function wbFillToolExample(btn){
+  const tool=document.getElementById('wbToolSel').value;
+  const area=document.getElementById('wbToolBody');
+  if(tool==='intake'||tool==='reconcile'){
+    if(btn)btn.disabled=true;
+    try{
+      const r=await fetchWithRetry('/api/intake/blank');
+      const doc=r.document||{};
+      if(doc['合同']&&doc['合同'][0])doc['合同'][0]['名称']='示例采购合同';
+      area.value=JSON.stringify({document:doc},null,2);
+    }catch(e){area.value='';wbWarn('wbToolsOut','空白表没取到：'+e.message);}
+    finally{if(btn)btn.disabled=false;}
+    return;
+  }
+  area.value=JSON.stringify(WB_TOOL_EXAMPLES[tool]||{},null,2);
+}
+
+async function wbBlankIntake(btn){
+  const area=document.getElementById('wbToolBody');
+  const out=document.getElementById('wbToolsOut');
+  if(btn)btn.disabled=true;
+  out.innerHTML='<div class="wb-loading">取空白受理表…</div>';
+  try{
+    const r=await fetchWithRetry('/api/intake/blank');
+    if(r.error)throw new Error(r.error);
+    const doc=r.document||{};
+    document.getElementById('wbToolSel').value='intake';
+    area.value=JSON.stringify({document:doc},null,2);
+    out.innerHTML='<div class="wb-hint">空白受理表已填入上方。合同「名称」必须填，未填会回 400；改完点「运行」。</div>';
+  }catch(e){
+    out.innerHTML='<div class="wb-err">空白受理表没取到：'+esc(e.message)+'</div>';
+  }finally{
+    if(btn)btn.disabled=false;
+  }
+}
+
+function wbToolPick(tool){
+  document.getElementById('wbToolsOut').innerHTML='';
+  document.getElementById('wbToolBody').value='';
+  wbFillToolExample(null);
+}
+
+function wbToolSummary(tool,r){
+  const st=x=>esc(String(x==null?'':x));
+  if(tool==='ledger')return '风险条目 '+((r['风险条目']||[]).length)+' 条 · 覆盖 '+
+    st((r['覆盖']||{})['状态']);
+  if(tool==='intake')return '合同 '+st(r['合同数'])+' 份 · 缺维度 '+st(r['缺维度数'])+
+    ' 个 · 覆盖 '+st((r['覆盖']||{})['状态']);
+  if(tool==='reconcile')return '差异 '+((r['差异条目']||[]).length)+' 条 · 无法确认 '+
+    ((r['无法确认条目']||[]).length)+' 条';
+  if(tool==='inspection')return '问询单元 '+((r['问询']||[]).length)+' 个';
+  if(tool==='controls')return '控制活动 '+((r['控制活动']||[]).length)+' 条 · 形态 '+st(r['形态']);
+  return '';
+}
+
+function wbRunTool(btn){
+  const tool=document.getElementById('wbToolSel').value;
+  let payload;
+  try{payload=JSON.parse(document.getElementById('wbToolBody').value||'{}');}
+  catch(e){return wbWarn('wbToolsOut','请求体不是合法 JSON：'+e.message);}
+  if(!payload||typeof payload!=='object'||Array.isArray(payload)){
+    return wbWarn('wbToolsOut','请求体要是一个 JSON 对象');
+  }
+  wbRun(btn,'wbToolsOut','运行'+WB_TOOL_LABEL[tool],WB_TOOL_ROUTES[tool],payload,(out,r)=>{
+    WB.lastInspection=tool==='inspection'?r:null;
+    let h='<h4>'+esc(WB_TOOL_LABEL[tool])+'</h4><div class="wb-k">'+wbToolSummary(tool,r)+'</div>';
+    if(tool==='inspection'){
+      h+='<div class="wb-row"><button type="button" class="wb-btn" onclick="wbFeedControls()">把输出交给内控生成 →</button></div>';
+    }
+    h+=wbRaw(r);
+    out.innerHTML=h;
+  });
+}
+
+function wbFeedControls(){
+  if(!WB.lastInspection)return wbWarn('wbToolsOut','先跑一次稽查模拟问询');
+  document.getElementById('wbToolSel').value='controls';
+  document.getElementById('wbToolBody').value=
+    JSON.stringify({diagnosis:WB.lastInspection},null,2);
+  document.getElementById('wbToolsOut').innerHTML=
+    '<div class="wb-hint">已把稽查问询的整个输出放进 diagnosis：引擎从「问询」的「证据缺口」里提缺口，不用手工摘。</div>';
+  document.getElementById('wbToolBody').scrollIntoView({block:'center'});
+}
+
+async function wbLoadTemplateIndex(){
+  const sel=document.getElementById('wbTemplateSel');
+  if(WB.templates)return;
+  try{
+    const r=await fetchWithRetry('/api/analysis/templates');
+    if(r.error)throw new Error(r.error);
+    WB.templates=r.templates||[];
+    sel.innerHTML=WB.templates.map(t=>'<option value="'+esc(t.key)+'">'+esc(t.title)+'</option>').join('');
+    if((r.missing||[]).length){
+      document.getElementById('wbTemplateText').textContent=
+        '模板文件缺这些小节：'+r.missing.join('、');
+      return;
+    }
+    if(WB.templates.length)wbLoadTemplate(WB.templates[0].key);
+  }catch(e){
+    sel.innerHTML='<option value="">清单加载失败</option>';
+    document.getElementById('wbTemplateText').textContent=e.message;
+  }
+}
+
+async function wbLoadTemplate(key){
+  if(!key)return;
+  const pre=document.getElementById('wbTemplateText');
+  pre.textContent='加载中…';
+  try{
+    const r=await fetchWithRetry('/api/analysis/templates/'+encodeURIComponent(key));
+    if(r.error)throw new Error(r.error);
+    pre.textContent=r.text||'（这一节是空的）';
+  }catch(e){pre.textContent=e.message;}
 }
 
 /* ═══════════ PROVINCES ═══════════ */
@@ -1412,8 +2119,11 @@ function closeModal(){document.getElementById('modalOverlay').style.display='non
 /* ═══════════ GUIDANCE PANEL ═══════════ */
 function toggleGuidance(){
   const p=document.getElementById('guidancePanel');
-  // 与「算式展开」互斥，理由见 toggleCalc
-  if(!p.classList.contains('open'))document.getElementById('calcPanel').classList.remove('open');
+  // 与「算式展开」「分析工作台」互斥，理由见 toggleCalc
+  if(!p.classList.contains('open')){
+    document.getElementById('calcPanel').classList.remove('open');
+    document.getElementById('workbenchPanel').classList.remove('open');
+  }
   p.classList.toggle('open');
 }
 

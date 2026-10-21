@@ -15,7 +15,8 @@ from urllib.parse import quote
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from tax_search import search_tax, detect_intent, resolve_tax_type, TAX_TYPE_KEYWORDS
+from tax_search import (search_tax, detect_intent, resolve_tax_type,
+                        check_iso_date, TAX_TYPE_KEYWORDS)
 from tax_analyze import accounting_gap, accounting_note
 from tax_analyze import legislative_stage, legislative_note
 from tax_detail import fetch_detail, download_bytes, SXX_MAP, _parse_docx_from_bytes
@@ -23,9 +24,18 @@ from tax_web_search import search_chinatax, build_filters
 from tax_fgk import search_fgk
 from tax_so360 import so360_search
 from tax_shui5 import search_shui5
-from tax_wechat import search_wechat
+import tax_related
 from tax_aggregator import aggregate_search, DEFAULT_SOURCES
+import tax_analyze
+import tax_answer
 import tax_calc
+import tax_cases
+import tax_control
+import tax_coverage
+import tax_http
+import tax_inspect
+import tax_intake
+import tax_ledger
 import tax_llm
 
 from flask import Flask, request, jsonify, send_from_directory
@@ -95,6 +105,73 @@ def _int_param(data: dict, name: str, default: int, lo: int, hi: int = None) -> 
     return value
 
 
+def _json_body() -> dict:
+    """读请求体，非对象在入口就报 400。
+
+    新增的分析与检查工具接口都收 JSON 对象；空体、数组、表单编码落到各引擎
+    函数里会以 TypeError／AttributeError 的形式冒出来，回的是 HTML 500 页面，
+    调用方看不出是自己把请求体写错了。
+    """
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        raise ValueError("请求体要是一个 JSON 对象")
+    return data
+
+
+def _text_field(data: dict, name: str, required: bool = True) -> str:
+    raw = data.get(name)
+    if raw is None:
+        if required:
+            raise ValueError(f"缺少字段 {name}")
+        return ""
+    if not isinstance(raw, str):
+        raise ValueError(f"{name} 要字符串，收到 {type(raw).__name__}")
+    value = raw.strip()
+    if required and not value:
+        raise ValueError(f"{name} 不能为空")
+    return value
+
+
+def _list_field(data: dict, name: str) -> list:
+    """读字符串数组，空串逐项去掉；不是数组或混进非字符串就报 400。"""
+    raw = data.get(name)
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError(f"{name} 要数组，收到 {type(raw).__name__}")
+    bad = [v for v in raw if not isinstance(v, str)]
+    if bad:
+        raise ValueError(f"{name} 里每一项都要是字符串，收到 {bad[0]!r}")
+    return [v.strip() for v in raw if v.strip()]
+
+
+def _object_field(data: dict, name: str):
+    raw = data.get(name)
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(f"{name} 要对象或 null，收到 {type(raw).__name__}")
+    return raw
+
+
+def _bool_field(data: dict, name: str, default: bool) -> bool:
+    raw = data.get(name)
+    if raw is None:
+        return default
+    if not isinstance(raw, bool):
+        raise ValueError(f"{name} 要 true/false，收到 {raw!r}")
+    return raw
+
+
+def _float_field(data: dict, name: str, default: float) -> float:
+    raw = data.get(name)
+    if raw is None:
+        return default
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise ValueError(f"{name} 要数值，收到 {raw!r}")
+    return float(raw)
+
+
 # 检索意图在界面上显示成什么。取值域是 tax_search.INTENTS；这里的措辞比
 # tax_formatter.INTENT_HEADERS 短，因为界面那一栏是个标签，不是 markdown 标题。
 # 两张表各管一个界面，键集合由 tests/test_routing_terms.py::test_intent_vocabularies_agree 对齐。
@@ -105,6 +182,56 @@ INTENT_LABELS = {
     "eligibility": "资格判定",
     "invoice": "发票处理",
 }
+
+# 界面「输出模板」那一栏的取值域。键是界面上用的短名，值是
+# references/output_templates.md 里的小节标题；与三个适配器各带一份的同名表
+# 逐键一致，改模板标题时四处都要动。只收真正的成稿模板，目录与 [问题] 这类
+# 占位标题不在其中。
+TEMPLATE_KEYS = {
+    "analysis": "分析六段式",
+    "option_compare": "逐条比对式",
+    "fill_blank": "填空式",
+    "rule_statement": "规则陈述式",
+    "entitlement_matrix": "资格判定条件矩阵式",
+    "calculation": "计算式",
+    "insufficient_evidence": "依据不足时",
+    "risk_self_check": "风险自检专用输出",
+    "ledger": "账套巡检条件块",
+    "intake": "多合同受理条件块",
+    "inspection": "稽查模拟问询式",
+}
+
+_TEMPLATE_SECTIONS = None
+
+
+def _template_sections() -> dict:
+    """按 TEMPLATE_KEYS 的标题切 references/output_templates.md。
+
+    跳过代码围栏里的示例标题：模板文件用 ``` 展示成稿形态，围栏内也有
+    `## [问题] …` 这类占位行，把它们当小节会让索引多出一批取不到的键。
+    """
+    global _TEMPLATE_SECTIONS
+    if _TEMPLATE_SECTIONS is not None:
+        return _TEMPLATE_SECTIONS
+    path = SCRIPT_DIR.parent / "references" / "output_templates.md"
+    wanted = set(TEMPLATE_KEYS.values())
+    sections, current, buf, in_fence = {}, None, [], False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("```"):
+            in_fence = not in_fence
+        if not in_fence and line.startswith(("## ", "### ")):
+            heading = line[3:].strip()
+            if current is not None:
+                sections[current] = "\n".join(buf).strip()
+            current = heading if heading in wanted else None
+            buf = [line] if current is not None else []
+            continue
+        if current is not None:
+            buf.append(line)
+    if current is not None:
+        sections[current] = "\n".join(buf).strip()
+    _TEMPLATE_SECTIONS = sections
+    return sections
 
 # 归不出税种时检索词就是用户原话，NPC 的标题检索按字面匹配，会还给一大摞无关
 # 法条（实测整句提问回 687 条、首条是证券投资基金法）。结果本身挑不出来，就把
@@ -184,56 +311,9 @@ def _count_note(result: dict, source: str, page: int) -> str:
 _text_cache = {}
 _interp_cache = {}
 
-# Trusted tax-practice WeChat public account sources for interpretation/web search
-# ── Content filter: domains/keywords that indicate non-tax garbage results ──
-_BLOCKED_DOMAINS = [
-    "game", "4399", "7k7k", "xiaoyouxi", "youxi", "yxdown", "3dmgame",
-    "gamersky", "duowan", "17173", "52pk", "sina.com.cn/game",
-    "bilibili.com/video", "douyin.com", "kuaishou.com", "weibo.com",
-    "zhihu.com/question", "tieba.baidu.com", "baike.baidu.com/item",
-]
-_BLOCKED_TITLE_WORDS = [
-    "游戏", "小游戏", "手游", "网游", "页游", "棋牌", "捕鱼",
-    "娱乐", "八卦", "明星", "综艺", "电影", "电视剧",
-    "体育", "彩票", "竞彩", "博彩",
-    "小说", "漫画", "动漫",
-]
-
-def _is_garbage_result(url: str = "", title: str = "") -> bool:
-    """Filter out clearly irrelevant/non-tax content."""
-    lower_url = url.lower()
-    for kw in _BLOCKED_DOMAINS:
-        if kw in lower_url:
-            return True
-    lower_title = title.lower()
-    for kw in _BLOCKED_TITLE_WORDS:
-        if kw in lower_title:
-            return True
-    return False
-
-TAX_PRACTICE_SOURCES = [
-    {"name": "小颖言税", "query_hint": "小颖言税"},
-    {"name": "税海涛声", "query_hint": "税海涛声"},
-    {"name": "会计网",   "query_hint": "会计网"},
-    {"name": "税小课",   "query_hint": "税小课服务"},
-    {"name": "朴税",     "query_hint": "朴税"},
-    # 这两个是 /api/web-related 实际会直连的源，不列进来的话，
-    # 税屋和公众号的条目会被打成"实务解读"以外的泛标签。
-    {"name": "税屋",     "query_hint": "shui5.cn"},
-    {"name": "微信公众号", "query_hint": "mp.weixin.qq.com"},
-]
-# 官方站点：这些是政策原文来源，不能标成"实务解读"
-OFFICIAL_DOMAINS = [
-    "chinatax.gov.cn", "mof.gov.cn", "gov.cn", "npc.gov.cn",
-    "chinatax.cn", "chinatax.gov",
-]
-# Sources that should be tagged as "实务解读" even if not from .gov.cn
-# 不要用 "tax" 这种裸子串：chinatax.gov.cn 含 tax，会把官方站点误判成实务解读。
-PRACTICE_DOMAIN_KEYWORDS = [
-    "小颖言税", "税海涛声", "会计网", "税小课", "朴税",
-    "mp.weixin.qq.com", "zhuanlan.zhihu.com", "toutiao.com",
-    "shui5.cn", "shuiwu", "kuaiji", "chinaacc", "shuilishi", "shuikuai",
-]
+# 相关网页的三路组合、垃圾过滤与来源标签都在 tax_related 里。
+# 这一层只留转出，Flask 与三个适配器才用的是同一份判据。
+_is_garbage_result = tax_related.is_garbage_result
 
 # ── Interpretation Search Engine ─────────────────────────────────────────
 
@@ -317,53 +397,9 @@ def _source_label(site: str) -> str:
     return site
 
 
-def _is_practice_source(label_or_domain: str) -> bool:
-    """Check if a source label matches known tax practice outlets."""
-    s = (label_or_domain or "").lower()
-    # 官方站点优先排除：chinatax.gov.cn 里含 "tax"，不先排除会被误判
-    for dom in OFFICIAL_DOMAINS:
-        if dom in s:
-            return False
-    for kw in PRACTICE_DOMAIN_KEYWORDS:
-        if kw.lower() in s:
-            return True
-    return False
-
-
-def _practice_source_name(domain: str, title: str) -> str:
-    """Return the practice source name if the domain/title matches, else ''."""
-    combined = f"{domain} {title}".lower()
-    for src in TAX_PRACTICE_SOURCES:
-        if src["query_hint"] in combined:
-            return src["name"]
-    return ""
-
-
 def _search_practice_sources(query: str, n: int = 3) -> list[dict]:
-    """Practical-interpretation sources: www.shui5.cn + WeChat public accounts.
-
-    Both were previously routed through Bing site: search, which no longer
-    returns usable results. They are now queried through their own modules.
-    """
-    results = []
-    seen = set()
-
-    for name, data in [("税屋", search_shui5(query, size=n)),
-                       ("微信公众号", search_wechat(query, size=n))]:
-        for item in (data or {}).get("results", []):
-            href = item.get("url", "")
-            if not href or href in seen or _is_garbage_result(href, item.get("title", "")):
-                continue
-            seen.add(href)
-            results.append({
-                "title": item.get("title", ""),
-                "url": href,
-                "date": item.get("date", ""),
-                "source": name,
-                "source_label": name,
-                "snippet": (item.get("snippet") or item.get("content", ""))[:180],
-            })
-    return results
+    """税屋与公众号的实务解读；实现与三个适配器共用 tax_related 那一份。"""
+    return tax_related.search_practice_sources(query, n)
 
 
 def search_interpretations(law_title: str, keyword: str = "",
@@ -842,38 +878,9 @@ def api_interpretations(bbbs_id):
 
 # ── Web-related search (broader, more practical) ──────────────────────────
 def _search_web_broad(query: str, n: int = 8) -> tuple[list, str]:
-    """Broader web search for practical tax-policy analysis.
-
-    引擎是 360（m.so.com），返回 (结果, 拦截说明)。Bing 已移除：它对 site:
-    查询返回空结果块；百度也移除：本主机几乎每次都被打成"百度安全验证"页。
-    """
-    found = so360_search(f"{query} 税收 政策解读", site="", size=n)
-    if found.get("_error"):
-        return [], found["_error"]
-
-    results = []
-    for item in found["results"]:
-        href = item.get("url", "")
-        title = item.get("title", "")
-        if not href or len(title) < 8 or _is_garbage_result(href, title):
-            continue
-        domain = re.search(r"https?://(?:www\.)?([^/]+)", href)
-        domain_label = domain.group(1) if domain else ""
-        results.append({
-            "title": title,
-            "url": href,
-            "date": "",
-            "source": domain_label,
-            "source_label": "官方来源" if ("chinatax" in href or "gov.cn" in href) else (
-                _practice_source_name(domain_label, title) or "实务解读"
-            ),
-            "snippet": item.get("snippet", ""),
-        })
-    # 必须带着空说明返回：调用方按 `items, why = ...` 解包（见 api_web_related），
-    # 只 `return results` 时解包按列表长度成败——1 条与 3 条都抛 ValueError 被
-    # `except Exception` 吞掉，等于全网这一路永远交白卷；正好 2 条时两个名字各
-    # 接住一个 dict，随后 `list(dict)` 拿到键名，接口回 500。
-    return results, ""
+    """360 全网那一路；实现与三个适配器共用 tax_related 那一份。"""
+    results, note = tax_related.search_web_broad(query, n)
+    return results, note
 
 
 @app.route("/api/web-related/<bbbs_id>", methods=["GET"])
@@ -886,45 +893,11 @@ def api_web_related(bbbs_id):
         if not title:
             return jsonify({"error": "Law not found"}), 404
 
-        short_title = title.replace("中华人民共和国", "").strip()
-        search_query = f"{short_title} {keyword}" if keyword else short_title
-
-        # ── Concurrent: practice sources + broad web ──
-        all_sources = []
-        seen = set()
-        web_error = ""
-
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            f_practice = pool.submit(_search_practice_sources, search_query, 3)
-            f_web = pool.submit(_search_web_broad, search_query, 8)
-            try:
-                web_items, web_error = f_web.result(timeout=20)
-            except Exception:
-                web_items = []
-            try:
-                practice_items = f_practice.result(timeout=20)
-            except Exception:
-                practice_items = []
-
-        for item in list(practice_items) + list(web_items):
-            if not item.get("url"):
-                continue
-            if item["url"] in seen or _is_garbage_result(item["url"], item.get("title", "")):
-                continue
-            seen.add(item["url"])
-            all_sources.append(item)
-
-        payload = {
-            "law_id": bbbs_id,
-            "law_title": title,
-            "keyword": keyword,
-            "total": len(all_sources),
-            "sources": all_sources,
-            "searched_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        }
-        # 全网这一路被拦时说明原因，避免空列表被读成"网上没有相关解读"
-        if web_error:
-            payload["engine_error"] = web_error
+        payload = tax_related.collect_related(
+            title, keyword,
+            practice_fetch=_search_practice_sources,
+            web_fetch=_search_web_broad)
+        payload["law_id"] = bbbs_id
         return jsonify(payload)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1023,6 +996,290 @@ def api_calc_run():
         why = (f"税率表少给一列：{e.args[0]}"
                if isinstance(e, KeyError) and e.args else str(e))
         return jsonify({"error": why, "需要的参数": need}), 400
+
+
+# ── 分析主线 ①：判型与覆盖率 ─────────────────────────────
+
+@app.route("/api/classify", methods=["POST"])
+def api_classify():
+    """① 判型：题型、前提缺口与该查什么，纯离线。
+
+    网页此前只有检索入口，判型与覆盖率都只能在命令行里走：界面拿到一屏法条后，
+    没有任何地方能回答"这道题属于哪一类、结论该落在规则还是个案"。这一路把
+    tax_analyze.analyze 原样暴露出来，题型判定与换源用的是同一份词表。
+    """
+    try:
+        data = _json_body()
+        question = _text_field(data, "question")
+        max_probes = _int_param(data, "max_probes",
+                                tax_analyze.DEFAULT_MAX_PROBES, 1, 10)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify(tax_analyze.analyze(question, max_probes=max_probes))
+
+
+@app.route("/api/coverage", methods=["POST"])
+def api_coverage():
+    """② 依据覆盖率：逐项判状态并算覆盖。
+
+    `evidence=null` 是"还没检"，`[]` 是"检了没有"——两者在界面上必须分开，
+    混成一个会把检索失败读成这类题不需要依据（tax_coverage.assess 的同一口径）。
+    qtype 不认识时回 400 并带上可选题型，不折成 500。
+    """
+    try:
+        data = _json_body()
+        qtype = _text_field(data, "qtype")
+        question = _text_field(data, "question", required=False)
+        skeleton = _text_field(data, "skeleton", required=False)
+        evidence = data.get("evidence")
+        if evidence is not None and not isinstance(evidence, list):
+            raise ValueError("evidence 要数组或 null：null 是『还没检』，[] 是『检了没有』")
+        params = _object_field(data, "params")
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    try:
+        return jsonify(tax_coverage.assess(qtype, question=question,
+                                           evidence=evidence, skeleton=skeleton,
+                                           params=params))
+    except KeyError as e:
+        return jsonify({"error": str(e.args[0]) if e.args else "题型不存在",
+                        "可选题型": sorted(tax_coverage.load()["题型"])}), 400
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+
+# ── 分析主线 ⑤⑥：计划、取证、成稿底稿 ────────────────────
+
+@app.route("/api/analysis/plan", methods=["POST"])
+def api_analysis_plan():
+    """⑤ 分析计划：分几轮、每轮查什么、去哪个源。不联网。"""
+    try:
+        data = _json_body()
+        question = _text_field(data, "question")
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify(tax_answer.build_plan(question))
+
+
+def _gather_args(data: dict) -> tuple:
+    question = _text_field(data, "question")
+    at = _text_field(data, "at", required=False)
+    at = check_iso_date(at, "at") if at else ""
+    read_body = _bool_field(data, "read_body", True)
+    check_citations = _bool_field(data, "check_citations", True)
+    max_per_round = (None if data.get("max_per_round") is None
+                     else _int_param(data, "max_per_round", 0, 1, 200))
+    return question, at, read_body, check_citations, max_per_round
+
+
+@app.route("/api/analysis/gather", methods=["POST"])
+def api_analysis_gather():
+    """⑤ 取证：按计划逐轮检索、抓正文、核引文，回定级后的依据清单。
+
+    这一路会联网；部分源失败留在结果的 errors 里不抛，整条链路失败才回 502。
+    与 /api/search 的区别是它带计划与定级，不是把几路结果平铺给界面。
+    """
+    try:
+        question, at, read_body, check_citations, max_per_round = \
+            _gather_args(_json_body())
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    try:
+        return jsonify(tax_answer.gather(question, at=at, read_body=read_body,
+                                         max_per_round=max_per_round,
+                                         check_citations=check_citations))
+    except Exception as e:
+        return jsonify({"error": "分析检索失败：" + tax_http.short_reason(e)}), 502
+
+
+@app.route("/api/analysis/answer", methods=["POST"])
+def api_analysis_answer():
+    """⑥ 成稿底稿：取证后再按角色分层，出主依据／其余法定依据／实务口径／待核线索。
+
+    与 /api/analysis/gather 同样联网，参数一致；多出来的一步是 compose，
+    它不写最终答案，只给模型照着组织文字的结构化底稿。
+    """
+    try:
+        question, at, read_body, check_citations, max_per_round = \
+            _gather_args(_json_body())
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    try:
+        plan = tax_answer.gather(question, at=at, read_body=read_body,
+                                 max_per_round=max_per_round,
+                                 check_citations=check_citations)
+        return jsonify(tax_answer.compose(plan))
+    except Exception as e:
+        return jsonify({"error": "分析检索失败：" + tax_http.short_reason(e)}), 502
+
+
+# ── 输出模板 ─────────────────────────────────────────────
+
+@app.route("/api/analysis/templates", methods=["GET"])
+def api_analysis_templates():
+    """成稿模板清单。键集合由 TEMPLATE_KEYS 定，正文从 references 那一份切。
+
+    只回键与标题，正文按需取：十一个模板全文一次发过去会把首屏撑成一大段
+    与当前题无关的说明。
+    """
+    sections = _template_sections()
+    missing = [k for k, title in TEMPLATE_KEYS.items() if title not in sections]
+    return jsonify({
+        "count": len(TEMPLATE_KEYS),
+        "templates": [{"key": k, "title": t} for k, t in TEMPLATE_KEYS.items()],
+        "missing": missing,
+    })
+
+
+@app.route("/api/analysis/templates/<key>", methods=["GET"])
+def api_analysis_template(key):
+    """单个模板正文。未知 key 回 404 并列出可选值；文件少一节回 500。"""
+    if key not in TEMPLATE_KEYS:
+        return jsonify({"error": f"没有这个模板：{key}",
+                        "可选": list(TEMPLATE_KEYS)}), 404
+    title = TEMPLATE_KEYS[key]
+    text = _template_sections().get(title, "")
+    if not text:
+        return jsonify({"error": f"模板文件里缺这一节：{title}"}), 500
+    return jsonify({"key": key, "title": title, "text": text})
+
+
+# ── 检查工具：类案、账套、稽查、受理、内控 ──────────────────
+
+@app.route("/api/cases", methods=["POST"])
+def api_cases():
+    """类案台账：按主题与要素发检索式，过滤去重后回候选清单。
+
+    shui5=true 才加税屋那一路；两路取数出口都在引擎里，这一层只透传参数。
+    mode/order 的取值域由引擎校验，非法值在发请求前就回 400。
+    """
+    try:
+        data = _json_body()
+        topic = _text_field(data, "topic")
+        elements = _list_field(data, "elements")
+        mode = _text_field(data, "mode", required=False) or "exhaustive"
+        pages = _int_param(data, "pages", 1, 1, 20)
+        limit = _int_param(data, "limit", 10, 1, 100)
+        order = _text_field(data, "order", required=False) or "relevance"
+        as_of = _text_field(data, "as_of", required=False)
+        shui5 = _bool_field(data, "shui5", False)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    shui5_fetch = (lambda w: search_shui5(w, size=5)) if shui5 else None
+    try:
+        return jsonify(tax_cases.collect(topic, elements, mode, pages, order,
+                                         limit, as_of, shui5_fetch=shui5_fetch))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": "类案检索失败：" + tax_http.short_reason(e)}), 502
+
+
+@app.route("/api/ledger", methods=["POST"])
+def api_ledger():
+    """账套巡检：按选中规则比账上的数，出风险条目与判不动清单。纯本地，不联网。
+
+    没给账套直接 400：这一层不拿题面推断账上的数（NeedsLedger 的原话带回）。
+    """
+    try:
+        data = _json_body()
+        ledger = _object_field(data, "ledger")
+        if ledger is None:
+            raise ValueError("缺少 ledger：没给账套就不巡检，这一层不拿题面推断账上的数")
+        params = _object_field(data, "params")
+        codes = _list_field(data, "codes")
+        tolerance = _float_field(data, "tolerance", 0.0)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    try:
+        return jsonify(tax_ledger.scan(ledger, params=params, codes=codes,
+                                       tolerance=tolerance))
+    except (tax_ledger.NeedsLedger, tax_ledger.Unresolved,
+            tax_ledger.NotInTable, ValueError) as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/inspection", methods=["POST"])
+def api_inspection():
+    """稽查模拟问询：按检查要点逐问出六字段单元与缺口。纯离线。"""
+    try:
+        data = _json_body()
+        answers = _object_field(data, "answers")
+        domains = _list_field(data, "domains")
+        codes = _list_field(data, "codes")
+        scenario = _text_field(data, "scenario", required=False)
+        signal = _text_field(data, "signal", required=False)
+        tolerance = _float_field(data, "tolerance", 0.0)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    try:
+        return jsonify(tax_inspect.build(answers, domains, codes, scenario,
+                                         signal, tolerance))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/intake/blank", methods=["GET"])
+def api_intake_blank():
+    """出一张空白受理表，包在 document 里，改完可直接 POST /api/intake。"""
+    return jsonify({"document": tax_intake.blank()})
+
+
+@app.route("/api/intake", methods=["POST"])
+def api_intake():
+    """多合同受理：合同清单、九维度覆盖、出处待核的抽取。纯离线。"""
+    try:
+        data = _json_body()
+        document = _object_field(data, "document")
+        if document is None:
+            raise ValueError("缺少 document：受理报告要的是合同与判断单元那一份对象")
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    try:
+        return jsonify(tax_intake.intake(document))
+    except (tax_intake.NeedsContracts, ValueError) as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/reconcile", methods=["POST"])
+def api_reconcile():
+    """合同条款与履行记录对账，产出差异条目与证据缺口。纯离线。"""
+    try:
+        data = _json_body()
+        document = _object_field(data, "document")
+        if document is None:
+            raise ValueError("缺少 document：对账要的是合同、边与判断单元那一份对象")
+        confirmed = _list_field(data, "confirmed")
+        dims = _list_field(data, "dims")
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    try:
+        return jsonify(tax_intake.reconcile(document, confirmed, dims))
+    except (tax_intake.NeedsContracts, ValueError) as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/controls", methods=["POST"])
+def api_controls():
+    """内控生成：把已确认缺口转成九要素制度文本。纯离线。
+
+    diagnosis 可直传 /api/inspection 的整个输出、{"缺口": [...]} 或裸清单；
+    三种形态由引擎归一，认不出时回 400 并说明该给的形态。
+    """
+    try:
+        data = _json_body()
+        diagnosis = data.get("diagnosis")
+        if diagnosis is not None and not isinstance(diagnosis, (dict, list)):
+            raise ValueError("diagnosis 要对象、数组或 null")
+        assumptions = _list_field(data, "assumptions")
+        links = _list_field(data, "links")
+        codes = _list_field(data, "codes")
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    try:
+        return jsonify(tax_control.build(diagnosis, assumptions, links, codes))
+    except (tax_control.NeedsDiagnosis, ValueError) as e:
+        return jsonify({"error": str(e)}), 400
 
 
 @app.route("/api/health", methods=["GET"])

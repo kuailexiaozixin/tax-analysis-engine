@@ -66,7 +66,7 @@ OFFLINE_GROUP = [
     ("限流记录实测台账契约（三字段齐全、闸与记录一一对应）",
      [PY, str(TESTS_DIR / "test_rate_limit_ledger.py")]),
     ("detail 缓存用例（命名空间/留痕/正文红线）", [PY, str(TESTS_DIR / "test_detail_cache.py")]),
-    ("服务端路由用例（9 路由/状态码/打桩上游）", [PY, str(TESTS_DIR / "test_server_routes.py")]),
+    ("服务端路由用例（25 路由/状态码/打桩上游）", [PY, str(TESTS_DIR / "test_server_routes.py")]),
     ("日期区间用例（NPC 复核/只给单端/聚合下推与窗口内补筛/400/前端承接）",
      [PY, str(TESTS_DIR / "test_date_window.py")]),
     ("前端省份控件契约（控件在官方解读页、站点清单与后端一致）",

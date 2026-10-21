@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Flask 服务端路由用例。全部打桩上游，不联网。
 
-tax_server.py 是前端唯一的后端，11 个路由注册（`/api/calc` 的 GET 与 POST 各一条）
+tax_server.py 是前端唯一的后端，25 个路由注册（`/api/calc` 的 GET 与 POST 各一条）
 需要接口级测试钉住契约——
 只靠联网 e2e 间接碰到它时，e2e 失败说不清是"路由写错了"还是
 "对方限流了"。这一组把路由自己的契约钉住：
@@ -883,7 +883,7 @@ class TestWebRelatedRoute(_RouteCase):
                               "url": "https://shui5.cn/a/%d.html" % i,
                               "snippet": "摘要"} for i in range(n)]}
         return (
-            mock.patch.object(tax_server, "so360_search",
+            mock.patch.object(tax_server.tax_related, "so360_search",
                               lambda query, site="", size=10: found),
             mock.patch.object(tax_server, "fetch_detail", return_value={"title": "增值税法"}),
             mock.patch.object(tax_server, "_search_practice_sources", return_value=[]),
@@ -913,6 +913,33 @@ class TestWebRelatedRoute(_RouteCase):
             r = self.client.get("/api/web-related/abc123")
         self.assertEqual(200, r.status_code)
         self.assertEqual(2, r.get_json()["total"])
+
+    def test_shared_related_layer_merges_for_flask_and_adapters(self):
+        """三路合并、去重、短标题与拦截说明都在 tax_related 这一层。
+
+        Flask 与三个适配器共用它；只在 Flask 路由上测，适配器那一侧就没有
+        同一份判据的用例。
+        """
+        calls = {}
+
+        def fake_practice(query, n):
+            calls["practice"] = (query, n)
+            return [{"url": "https://a.test/1", "title": "解读A"}]
+
+        def fake_web(query, n):
+            calls["web"] = (query, n)
+            return [{"url": "https://a.test/1", "title": "重复A"},
+                    {"url": "https://b.test/2", "title": "解读B"}], "360 被拦截"
+
+        body = tax_server.tax_related.collect_related(
+            "中华人民共和国增值税法", "税率",
+            practice_fetch=fake_practice, web_fetch=fake_web)
+        self.assertEqual({"practice": ("增值税法 税率", 3),
+                          "web": ("增值税法 税率", 8)}, calls)
+        self.assertEqual(2, body["total"])
+        self.assertEqual(["https://a.test/1", "https://b.test/2"],
+                         [s["url"] for s in body["sources"]])
+        self.assertEqual("360 被拦截", body["engine_error"])
 
 
 class TestCalcRoutes(_RouteCase):
@@ -1127,6 +1154,300 @@ class TestCalcRoutes(_RouteCase):
         r = self._post({"骨架": "增值税一般计税", "参数": payload})
         self.assertEqual(400, r.status_code)
         self.assertIn("max", r.get_json()["error"])
+
+
+class TestAnalysisRoutes(_RouteCase):
+    """① 判型与 ② 覆盖率：网页补齐分析主线的头两步。
+
+    这两条路由此前不存在，界面上能做的只有检索；用例钉的是"参数原样到引擎、
+    坏请求在入口报 400、未检与检了没有不被合并"这三件事。
+    """
+
+    def test_classify_forwards_question_and_probe_limit(self):
+        with mock.patch.object(tax_server.tax_analyze, "analyze",
+                               return_value={"type": {"type": "lookup"}}) as m:
+            r = self.client.post("/api/classify",
+                                 json={"question": "研发费用加计扣除比例", "max_probes": 5})
+        self.assertEqual(200, r.status_code)
+        self.assertEqual("研发费用加计扣除比例", m.call_args[0][0])
+        self.assertEqual(5, m.call_args.kwargs["max_probes"])
+
+    def test_classify_defaults_to_the_engines_own_probe_limit(self):
+        with mock.patch.object(tax_server.tax_analyze, "analyze",
+                               return_value={}) as m:
+            r = self.client.post("/api/classify", json={"question": "增值税税率"})
+        self.assertEqual(200, r.status_code)
+        self.assertEqual(tax_server.tax_analyze.DEFAULT_MAX_PROBES,
+                         m.call_args.kwargs["max_probes"])
+
+    def test_classify_rejects_blank_question_before_the_engine(self):
+        for body in ({}, {"question": "   "}, {"question": 3}):
+            with self.subTest(body=body):
+                with mock.patch.object(tax_server.tax_analyze, "analyze") as m:
+                    r = self.client.post("/api/classify", json=body)
+                self.assertEqual(400, r.status_code)
+                m.assert_not_called()
+
+    def test_classify_rejects_a_non_object_body(self):
+        with mock.patch.object(tax_server.tax_analyze, "analyze") as m:
+            r = self.client.post("/api/classify", data="不是 JSON",
+                                 content_type="text/plain")
+        self.assertEqual(400, r.status_code)
+        m.assert_not_called()
+
+    def test_coverage_keeps_null_and_empty_evidence_apart(self):
+        """null 是『还没检』，[] 是『检了没有』，路由不许把两者折成同一个。"""
+        for raw in (None, []):
+            with self.subTest(evidence=raw):
+                body = {"qtype": "lookup", "question": "研发费用加计扣除"}
+                if raw is not None:
+                    body["evidence"] = raw
+                with mock.patch.object(tax_server.tax_coverage, "assess",
+                                       return_value={}) as m:
+                    r = self.client.post("/api/coverage", json=body)
+                self.assertEqual(200, r.status_code)
+                got = m.call_args.kwargs["evidence"]
+                if raw is None:
+                    self.assertIsNone(got)
+                else:
+                    self.assertEqual([], got)
+
+    def test_coverage_unknown_qtype_is_400_with_the_engine_list(self):
+        r = self.client.post("/api/coverage", json={"qtype": "不存在的题型"})
+        self.assertEqual(400, r.status_code)
+        body = r.get_json()
+        self.assertIn("不存在的题型", body["error"])
+        self.assertIn("lookup", body["可选题型"])
+
+    def test_coverage_runs_on_a_real_qtype(self):
+        r = self.client.post("/api/coverage",
+                             json={"qtype": "lookup", "question": "研发费用加计扣除",
+                                   "evidence": []})
+        self.assertEqual(200, r.status_code)
+        self.assertIn("覆盖率", r.get_json())
+
+    def test_coverage_rejects_wrong_container_shapes(self):
+        for patch_body in ({"evidence": {}}, {"params": []}):
+            with self.subTest(body=patch_body):
+                with mock.patch.object(tax_server.tax_coverage, "assess") as m:
+                    r = self.client.post("/api/coverage",
+                                         json=dict(patch_body, qtype="lookup"))
+                self.assertEqual(400, r.status_code)
+                m.assert_not_called()
+
+
+class TestAnswerRoutes(_RouteCase):
+    """⑤ 分析计划／取证／成稿底稿：路由只转发，不重写计划与分层。"""
+
+    def test_plan_is_offline_and_returns_rounds(self):
+        r = self.client.post("/api/analysis/plan",
+                             json={"question": "研发费用加计扣除比例是多少"})
+        self.assertEqual(200, r.status_code)
+        body = r.get_json()
+        self.assertIn("rounds", body)
+        self.assertIn("type", body)
+
+    def test_plan_requires_a_question(self):
+        r = self.client.post("/api/analysis/plan", json={})
+        self.assertEqual(400, r.status_code)
+
+    def test_gather_forwards_every_switch(self):
+        with mock.patch.object(tax_server.tax_answer, "gather",
+                               return_value={"evidence": []}) as m:
+            r = self.client.post("/api/analysis/gather", json={
+                "question": "研发费用加计扣除", "at": "2025-06-30",
+                "read_body": False, "check_citations": False,
+                "max_per_round": 3})
+        self.assertEqual(200, r.status_code)
+        self.assertEqual("研发费用加计扣除", m.call_args[0][0])
+        self.assertEqual({"at": "2025-06-30", "read_body": False,
+                          "check_citations": False, "max_per_round": 3},
+                         m.call_args.kwargs)
+
+    def test_gather_defaults_read_body_and_citation_check_on(self):
+        with mock.patch.object(tax_server.tax_answer, "gather",
+                               return_value={}) as m:
+            self.client.post("/api/analysis/gather", json={"question": "增值税"})
+        self.assertTrue(m.call_args.kwargs["read_body"])
+        self.assertTrue(m.call_args.kwargs["check_citations"])
+        self.assertIsNone(m.call_args.kwargs["max_per_round"])
+
+    def test_bad_at_or_limit_is_400_before_network(self):
+        for body in ({"question": "增值税", "at": "2024-13-01"},
+                     {"question": "增值税", "max_per_round": 0},
+                     {"question": "增值税", "read_body": "yes"}):
+            with self.subTest(body=body):
+                with mock.patch.object(tax_server.tax_answer, "gather") as m:
+                    r = self.client.post("/api/analysis/gather", json=body)
+                self.assertEqual(400, r.status_code)
+                m.assert_not_called()
+
+    def test_gather_upstream_failure_is_502(self):
+        with mock.patch.object(tax_server.tax_answer, "gather",
+                               side_effect=RuntimeError("connection reset")):
+            r = self.client.post("/api/analysis/gather", json={"question": "增值税"})
+        self.assertEqual(502, r.status_code)
+        self.assertIn("connection reset", r.get_json()["error"])
+
+    def test_answer_composes_the_gathered_plan(self):
+        plan = {"evidence": [{"title": "a"}], "rounds_done": ["r1"]}
+        with mock.patch.object(tax_server.tax_answer, "gather",
+                               return_value=plan) as g, \
+             mock.patch.object(tax_server.tax_answer, "compose",
+                               return_value={"主依据": "a"}) as c:
+            r = self.client.post("/api/analysis/answer",
+                                 json={"question": "增值税", "read_body": False})
+        self.assertEqual(200, r.status_code)
+        self.assertIs(plan, c.call_args[0][0])
+        self.assertFalse(g.call_args.kwargs["read_body"])
+
+
+class TestTemplateRoutes(_RouteCase):
+    """输出模板清单与正文。键集合只能来自 TEMPLATE_KEYS，正文只能来自 references。"""
+
+    def test_index_lists_every_key_and_no_section_is_missing(self):
+        r = self.client.get("/api/analysis/templates")
+        self.assertEqual(200, r.status_code)
+        body = r.get_json()
+        self.assertEqual(len(tax_server.TEMPLATE_KEYS), body["count"])
+        self.assertEqual(list(tax_server.TEMPLATE_KEYS),
+                         [t["key"] for t in body["templates"]])
+        self.assertEqual([], body["missing"],
+                         "模板文件缺小节：界面会静默少一个可选的成稿形态")
+
+    def test_detail_returns_the_section_from_the_reference_file(self):
+        r = self.client.get("/api/analysis/templates/analysis")
+        self.assertEqual(200, r.status_code)
+        body = r.get_json()
+        self.assertEqual("分析六段式", body["title"])
+        self.assertIn("## 分析六段式", body["text"])
+
+    def test_unknown_key_is_404_with_the_allowed_list(self):
+        r = self.client.get("/api/analysis/templates/no-such-template")
+        self.assertEqual(404, r.status_code)
+        self.assertIn("no-such-template", r.get_json()["error"])
+        self.assertEqual(list(tax_server.TEMPLATE_KEYS), r.get_json()["可选"])
+
+
+class TestCaseRoute(_RouteCase):
+    """类案台账：参数透传与两条出口（总局／税屋）的开关。"""
+
+    def test_collect_receives_the_whole_request(self):
+        with mock.patch.object(tax_server.tax_cases, "collect",
+                               return_value={"候选": []}) as m:
+            r = self.client.post("/api/cases", json={
+                "topic": "骗取出口退税", "elements": ["主体", " "],
+                "mode": "recent", "pages": 2, "order": "date_desc",
+                "limit": 5, "as_of": "2025-01-01", "shui5": True})
+        self.assertEqual(200, r.status_code)
+        self.assertEqual(("骗取出口退税", ["主体"], "recent", 2, "date_desc",
+                          5, "2025-01-01"), m.call_args[0])
+        self.assertTrue(callable(m.call_args.kwargs["shui5_fetch"]))
+
+    def test_shui5_off_keeps_the_second_source_out(self):
+        with mock.patch.object(tax_server.tax_cases, "collect",
+                               return_value={}) as m:
+            self.client.post("/api/cases", json={"topic": "骗取出口退税"})
+        self.assertIsNone(m.call_args.kwargs["shui5_fetch"])
+
+    def test_bad_order_is_400_before_any_fetch(self):
+        with mock.patch.object(tax_server.tax_cases.tws,
+                               "search_chinatax") as fetch:
+            r = self.client.post("/api/cases",
+                                 json={"topic": "骗取出口退税", "order": "最新"})
+        self.assertEqual(400, r.status_code)
+        self.assertIn("order", r.get_json()["error"])
+        fetch.assert_not_called()
+
+    def test_upstream_failure_is_502(self):
+        with mock.patch.object(tax_server.tax_cases, "collect",
+                               side_effect=RuntimeError("timed out")):
+            r = self.client.post("/api/cases", json={"topic": "骗取出口退税"})
+        self.assertEqual(502, r.status_code)
+        self.assertIn("timed out", r.get_json()["error"])
+
+
+class TestInspectionToolRoutes(_RouteCase):
+    """账套／稽查／受理／对账／内控五组检查工具：全部离线，坏输入 400。"""
+
+    LEDGER = {"行": [
+        {"行号": 1, "科目": "管理费用—业务招待费", "金额": 380000,
+         "税前扣除额": 380000},
+    ]}
+
+    def test_ledger_scans_a_real_book(self):
+        r = self.client.post("/api/ledger", json={"ledger": self.LEDGER})
+        self.assertEqual(200, r.status_code)
+        body = r.get_json()
+        self.assertIn("风险条目", body)
+        self.assertIn("规则", body)
+
+    def test_ledger_without_a_book_is_400(self):
+        with mock.patch.object(tax_server.tax_ledger, "scan") as m:
+            r = self.client.post("/api/ledger", json={})
+        self.assertEqual(400, r.status_code)
+        self.assertIn("ledger", r.get_json()["error"])
+        m.assert_not_called()
+
+    def test_ledger_rejects_out_of_range_or_non_numeric_tolerance(self):
+        for tol in (1.2, -0.1, "0.1", True):
+            with self.subTest(tolerance=tol):
+                r = self.client.post("/api/ledger",
+                                     json={"ledger": self.LEDGER, "tolerance": tol})
+                self.assertEqual(400, r.status_code)
+
+    def test_inspection_runs_on_empty_answers(self):
+        r = self.client.post("/api/inspection", json={})
+        self.assertEqual(200, r.status_code)
+        self.assertIn("问询", r.get_json())
+
+    def test_inspection_rejects_bad_containers_and_tolerance(self):
+        for body in ({"answers": []}, {"tolerance": 1.5}):
+            with self.subTest(body=body):
+                r = self.client.post("/api/inspection", json=body)
+                self.assertEqual(400, r.status_code)
+
+    def test_blank_intake_is_fillable_and_postable(self):
+        r = self.client.get("/api/intake/blank")
+        self.assertEqual(200, r.status_code)
+        doc = r.get_json()["document"]
+        self.assertEqual(["CT-1"], [c["代号"] for c in doc["合同"]])
+        self.assertEqual(["U1"], [u["代号"] for u in doc["判断单元"]])
+
+        doc["合同"][0]["名称"] = "采购合同"
+        r = self.client.post("/api/intake", json={"document": doc})
+        self.assertEqual(200, r.status_code)
+        self.assertEqual(9, r.get_json()["缺维度数"])
+
+        r = self.client.post("/api/reconcile", json={"document": doc})
+        self.assertEqual(200, r.status_code)
+        self.assertIn("核对", r.get_json())
+
+    def test_intake_without_a_contract_name_is_400(self):
+        doc = tax_server.tax_intake.blank()
+        r = self.client.post("/api/intake", json={"document": doc})
+        self.assertEqual(400, r.status_code)
+        self.assertIn("名称", r.get_json()["error"])
+
+    def test_intake_and_reconcile_require_the_document_object(self):
+        for url in ("/api/intake", "/api/reconcile"):
+            with self.subTest(url=url):
+                r = self.client.post(url, json={})
+                self.assertEqual(400, r.status_code)
+                self.assertIn("document", r.get_json()["error"])
+
+    def test_controls_need_a_diagnosis_or_assumptions(self):
+        r = self.client.post("/api/controls", json={})
+        self.assertEqual(400, r.status_code)
+
+        r = self.client.post("/api/controls",
+                             json={"assumptions": ["缺少书面合同"]})
+        self.assertEqual(200, r.status_code)
+        self.assertIn("控制活动", r.get_json())
+
+    def test_controls_rejects_a_scalar_diagnosis(self):
+        r = self.client.post("/api/controls", json={"diagnosis": "缺口"})
+        self.assertEqual(400, r.status_code)
 
 
 SOURCE_UI_BLOCK_RE = re.compile(r"(?ms)^const SOURCE_UI=\{(.*?)^\};")

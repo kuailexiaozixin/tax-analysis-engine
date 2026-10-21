@@ -36,14 +36,19 @@
 ```
 前端  frontend/index.html（零框架单文件）
   搜索栏 · 高级筛选（范围/类型/时效/排序/来源/日期区间）
-  智能引导 4 步向导 · 算式展开面板 · 结果卡片 · 法规弹窗 4 标签页（原文｜官方解读｜AI 解读｜相关网页）
+  右侧三块互斥面板：智能引导 4 步向导 · 算式展开 · 分析工作台 5 标签（分析｜类案｜法规｜检查工具｜输出模板）
+  结果卡片 · 法规弹窗 4 标签页（原文｜官方解读｜AI 解读｜相关网页）
   地方口径省份下拉在"官方解读"页顶部（它只对该页生效，所以不放搜索栏）
         │ HTTP
         ▼
-接口层  scripts/tax_server.py（Flask）
-  /api/search · /api/text · /api/detail · /api/interpretations
-  /api/ai-interpret · /api/web-related · /api/quick-tax-types（另含 / 与 /api/health）
-  /api/calc（GET 出骨架清单、POST 求值；直连 tax_calc.py，不进下面那条检索链，不联网不调模型）
+接口层  scripts/tax_server.py（Flask，25 条路由）
+  检索  /api/search · /api/text · /api/detail · /api/interpretations
+        /api/ai-interpret · /api/web-related · /api/quick-tax-types
+        /api/calc（GET 出骨架清单、POST 求值；直连 tax_calc.py，不进检索链，不联网不调模型）
+  分析  /api/classify · /api/coverage · /api/analysis/plan · /api/analysis/gather · /api/analysis/answer
+  工具  /api/cases · /api/ledger · /api/inspection · /api/controls
+        /api/intake/blank · /api/intake · /api/reconcile
+  模板  /api/analysis/templates · /api/analysis/templates/<key>（另含 / 与 /api/health）
         │
         ▼
 编排层  tax_answer.py（判型 → 分轮检索 → 定级 → 依据分层）
@@ -130,7 +135,7 @@
 | **测试** | `test_rate_limit_ledger.py` | 限流记录实测台账契约：每条记录三字段齐全（最近实测日期 / 实测方法含连发数与线程数 / 当时结果按形态计数）、未复测的行明写"没有当次数据"、代码里每把串行闸所保护的站点都在台账占一行（读文档与源码，不联网） |
 | **探针** | `probe_rate_limit.py` | 限流记录复测：把生产路径实际要发的那一份请求抓出来重放（跳过串行闸，量的就是并行），按形态逐项计数并回吐台账那三字段；单次总量卡 `MAX_REQUESTS=60`，`--dry-run` 一个请求都不发 |
 | **测试** | `test_detail_cache.py` | 详情缓存用例：键算法与历史缓存逐字节一致、命名空间不越界、命中留痕、老条目读时转正、缓存不含条文正文（红线）、原子写不留半截文件 |
-| **测试** | `test_server_routes.py` | 服务端 92 条（全打桩，不联网；`/api/calc` 那一路还额外把 `socket.socket` 钉死跑通一次求值）：11 个路由注册的用例 77 条（状态码与错误码、分支路由 npc/chinatax/fgk/aggregated、`source` 发取值域外的值一律 400 且一个源都不许碰、付费闸门关着时不许碰模型、上游报错如实透出不吞成空结果、会计口径与立法阶段两条提示都按用户原话判定而非按改写后的检索词、全网那一趟在真实边界（`so360_search`）打桩断言 1/2/3 条都能到载荷、`/api/calc` 的四道 400 与骨架清单字段同源、`size`／`page` 坏值一律 400 且页码只下推到 NPC 与税务总局这两路、聚合那一支把界面「匹配」控件的值真正传下去、条数说明把「库内命中」与「本轮给出」拆成两个口径、快捷栏默认铺出的那一段与现行十八个税种整份对齐）、`TestFrontendSourceVocabulary` 15 条。后者拿 `frontend/index.html` 里那两张按源分键的表（`SOURCE_UI` 与卡面日期那一栏的 `DATE_FIELD`）与后端 `DEFAULT_SOURCES`/`SOURCE_LABELS`/`DATE_SERVER_FIELDS` 逐键比对，并查出两张表之外的第二份源名表、页脚手写站点清单、渲源名那七处里的写死源名，以及快捷税种清单与 `TAX_TYPE_KEYWORDS` 的分叉。变异自检全部在隔离副本树里注入（就地改仓库源文件会被 `__pycache__` 的陈旧字节码读成没生效），本轮 10 处全打红：抹掉一个键名别名 2 红、首页清单退回手写十二项 1 红、卡面成文改回公布 2 红、角标退回只认六源 1 红、去掉多余参数那道闸 2 红（去掉后仍回 400，报的是引擎原话 `'decimal.Decimal' object is not callable`，用例查的是那句话里还认不认得出 `max`）、`RATE_TABLE_COLUMNS` 的超率累进第三枚与引擎分叉 1 红（另外两条同题材用例仍绿，说明单靠它们检不出）、日期控件提示不再写补筛 1 红、逐轮说明不再报字段名 2 红、去掉骨架名那道闸 1 红（回 500）、换源后仍按点的那一源打 stamp 2 红；随后两轮（页码与条数闸门一轮、快捷栏税种段一轮）合计注入六处、九条用例报红：`_int_param` 早退 3 红、删掉传给 `search_tax` 的 `page=page` 2 红、聚合那支的 `exact` 退回被 `parent_law` 顶替 1 红、`QUICK_TAX_SHOWN` 退回 12 一处 1 红、「烟叶税」挪回词表末尾一处 1 红、词表整个删掉「烟叶税」一处 1 红，还原后同一批用例全绿 |
+| **测试** | `test_server_routes.py` | 服务端 125 条（全打桩，不联网；`/api/calc` 那一路还额外把 `socket.socket` 钉死跑通一次求值）：25 个路由注册的用例 109 条（状态码与错误码、分支路由 npc/chinatax/fgk/aggregated、`source` 发取值域外的值一律 400 且一个源都不许碰、付费闸门关着时不许碰模型、上游报错如实透出不吞成空结果、会计口径与立法阶段两条提示都按用户原话判定而非按改写后的检索词、全网那一趟在真实边界（`so360_search`）打桩断言 1/2/3 条都能到载荷、`/api/calc` 的四道 400 与骨架清单字段同源、`size`／`page` 坏值一律 400 且页码只下推到 NPC 与税务总局这两路、聚合那一支把界面「匹配」控件的值真正传下去、条数说明把「库内命中」与「本轮给出」拆成两个口径、快捷栏默认铺出的那一段与现行十八个税种整份对齐；本轮新增 14 条路由的 32 条：判型的税种与前提轴、覆盖率把 `null` 与 `[]` 分开且两者都不算已交、计划的分轮与源、取证把每个开关原样传下去并按真实边界打桩、成稿的依据分层与免责声明、模板清单 11 项与未知键 404 附可用清单、类案候选与去重、账套缺表 400 与命中逐行、稽查问询单元与未询问单列、空白受理表填完能直接回传、受理与对账的三态结论与缺口、内控无诊断时拒生成并回吐命令）、共享检索层 1 条（税屋／公众号与 360 全网两路合并、按 URL 去重、`engine_error` 透传，Flask 与三个适配器读同一份 `tax_related`））、`TestFrontendSourceVocabulary` 15 条。后者拿 `frontend/index.html` 里那两张按源分键的表（`SOURCE_UI` 与卡面日期那一栏的 `DATE_FIELD`）与后端 `DEFAULT_SOURCES`/`SOURCE_LABELS`/`DATE_SERVER_FIELDS` 逐键比对，并查出两张表之外的第二份源名表、页脚手写站点清单、渲源名那七处里的写死源名，以及快捷税种清单与 `TAX_TYPE_KEYWORDS` 的分叉。变异自检全部在隔离副本树里注入（就地改仓库源文件会被 `__pycache__` 的陈旧字节码读成没生效），本轮 10 处全打红：抹掉一个键名别名 2 红、首页清单退回手写十二项 1 红、卡面成文改回公布 2 红、角标退回只认六源 1 红、去掉多余参数那道闸 2 红（去掉后仍回 400，报的是引擎原话 `'decimal.Decimal' object is not callable`，用例查的是那句话里还认不认得出 `max`）、`RATE_TABLE_COLUMNS` 的超率累进第三枚与引擎分叉 1 红（另外两条同题材用例仍绿，说明单靠它们检不出）、日期控件提示不再写补筛 1 红、逐轮说明不再报字段名 2 红、去掉骨架名那道闸 1 红（回 500）、换源后仍按点的那一源打 stamp 2 红；随后两轮（页码与条数闸门一轮、快捷栏税种段一轮）合计注入六处、九条用例报红：`_int_param` 早退 3 红、删掉传给 `search_tax` 的 `page=page` 2 红、聚合那支的 `exact` 退回被 `parent_law` 顶替 1 红、`QUICK_TAX_SHOWN` 退回 12 一处 1 红、「烟叶税」挪回词表末尾一处 1 红、词表整个删掉「烟叶税」一处 1 红，还原后同一批用例全绿 |
 | **测试** | `test_http_layer.py` | 统一请求层守门：AST 扫全项目、除白名单外禁止绕过 `tax_http` 的裸请求（含别名写法）、参数只透传不补全、`verify` 必填、取数失败那句错误说明的整形（丢链接与 `(Caused by ...)`、压平折行、截断不切词） |
 | **测试** | `test_frontend_province_ui.py` | 前端省份控件契约：控件长在"官方解读"页而非搜索栏、高级筛选恰为 8 组（含本轮加的「每轮条数」与「页码」）、搜索请求不带 `province`、结果头不再显示省市标签、前端站点清单与 `tax_server.search_interpretations` 的默认 sources 逐字一致（读文件断言，不开浏览器） |
 | **测试** | `test_frontend_aging_control.py` | 前端时效控件值域契约：`AGING_S5` 五档与后端 `tax_web_search.AGING_VALUES` 逐项一致、`AGING_FROM_NPC` 换出的文本必落在值域内、时效那一栏本身不再 `st.disabled`（页码按钮的置灰另算，判据只盯 `st`）、拼 option 的两项数组不许写成空项（真浏览器里读到过 `undefined` 选项）、`filterStatus` 赋值只走 `setNpcStatus`、`doSearch` 按 `s5` 分流 `status`/`aging`（读文件断言，不开浏览器） |
@@ -144,7 +149,7 @@
 | **评测（诊断）** | `eval_retrieval.py` | 检索质量：路由覆盖 + 题库覆盖两级指标 |
 | **技能定义** | `SKILL.md` | 分析主线与禁止行为清单 |
 | **参考文档** | `references/*.md` | SKILL.md 主线判据的细节下沉：各源命令、输出模板、依据定级、税种映射、源缺陷、网页界面、评测方法、判型指标，另含搜索策略与风险框架 |
-| **前端** | `frontend/index.html` | 搜索界面 + 4 步向导 + 算式展开面板 + 法规弹窗四标签页。六源在界面上的名字只存 `SOURCE_UI` 一张表（键序与 label/图标逐字对齐后端 `tax_aggregator.SOURCE_LABELS`），每源计数、区间内补筛计数、卡面角标、页脚站点链接、空结果那句提示、页首副标题都从它渲出；卡面日期那一栏的词另存一张 `DATE_FIELD`（按源给"公布／成文／发布／站点发布"，so360 不在表里、退成中性的"日期"），两张表都是按源分键但量不同的轴，用例把两张都跟后端逐键比对并查词表之外的第二份 |
+| **前端** | `frontend/index.html` | 搜索界面 + 4 步向导 + 算式展开面板 + 分析工作台五标签（分析主线／类案／法规／检查工具／输出模板，三块右侧面板互斥） + 法规弹窗四标签页。六源在界面上的名字只存 `SOURCE_UI` 一张表（键序与 label/图标逐字对齐后端 `tax_aggregator.SOURCE_LABELS`），每源计数、区间内补筛计数、卡面角标、页脚站点链接、空结果那句提示、页首副标题都从它渲出；卡面日期那一栏的词另存一张 `DATE_FIELD`（按源给"公布／成文／发布／站点发布"，so360 不在表里、退成中性的"日期"），两张表都是按源分键但量不同的轴，用例把两张都跟后端逐键比对并查词表之外的第二份 |
 
 ---
 
@@ -237,6 +242,20 @@ Step 4: 补充条件  →  纳税人类型(小规模/一般/小微/高新) + 时
 | `GET` | `/api/quick-tax-types` | 快捷税种清单，整份由 `tax_search.TAX_TYPE_KEYWORDS` 渲出（现 33 项，`label`＝`keyword`＝键名；键序前 18 项正是现行十八个税种，界面上直接铺出这一段的按钮，专题收在「展开」里） |
 | `GET` | `/api/calc` | 算式展开的骨架清单：`名称`/`公式`/`参数`（`形态` 与税率表 `列`）/`结果`，整份由 `tax_calc.SKELETONS` 渲出 |
 | `POST` | `/api/calc` | 按给定值展开一条骨架，回 `步骤`（算式/代入/结果，累进另带 `分档`）与`结果`；纯本地求值，不联网、不调模型 |
+| `POST` | `/api/classify` | 判型：问题类型、税种、四根前提轴与置信度（直连 `tax_analyze`，不联网） |
+| `POST` | `/api/coverage` | 覆盖率：按 `evidence_requirements.json` 逐项判四态；`null`（没交）与 `[]`（交了空表）分开报 |
+| `POST` | `/api/analysis/plan` | 分析计划：按判型与范围给出分轮检索方案（源、检索词、轮次） |
+| `POST` | `/api/analysis/gather` | 按计划取数：逐轮汇聚证据，回每轮的命中与缺口；全部开关（`source`、`at`、`read_body`、`check_citation`、`max_per_round` 等）原样传给引擎 |
+| `POST` | `/api/analysis/answer` | 成稿：在取证结果上按依据分层出四段式答案（不调模型） |
+| `GET` | `/api/analysis/templates` | 输出模板清单（11 项，整份由 `TEMPLATE_KEYS` 渲出）与缺节情况 |
+| `GET` | `/api/analysis/templates/<key>` | 取单篇模板正文；未知键回 404 并列出可用键 |
+| `POST` | `/api/cases` | 类案检索：三轮检索式、双源去重与候选台账 |
+| `POST` | `/api/ledger` | 账套巡检：六类规则逐行判命中；缺账套回 400，不返回空报告 |
+| `POST` | `/api/inspection` | 稽查模拟：按域与要点生成六字段问询单元，并单列「未询问」 |
+| `GET` | `/api/intake/blank` | 多合同受理的空白模板（九维 C1–C9），可直接填后回传 |
+| `POST` | `/api/intake` | 多合同受理：条款差异、出处三态、合同链候选与待核项 |
+| `POST` | `/api/reconcile` | 对账：按判断单元四要素比合同与履行记录，回三态结论与缺口 |
+| `POST` | `/api/controls` | 内控生成：按诊断缺口匹配九要素控制活动；无诊断且无假设时拒生成并回吐取诊断的命令 |
 
 ### 搜索 API 请求示例
 
@@ -515,7 +534,7 @@ tax-analysis-skill/
 │   ├── tax_cited.py                # 文号→官方链接持久缓存 + is_official 官方域白名单（纯本地，不联网）
 │   ├── tax_gov_list.py             # 政策文件库清单源（getFileListByCodeId 分页）：sync/lookup/stats/seed-cache/missing
 │   └── tax_server.py               # Flask API + 前端托管
-├── frontend/index.html             # 单文件界面：搜索栏 / 4 步向导 / 算式展开面板 / 结果卡片 / 法规弹窗四标签页
+├── frontend/index.html             # 单文件界面：搜索栏 / 4 步向导 / 算式展开面板 / 分析工作台五标签 / 结果卡片 / 法规弹窗四标签页
 ├── subskills/
 │   ├── chenyiwei-bbs/
 │   │   ├── SKILL.md                # 陈版主实务答疑与准则原文（上游文件，与 https://bbs.auditdog.cn 字节一致）
@@ -583,7 +602,7 @@ tax-analysis-skill/
 │   ├── test_rate_limit_ledger.py   # 限流记录台账契约：三字段齐全 / 闸与记录一一对应（不联网）
 │   ├── probe_rate_limit.py         # 限流记录复测探针：重放生产请求，回吐台账三字段（联网，手动跑）
 │   ├── test_detail_cache.py        # 详情缓存用例：键一致 / 命名空间不越界 / 原子写（全打桩）
-│   ├── test_server_routes.py       # 服务端路由用例：11 个路由注册的状态码与分支、source 取值域、两条提示按原话判定、全网那趟在真实边界打桩、/api/calc 的四道 400；外加前端两张按源分键的词表与后端逐键比对（全打桩，不联网）
+│   ├── test_server_routes.py       # 服务端路由用例：25 个路由注册的状态码与分支、source 取值域、两条提示按原话判定、全网那趟在真实边界打桩、/api/calc 的四道 400、分析主线五接口与模板／类案／四类检查工具的入参出参；外加前端两张按源分键的词表与后端逐键比对（全打桩，不联网）
 │   ├── test_http_layer.py          # 统一请求层守门：AST 扫全项目、禁止绕过 tax_http 的裸请求、错误说明整形
 │   ├── test_frontend_province_ui.py # 前端省份控件契约：控件在哪 / 筛选组数 / 站点清单与后端一致
 │   ├── test_frontend_aging_control.py # 前端时效控件值域契约：五档与后端一致 / option 两项齐全 / 赋值只走共享入口
