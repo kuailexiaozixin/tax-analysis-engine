@@ -23,3 +23,7 @@ data/eval/raw/*
 !data/eval/raw/.gitkeep
 data/eval/tax_eval_set.jsonl
 
+# 本地改动前的工作副本备份（可再生，不随技能分发）
+subskills/*_backup_*/
+subskills/*_bk_*/
+
