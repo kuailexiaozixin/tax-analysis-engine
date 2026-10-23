@@ -29,7 +29,6 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
-from html import unescape
 from pathlib import Path
 from urllib.parse import quote
 
@@ -95,7 +94,7 @@ def capture_request(build):
     return box["call"]
 
 
-# ── 四个入口：记录原话、请求形状、失败形态判据 ──────────────────────────────
+# ── 三个入口：记录原话、请求形状、失败形态判据 ──────────────────────────────
 def _npc_call():
     import tax_search
     return capture_request(lambda: tax_search.search_tax("增值税", size=5))
@@ -104,12 +103,6 @@ def _npc_call():
 def _fgk_call():
     import tax_gov_list
     return capture_request(lambda: tax_gov_list.make_fetch_page() (1))
-
-
-def _so360_call():
-    import tax_so360
-    return ("GET", f"{tax_so360.SEARCH_URL}?q={quote('企业所得税法')}&pn=1",
-            {"headers": tax_so360.HEADERS, "timeout": tax_so360.TIMEOUT, "verify": False})
 
 
 def _sogou_call():
@@ -141,16 +134,6 @@ def _npc_shape(r):
     return _json_shape(r)
 
 
-def _html_shape(marker):
-    def fn(r):
-        if r.status_code == 200 and marker in r.text:
-            return f"200-{marker}"
-        if r.status_code == 200:
-            return "200-正常页"
-        return f"HTTP {r.status_code}"
-    return fn
-
-
 def _sogou_shape(r):
     if "/antispider/" in (r.url or ""):
         return "跳转-antispider"
@@ -172,13 +155,6 @@ TARGETS = {
         "build_call": _fgk_call,
         "shape": _json_shape,
         "good": "200-JSON",
-    },
-    "so360": {
-        "record": "360 对本机 IP 限流，回一份「访问异常出错」页",
-        "endpoint": "GET https://m.so.com/s",
-        "build_call": _so360_call,
-        "shape": _html_shape(unescape("访问异常出错")),
-        "good": "200-正常页",
     },
     "sogou": {
         "record": "公众号并发加压触发反爬",

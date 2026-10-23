@@ -57,7 +57,8 @@
         ▼
 检索层  tax_search.py（NPC）· tax_detail.py（详情与 DOCX 正文）
         tax_web_search.py（总局 search5）· tax_fgk.py（法规库目录与正文）
-        tax_so360.py（360 site: 站内）· tax_shui5.py（税屋）· tax_wechat.py（公众号）
+        tax_sogou.py（搜狗手机端 site: 与全网检索，省局、地方文件及税屋定位）
+        tax_shui5.py（税屋）· tax_wechat.py（公众号）
         tax_ctax.py（中国税网检索与正文，③ L4 的取证一路，同时是 ④ 的 ctax 源）
         tax_browser.py（复用本机浏览器过 WAF）
         tax_aggregator.py（六源并发聚合）
@@ -67,10 +68,10 @@
         ▼
 数据源  flk.npc.gov.cn        法律 · 行政法规 · 司法解释（官方 API）
         www.chinatax.gov.cn   总局公告与法规库 fgk.chinatax.gov.cn（search5 JSON）
-        m.so.com              site: 检索，定位省局、财政部、国务院等站点
-        www.shui5.cn          税屋：实务解读、专栏、答疑（正文可取）
+        m.sogou.com           手机端 site: 与全网检索，定位省局、财政部、国务院与税屋
+        www.shui5.cn          税屋：实务解读、专栏、答疑（正文可取；搜狗未取到时回退 native）
         www.ctaxnews.com.cn   中国税网（中国税务报社）：政策转载、解读、税案通报（子技能，④ 的 ctax 源）
-        mp.weixin.qq.com      微信公众号（经搜狗微信检索）
+        mp.weixin.qq.com      微信公众号（经 weixin.sogou.com 检索，与手机网页入口不同）
         bbs.auditdog.cn       陈版主实务答疑、监管处罚、准则衍生问答（子技能，补专业口径）
         docs.maoyanqing.com   审计文库 MaoDocs：会计/审计/内控/评估/证券规范逐条原文（子技能）
         www.szse.cn           深交所法律规则：交易所自律规则/规章目录与原文定位（子技能）
@@ -95,14 +96,14 @@
 | **浏览器** | `tax_browser.py` | 本机已装浏览器探测 + 过 WAF + 导 cookie（不装内核） |
 | **法规详情** | `tax_detail.py` | NPC 详情 API、DOCX 下载、全文提取、章节解析；详情元数据磁盘缓存（**默认开**、TTL 1h、命名空间 `detail`）；与 `tax_search` **共用同一把** NPC 串行闸 |
 | **Web 搜索** | `tax_web_search.py` | 税务总局 search5 JSON 检索（含 fgk 法规库）。`page`→`pageNum` 的从 0 起换算只收在 `search_chinatax` 一处；`build_filters` 拼七组收窄维度，发出前按 `AGING_VALUES`／`EFFECT_LEVEL_VALUES`／`ORDER_VALUES` 拦域外值（接口对域外值回的是 `total=0`，不发错误码），成文日期只收 `YYYY-MM-DD`、发出去前补成整点时间戳。站点那一层的参数值域与逐发读数**下沉到 `subskills/chinatax/`** |
-| **站内搜索** | `tax_so360.py` | 360 `site:` 检索，定位省局与地方文件；识别"访问异常出错"拦截页并回报 |
+| **网页检索** | `tax_sogou.py` | 搜狗手机端 `site:` 与全网检索，定位省局、地方文件及税屋；`HTMLParser` 读 `vrResult`，直链取 `h3` 内 `resultLink` 的 `url` 参数，日期只读 `citeurl`、不是每行都有，摘要不截 200 字；整页元数据缓存 30 分钟、不按 size 分键，size 只截输出、不追加请求或翻页。反爬与真 0 条分开，冷却立即报错；保护与历史证据见 `references/source_defects.md` |
 | **法规库目录与正文** | `tax_fgk.py` | 税务总局法规目录，`--body` 取正文、`--cache` 缓存清单（TTL 1h、正文不缓存）、翻页按需自适应（`--pages` 显式指定则关自适应）。清单层与正文层各装一半（附件只有名与链、表格与执行期限只在正文容器）、`fetch_associations` 那枚 `POST queryManuscriptAssociation` 只在 www 域回 200 而返回里的 `/zcfgk/…` 要拼 fgk 域，两条域名分工下沉到 `subskills/chinatax/` |
-| **统一请求层** | `tax_http.py` | 全项目对外 HTTP 请求的**唯一出口**；`verify` 设计成**必填参数**（`tax_detail`/`tax_search` 用默认关闭的 `VERIFY_SSL`，`tax_fgk` 用 requests 默认的 `True`，给默认值等于悄悄改行为）。各自维护 Session / WAF 应对的 `tax_shui5`、`tax_so360`、`tax_wechat`、`tax_web_search` 在白名单内，其余脚本直接发请求会被 `test_http_layer.py` 拦下。同层另有 `short_reason()`：把取数失败的裸异常压成一句能进界面的话（抹链接、压平折行、丢 `(Caused by ...)` 嵌套、留异常类名），`tax_so360` / `tax_web_search` / `tax_fgk` 的"请求失败："都走它 |
-| **共享缓存** | `tax_cache.py` | 缓存逻辑的**唯一实现**（`tax_search` / `tax_fgk` / `tax_detail` 三处共用）；按条目里的 `_ns` 字段分命名空间，各自的 `--cache-clear` 互不越界；只缓存清单 / 元数据，**正文永不缓存** |
+| **统一请求层** | `tax_http.py` | 全项目对外 HTTP 请求的**唯一出口**；`verify` 设计成**必填参数**（`tax_detail`/`tax_search` 用默认关闭的 `VERIFY_SSL`，`tax_fgk` 用 requests 默认的 `True`，给默认值等于悄悄改行为）。各自维护 Session / WAF 应对的 `tax_shui5`、`tax_sogou`、`tax_wechat`、`tax_web_search` 在白名单内，其余脚本直接发请求会被 `test_http_layer.py` 拦下。同层另有 `short_reason()`：把取数失败的裸异常压成一句能进界面的话（抹链接、压平折行、丢 `(Caused by ...)` 嵌套、留异常类名），`tax_sogou` / `tax_web_search` / `tax_fgk` 的"请求失败："都走它 |
+| **共享缓存** | `tax_cache.py` | 缓存逻辑的**唯一实现**（`tax_search` / `tax_fgk` / `tax_detail` / `tax_sogou` 共用）；按 `_ns` 分命名空间，已提供的 `--cache-clear` 互不越界（搜狗 CLI 无此参数）；只缓存清单 / 元数据，**正文永不缓存** |
 | **离线目录同步器** | `tax_sync.py` | 两种同步外壳。**`Synchronizer`**（单资源直链 diff）：`locate()` 现抓直链 → 与 `state.json` 记录的 URL 比对 → 变了才下载 → 下载内容少于 `MIN_CONTENT_BYTES` 判异常页不覆盖旧产物 → 内容 SHA1 未变不白烧构建 → 构建回调返回的 `版本日期` 采纳进 state（现用于 `subskills/tax-preference`）。**`ListSynchronizer`**（分页列表集合 diff）：`fetch_page(page)` 按 `total` 爬全 → 对每行 `sig_fields`（如 url+时效性+文号+标题）算集合 SHA1 → 任一字段变（含时效性翻转）才重建；`--check` 只探首页比 total；空集合与爬不满 total（`max_pages` 截断）都判异常不覆盖。下载/请求只走 `tax_http` |
 | **政策文件库清单源** | `tax_gov_list.py` | chinatax.gov.cn `getFileListByCodeId`（plain HTTP POST，无 cookie、不调模型）分栏目分页清单：每行规范化出 发文字号/效力等级/**时效性**/成文日期/税费类型/官方 url。同步复用 `tax_sync.ListSynchronizer`；`lookup`/`stats` 离线查；`seed-cache` 把文号（按 `tax_terms.doc_number_of` 归一）→ 官方 url（过 `tax_cited.is_official`）批量种进文号缓存，让 `locate_cited_document` 离线命中零网络；`missing` 反向列出清单里有官方 url、文号却未进缓存的待补条目（纯离线，只认官方域） |
 | **文号链接缓存** | `tax_cited.py` | `is_official(url)`：只认 `chinatax.gov.cn` 及任意子域（用 `urlparse().hostname` 比后缀，防"官方域塞进路径"的假链接），拒商业站；`get/put_cited_link`：文号→已核实官方链接的持久缓存（`~/.cache/.../cited_links.json`），非官方域一律不落。`tax_answer.locate_cited_document` 命中缓存时零网络、`_from_cache=True` |
-| **实务解读** | `tax_shui5.py` | 税屋：两条检索通道（`--channel so360`／`native`，默认 `auto` 先 360、被拦或 0 条才换站内）+ 浏览器过 WAF 后 HTTP 连读；长文按本篇 ID 跟 `$N` 续页读到末页，中间页取不到时写 `_pages_error`；站内那一路可按栏目（`--column`，逗号多选）、发布日期区间（成对才两头收）、匹配域（`--match title`）限定并按总条数取全，`--list`/`--tag` 不检索直接取清单，`--find-doc` 只有一枚文号时回站内定位（半角→全角→去机关名三档，候选全部交出不替读者挑）。站点自己标的时效线索也落进字段：行标题尾部方括号标记进 `status_mark`，正文开头「税屋提示——」批注进 `repeal_note`、其中的依据文号进 `repeal_basis`，三枚都只作定位与提醒、不接进定级。站点的取数机制（没凭据时任何地址都回同一份 23,682 字节挑战页、放行 cookie 是 `acw_sc__v2` 约 60 分钟、站内搜索表单只认四个入参与两份提示页、正文收口在 `left2e`、栏目分页用 `<classid>_<页>.html`）**下沉到 `subskills/shui5/`**，含复测探针 `probe_shui5.py` |
+| **实务解读** | `tax_shui5.py` | 税屋：两条检索通道（`--channel sogou`／`native`，默认 `auto` 先搜狗、被反爬或 0 条才换站内）+ 浏览器过 WAF 后 HTTP 连读；长文按本篇 ID 跟 `$N` 续页读到末页，中间页取不到时写 `_pages_error`；站内那一路可按栏目（`--column`，逗号多选）、发布日期区间（成对才两头收）、匹配域（`--match title`）限定并按总条数取全，`--list`/`--tag` 不检索直接取清单，`--find-doc` 只有一枚文号时回站内定位（半角→全角→去机关名三档，候选全部交出不替读者挑）。站点自己标的时效线索也落进字段：行标题尾部方括号标记进 `status_mark`，正文开头「税屋提示——」批注进 `repeal_note`、其中的依据文号进 `repeal_basis`，三枚都只作定位与提醒、不接进定级。站点的取数机制（没凭据时任何地址都回同一份 23,682 字节挑战页、放行 cookie 是 `acw_sc__v2` 约 60 分钟、站内搜索表单只认四个入参与两份提示页、正文收口在 `left2e`、栏目分页用 `<classid>_<页>.html`）**下沉到 `subskills/shui5/`**，含复测探针 `probe_shui5.py` |
 | **实务解读** | `tax_wechat.py` | 微信公众号：搜狗微信 + 移动 UA |
 | **报刊登载层** | `tax_ctax.py` | 中国税网（中国税务报社）：开放 JSON 检索 `GET /xy/Search.do`（域名打不通时回落到站点后端 `120.132.80.188:8088` 同一接口，实测 `foundNum` 一字不差），纯 HTTP、无凭据、不启浏览器（静态服务端渲染、无 WAF、不校验 UA）。检索可按栏目（`--column` 收名称或 nodeID）、发布日期区间（两枚各自独立，只给一侧照常收）、匹配域（`q`/`title`/`keyword`/`author`，`--match`；同时提交 `q` 与 `title` 时 `q` 会盖掉位置参数，所以只匹配标题时只发 `title=`）限定；`--all` 按 `foundNum` 翻到底（`SEARCH_MAX_PAGES` 防「增值税」那种 46,871 条宽词），`--find-doc` 只有一枚文号时回站内定位并把一稿多栏并成一条（`also_in_columns` 收被并掉的栏目名，收满按并完的篇数算），`--list` 不检索按栏目列表页取最新清单（列表页只铺到第 10 页，按栏目取全走检索不走列表页），`--read` 逐篇取正文，`--columns`/`--update-columns` 读写本地栏目表（`data/ctax_columns.json`，重建一轮当期实发 102 次请求）。正文与元信息夹在方正 CMS 的注释标记里（`enpcontent`／`enpproperty`），政策页与专题页两块各写两遍且逐字节相同，取第一块是去重。**域名后不足四段路径的行取不到正文**（2023-02 前的老行，`_address_state` 只看段数判定，协议不进判断），这类行只有题录；正文页响应头不带 charset，requests 会按 ISO-8859-1 解出乱码且不报错，所以 HTML 一律显式按 utf-8 解。行里的 `enpcontent` 是正文截断、`Abstract` 是编辑摘要，两者只作展示不接进抽取。站点机制**下沉到 `subskills/ctaxnews/`**，含复测探针 `probe_ctaxnews.py`；这一路是 ④ 默认名单里的第 6 源（源键 `ctax`） |
 | **多源聚合** | `tax_aggregator.py` | 六源并发、Jaccard 去重、权威度排序、源级失败上抛、跨源时间序 |
@@ -135,11 +136,11 @@
 | **测试** | `test_rate_limit_ledger.py` | 限流记录实测台账契约：每条记录三字段齐全（最近实测日期 / 实测方法含连发数与线程数 / 当时结果按形态计数）、未复测的行明写"没有当次数据"、代码里每把串行闸所保护的站点都在台账占一行（读文档与源码，不联网） |
 | **探针** | `probe_rate_limit.py` | 限流记录复测：把生产路径实际要发的那一份请求抓出来重放（跳过串行闸，量的就是并行），按形态逐项计数并回吐台账那三字段；单次总量卡 `MAX_REQUESTS=60`，`--dry-run` 一个请求都不发 |
 | **测试** | `test_detail_cache.py` | 详情缓存用例：键算法与历史缓存逐字节一致、命名空间不越界、命中留痕、老条目读时转正、缓存不含条文正文（红线）、原子写不留半截文件 |
-| **测试** | `test_server_routes.py` | 服务端 125 条（全打桩，不联网；`/api/calc` 那一路还额外把 `socket.socket` 钉死跑通一次求值）：25 个路由注册的用例 109 条（状态码与错误码、分支路由 npc/chinatax/fgk/aggregated、`source` 发取值域外的值一律 400 且一个源都不许碰、付费闸门关着时不许碰模型、上游报错如实透出不吞成空结果、会计口径与立法阶段两条提示都按用户原话判定而非按改写后的检索词、全网那一趟在真实边界（`so360_search`）打桩断言 1/2/3 条都能到载荷、`/api/calc` 的四道 400 与骨架清单字段同源、`size`／`page` 坏值一律 400 且页码只下推到 NPC 与税务总局这两路、聚合那一支把界面「匹配」控件的值真正传下去、条数说明把「库内命中」与「本轮给出」拆成两个口径、快捷栏默认铺出的那一段与现行十八个税种整份对齐；本轮新增 14 条路由的 32 条：判型的税种与前提轴、覆盖率把 `null` 与 `[]` 分开且两者都不算已交、计划的分轮与源、取证把每个开关原样传下去并按真实边界打桩、成稿的依据分层与免责声明、模板清单 11 项与未知键 404 附可用清单、类案候选与去重、账套缺表 400 与命中逐行、稽查问询单元与未询问单列、空白受理表填完能直接回传、受理与对账的三态结论与缺口、内控无诊断时拒生成并回吐命令）、共享检索层 1 条（税屋／公众号与 360 全网两路合并、按 URL 去重、`engine_error` 透传，Flask 与三个适配器读同一份 `tax_related`））、`TestFrontendSourceVocabulary` 15 条。后者拿 `frontend/index.html` 里那两张按源分键的表（`SOURCE_UI` 与卡面日期那一栏的 `DATE_FIELD`）与后端 `DEFAULT_SOURCES`/`SOURCE_LABELS`/`DATE_SERVER_FIELDS` 逐键比对，并查出两张表之外的第二份源名表、页脚手写站点清单、渲源名那七处里的写死源名，以及快捷税种清单与 `TAX_TYPE_KEYWORDS` 的分叉。变异自检全部在隔离副本树里注入（就地改仓库源文件会被 `__pycache__` 的陈旧字节码读成没生效），本轮 10 处全打红：抹掉一个键名别名 2 红、首页清单退回手写十二项 1 红、卡面成文改回公布 2 红、角标退回只认六源 1 红、去掉多余参数那道闸 2 红（去掉后仍回 400，报的是引擎原话 `'decimal.Decimal' object is not callable`，用例查的是那句话里还认不认得出 `max`）、`RATE_TABLE_COLUMNS` 的超率累进第三枚与引擎分叉 1 红（另外两条同题材用例仍绿，说明单靠它们检不出）、日期控件提示不再写补筛 1 红、逐轮说明不再报字段名 2 红、去掉骨架名那道闸 1 红（回 500）、换源后仍按点的那一源打 stamp 2 红；随后两轮（页码与条数闸门一轮、快捷栏税种段一轮）合计注入六处、九条用例报红：`_int_param` 早退 3 红、删掉传给 `search_tax` 的 `page=page` 2 红、聚合那支的 `exact` 退回被 `parent_law` 顶替 1 红、`QUICK_TAX_SHOWN` 退回 12 一处 1 红、「烟叶税」挪回词表末尾一处 1 红、词表整个删掉「烟叶税」一处 1 红，还原后同一批用例全绿 |
+| **测试** | `test_server_routes.py` | 服务端 125 条（全打桩，不联网；`/api/calc` 那一路还额外把 `socket.socket` 钉死跑通一次求值）：25 个路由注册的用例 109 条（状态码与错误码、分支路由 npc/chinatax/fgk/aggregated、`source` 发取值域外的值一律 400 且一个源都不许碰、付费闸门关着时不许碰模型、上游报错如实透出不吞成空结果、会计口径与立法阶段两条提示都按用户原话判定而非按改写后的检索词、全网那一趟在真实边界（`sogou_search`）打桩断言 1/2/3 条都能到载荷、`/api/calc` 的四道 400 与骨架清单字段同源、`size`／`page` 坏值一律 400 且页码只下推到 NPC 与税务总局这两路、聚合那一支把界面「匹配」控件的值真正传下去、条数说明把「库内命中」与「本轮给出」拆成两个口径、快捷栏默认铺出的那一段与现行十八个税种整份对齐；本轮新增 14 条路由的 32 条：判型的税种与前提轴、覆盖率把 `null` 与 `[]` 分开且两者都不算已交、计划的分轮与源、取证把每个开关原样传下去并按真实边界打桩、成稿的依据分层与免责声明、模板清单 11 项与未知键 404 附可用清单、类案候选与去重、账套缺表 400 与命中逐行、稽查问询单元与未询问单列、空白受理表填完能直接回传、受理与对账的三态结论与缺口、内控无诊断时拒生成并回吐命令）、共享检索层 1 条（税屋／公众号与 搜狗 全网两路合并、按 URL 去重、`engine_error` 透传，Flask 与三个适配器读同一份 `tax_related`））、`TestFrontendSourceVocabulary` 15 条。后者拿 `frontend/index.html` 里那两张按源分键的表（`SOURCE_UI` 与卡面日期那一栏的 `DATE_FIELD`）与后端 `DEFAULT_SOURCES`/`SOURCE_LABELS`/`DATE_SERVER_FIELDS` 逐键比对，并查出两张表之外的第二份源名表、页脚手写站点清单、渲源名那七处里的写死源名，以及快捷税种清单与 `TAX_TYPE_KEYWORDS` 的分叉。变异自检全部在隔离副本树里注入（就地改仓库源文件会被 `__pycache__` 的陈旧字节码读成没生效），本轮 10 处全打红：抹掉一个键名别名 2 红、首页清单退回手写十二项 1 红、卡面成文改回公布 2 红、角标退回只认六源 1 红、去掉多余参数那道闸 2 红（去掉后仍回 400，报的是引擎原话 `'decimal.Decimal' object is not callable`，用例查的是那句话里还认不认得出 `max`）、`RATE_TABLE_COLUMNS` 的超率累进第三枚与引擎分叉 1 红（另外两条同题材用例仍绿，说明单靠它们检不出）、日期控件提示不再写补筛 1 红、逐轮说明不再报字段名 2 红、去掉骨架名那道闸 1 红（回 500）、换源后仍按点的那一源打 stamp 2 红；随后两轮（页码与条数闸门一轮、快捷栏税种段一轮）合计注入六处、九条用例报红：`_int_param` 早退 3 红、删掉传给 `search_tax` 的 `page=page` 2 红、聚合那支的 `exact` 退回被 `parent_law` 顶替 1 红、`QUICK_TAX_SHOWN` 退回 12 一处 1 红、「烟叶税」挪回词表末尾一处 1 红、词表整个删掉「烟叶税」一处 1 红，还原后同一批用例全绿 |
 | **测试** | `test_http_layer.py` | 统一请求层守门：AST 扫全项目、除白名单外禁止绕过 `tax_http` 的裸请求（含别名写法）、参数只透传不补全、`verify` 必填、取数失败那句错误说明的整形（丢链接与 `(Caused by ...)`、压平折行、截断不切词） |
 | **测试** | `test_frontend_province_ui.py` | 前端省份控件契约：控件长在"官方解读"页而非搜索栏、高级筛选恰为 8 组（含本轮加的「每轮条数」与「页码」）、搜索请求不带 `province`、结果头不再显示省市标签、前端站点清单与 `tax_server.search_interpretations` 的默认 sources 逐字一致（读文件断言，不开浏览器） |
 | **测试** | `test_frontend_aging_control.py` | 前端时效控件值域契约：`AGING_S5` 五档与后端 `tax_web_search.AGING_VALUES` 逐项一致、`AGING_FROM_NPC` 换出的文本必落在值域内、时效那一栏本身不再 `st.disabled`（页码按钮的置灰另算，判据只盯 `st`）、拼 option 的两项数组不许写成空项（真浏览器里读到过 `undefined` 选项）、`filterStatus` 赋值只走 `setNpcStatus`、`doSearch` 按 `s5` 分流 `status`/`aging`（读文件断言，不开浏览器） |
-| **测试** | `test_source_defects.py` | 源缺陷回归：fgk 深页标 `medium`、聚合缺口归因（税屋两条检索通道各自的状态决定要不要标 `blocked_by: so360`）、税屋正文收口与 `$N` 续页读法、站内搜索行形状与两份提示页、按文号定位的三档阶梯与输入整形、行标题时效标记的值域与"命中才加键"、正文批注的分句与依据号括号换算、网页渲染 `degraded_note`、定级层认 `_reliability`（low 出局 / 全 low 拒挑主依据 / 无标记口径不变）、渲染层不吞标记（单源也会印出"可能偏题"）、搜狗串行闸与最小间隔（并发峰值 == 1）、NPC 下载单一路径收口、**返回值契约**（AST 扫全项目：声明 `-> tuple[A, B]` 的函数不许 `return` 单值） |
+| **测试** | `test_source_defects.py` | 源缺陷回归：fgk 深页标 `medium`、聚合缺口归因（税屋两条检索通道各自的状态决定要不要标 `blocked_by: sogou`）、税屋正文收口与 `$N` 续页读法、站内搜索行形状与两份提示页、按文号定位的三档阶梯与输入整形、行标题时效标记的值域与"命中才加键"、正文批注的分句与依据号括号换算、网页渲染 `degraded_note`、定级层认 `_reliability`（low 出局 / 全 low 拒挑主依据 / 无标记口径不变）、渲染层不吞标记（单源也会印出"可能偏题"）、搜狗串行闸与最小间隔（并发峰值 == 1）、NPC 下载单一路径收口、**返回值契约**（AST 扫全项目：声明 `-> tuple[A, B]` 的函数不许 `return` 单值） |
 | **门禁** | `check_doc_cli.py` | 文档-代码契约，两类检查：**命令级**（同行里点了脚本名的命令行，逐参数比对代码的参数表）+ **片段级**（孤立的 `` `--a --b` `` 必须能落在某一个脚本上），挡住"文档写了、代码没有"与"参数挂错脚本"。覆盖 `SKILL.md`、`README.md`、`references/*.md` 与每个子技能的 `SKILL.md`（子技能也写命令行，命令下沉一次就等于脱管一次；`NOTE.md` 是读数台账、不写命令，不在覆盖内） |
 | **测试** | `test_check_doc_cli.py` | 文档契约规则自检：构造样例钉住片段级检查既能报出坏片段、也不误报好片段。规则一旦改对就永远绿，没有自检就无法证明它还在工作 |
 | **门禁入口** | `run_all.py` | 统一测试入口：默认跑离线组，`--online` 加联网组；退出码可直接接 CI（根目录 `run_tests.bat` 双击即跑） |
@@ -149,7 +150,7 @@
 | **评测（诊断）** | `eval_retrieval.py` | 检索质量：路由覆盖 + 题库覆盖两级指标 |
 | **技能定义** | `SKILL.md` | 分析主线与禁止行为清单 |
 | **参考文档** | `references/*.md` | SKILL.md 主线判据的细节下沉：各源命令、输出模板、依据定级、税种映射、源缺陷、网页界面、评测方法、判型指标，另含搜索策略与风险框架 |
-| **前端** | `frontend/index.html` | 搜索界面 + 4 步向导 + 算式展开面板 + 分析工作台五标签（分析主线／类案／法规／检查工具／输出模板，三块右侧面板互斥） + 法规弹窗四标签页。六源在界面上的名字只存 `SOURCE_UI` 一张表（键序与 label/图标逐字对齐后端 `tax_aggregator.SOURCE_LABELS`），每源计数、区间内补筛计数、卡面角标、页脚站点链接、空结果那句提示、页首副标题都从它渲出；卡面日期那一栏的词另存一张 `DATE_FIELD`（按源给"公布／成文／发布／站点发布"，so360 不在表里、退成中性的"日期"），两张表都是按源分键但量不同的轴，用例把两张都跟后端逐键比对并查词表之外的第二份 |
+| **前端** | `frontend/index.html` | 搜索界面 + 4 步向导 + 算式展开面板 + 分析工作台五标签（分析主线／类案／法规／检查工具／输出模板，三块右侧面板互斥） + 法规弹窗四标签页。六源在界面上的名字只存 `SOURCE_UI` 一张表（键序与 label/图标逐字对齐后端 `tax_aggregator.SOURCE_LABELS`），每源计数、区间内补筛计数、卡面角标、页脚站点链接、空结果那句提示、页首副标题都从它渲出；卡面日期那一栏的词另存一张 `DATE_FIELD`（按源给"公布／成文／发布／站点发布"，sogou 标「站点发布」，取引用行日期），两张表都是按源分键但量不同的轴，用例把两张都跟后端逐键比对并查词表之外的第二份 |
 
 ---
 
@@ -196,7 +197,7 @@ Step 4: 补充条件  →  纳税人类型(小规模/一般/小微/高新) + 时
 | Tab | 功能 | 数据来源 |
 |-----|------|---------|
 | 📖 **法规原文** | 全文展示 + 搜索关键词黄色高亮 + 章节/法条自动分类 | NPC API → DOCX 实时下载解析 |
-| 🔍 **官方解读** | 多源搜索官方政策解读、答记者问、立法说明 | 360 站内检索 chinatax/mof/gov.cn |
+| 🔍 **官方解读** | 多源搜索官方政策解读、答记者问、立法说明 | 搜狗 站内检索 chinatax/mof/gov.cn |
 | 🤖 **AI 解读** | 用通俗语言解读法规（适用主体/核心要点/注意事项）。默认关闭，需显式开启付费闸门 | 使用者自配的模型 CLI |
 | 🌐 **相关网页** | 行业分析、学术评论、律师解读等补充视角 | 税屋 shui5.cn + 微信公众号 |
 
@@ -213,7 +214,7 @@ Step 4: 补充条件  →  纳税人类型(小规模/一般/小微/高新) + 时
 | 跨境税务风险 | ~12 项 | 境外所得申报、常设机构判定 |
 | 特殊行业风险 | ~14 项 | 建筑挂靠、医药 CSO、电商刷单 |
 
-> 以上均为搜索提示词，实际指标以实时搜索 六源（NPC / 税务总局 / 360 / 税屋 / 微信公众号 / 中国税网）结果为准。
+> 以上均为搜索提示词，实际指标以实时搜索 六源（NPC / 税务总局 / 搜狗 / 税屋 / 微信公众号 / 中国税网）结果为准。
 
 ### 6. 安全约束与合规
 
@@ -235,9 +236,9 @@ Step 4: 补充条件  →  纳税人类型(小规模/一般/小微/高新) + 时
 | `POST` | `/api/search` | 搜索税收法规（`source` 四条分支：NPC／总局 search5／法规库／六源聚合；取值域外的值一律 400） |
 | `GET` | `/api/text/<id>` | 获取法规全文（DOCX 解析） |
 | `GET` | `/api/detail/<id>` | 获取法规元数据 |
-| `GET` | `/api/interpretations/<id>?keyword=&province=` | 搜索官方政策解读（360 多源；省份只在这一页过滤） |
+| `GET` | `/api/interpretations/<id>?keyword=&province=` | 搜索官方政策解读（搜狗 多源；省份只在这一页过滤） |
 | `GET` | `/api/ai-interpret/<id>?keyword=` | AI 生成通俗解读（经付费闸门，默认 503） |
-| `GET` | `/api/web-related/<id>?keyword=` | 相关网页（税屋 + 公众号 + 360 全网补充） |
+| `GET` | `/api/web-related/<id>?keyword=` | 相关网页（税屋 + 公众号 + 搜狗 全网补充） |
 | `GET` | `/api/health` | 服务状态 + 付费闸门状态（`paid_llm.enabled`） |
 | `GET` | `/api/quick-tax-types` | 快捷税种清单，整份由 `tax_search.TAX_TYPE_KEYWORDS` 渲出（现 33 项，`label`＝`keyword`＝键名；键序前 18 项正是现行十八个税种，界面上直接铺出这一段的按钮，专题收在「展开」里） |
 | `GET` | `/api/calc` | 算式展开的骨架清单：`名称`/`公式`/`参数`（`形态` 与税率表 `列`）/`结果`，整份由 `tax_calc.SKELETONS` 渲出 |
@@ -339,10 +340,10 @@ GET /api/text/ff808181927b083b0193fd65a0eb02cb
 |--------|---------|--------|---------|---------|
 | **NPC 国家法规库** | 法律、行政法规、地方法规、司法解释。不收国际税收专题与税收征管细则 | ⭐⭐⭐⭐⭐ | 实时同步 | `POST flk.npc.gov.cn` API。分类编号只认叶节点、两棵树 22 枚编号撞号、`total` 随 `pageSize`/`pageNum` 换值，站点机制与实测台账在 `subskills/npc-flk/` |
 | **www.chinatax.gov.cn** | 国家税务总局公告、政策解读、操作指南 | ⭐⭐⭐⭐ | 实时 | search5 JSON API。收窄维度给越界值回 0 条不发错误码、成文日期裸日期那一发改的是集合不是区间（值域与逐发读数在 `subskills/chinatax/`） |
-| **mof.gov.cn** | 财政部公告、财税联合发文 | ⭐⭐⭐⭐ | 实时 | 360 `site:` 搜索 |
+| **mof.gov.cn** | 财政部公告、财税联合发文 | ⭐⭐⭐⭐ | 实时 | 搜狗 `site:` 搜索 |
 | **fgk.chinatax.gov.cn** | 税务总局法规库结构化内容。国际税收、转让定价、税务行政处罚的依据都在这里 | ⭐⭐⭐⭐ | 实时 | search5 JSON API 翻页（每页固定 10 条）+ 详情页。税率表与执行期限只在详情页、随文申报表只在清单层附件链接里，两域分工与正文容器在 `subskills/chinatax/` |
-| **gov.cn** | 国务院政策发布、答记者问 | ⭐⭐⭐⭐⭐ | 实时 | 360 `site:` 搜索 |
-| **税屋 shui5.cn** | 实务解读、专栏、答疑（正文可取） | ⭐⭐⭐ | 实时 | 两条检索通道（360 `site:` 与站内原生；站内可按栏目、发布日期区间、匹配域限定并取全，`--find-doc` 按文号定位）+ 浏览器过 WAF 后连读；站点机制与实测台账在 `subskills/shui5/` |
+| **gov.cn** | 国务院政策发布、答记者问 | ⭐⭐⭐⭐⭐ | 实时 | 搜狗 `site:` 搜索 |
+| **税屋 shui5.cn** | 实务解读、专栏、答疑（正文可取） | ⭐⭐⭐ | 实时 | 两条检索通道（搜狗 `site:` 与站内原生；搜狗被反爬时自动回退站内，站内可按栏目、发布日期区间、匹配域限定并取全，`--find-doc` 按文号定位）+ 浏览器过 WAF 后连读；站点机制与实测台账在 `subskills/shui5/` |
 | **中国税网 ctaxnews.com.cn**（子技能 ctaxnews） | 中国税务报社站：政策转载、政策解读、税案通报、地方税收法规、报刊专栏。登载件不是法定依据，被它登的那份文件才是；`tax_evidence.rank_of` 按标题形态把转载件算成原文件的位阶，`PRACTICE_SOURCES` 里没有这一站，所以依据链的 url 要自己写官方那份 | 实务解读 ⭐⭐⭐ | 实时 | 开放 JSON `GET /xy/Search.do`，`scripts/tax_ctax.py` 直连：无凭据、不启浏览器、不调模型；可按栏目、发布日期区间、匹配域限定并翻页取全，`--find-doc` 按文号定位并把一稿多栏并成一条，`--list` 不检索按栏目列表页取清单；域名后不足四段路径的行只有题录（2023-02 前的旧地址），四段那一批可取正文；站点机制与实测台账在 `subskills/ctaxnews/`，**④ 默认名单里的第 6 源**（源键 `ctax`，日期按发布日期下推到服务端） |
 | **微信公众号** | 实务解读、申报实操 | ⭐⭐ | 实时 | 搜狗微信 + 移动 UA |
 | **bbs.auditdog.cn**（子技能 chenyiwei-bbs） | 陈版主实务答疑、监管处罚案例、准则衍生问答，附带企业会计准则原文。补的是专业口径那一层，不答税法 | 专业口径 ⭐⭐⭐⭐；税收依据 无 | 按批进库、间隔不固定（2026-10-18 实测 `recent` 的 1／2／3 天窗口全回 0 条，读数见 `subskills/chenyiwei-bbs/NOTE.md`） | 公开 REST API，`curl` 直连，无 key；操作手册在 `subskills/chenyiwei-bbs/` |
@@ -354,19 +355,20 @@ GET /api/text/ff808181927b083b0193fd65a0eb02cb
 
 ### 缓存策略
 
-默认值按数据类型分：**清单 / 检索缓存默认关**（要新鲜度），**详情元数据默认开**（要速度）。
-三类都**只缓存清单 / 元数据，正文永不缓存**（避免引用到已废止 / 被修订的旧条文）。
+**NPC 检索 / fgk 清单缓存默认关**；**详情元数据默认开**，**搜狗整页检索元数据默认开**。
+磁盘缓存只存清单 / 元数据，**正文永不缓存**；搜狗命中保留原 `searched_at`，不视为本次联网取数。
 
 | 数据类型 | 缓存 | 说明 |
 |---------|------|------|
 | NPC 法规检索结果 | 可选，**5 分钟** TTL（`tax_search.py --cache`） | 政策随时更新，默认实时 |
 | 税务总局法规库清单（fgk） | 可选，**1 小时** TTL（`tax_fgk.py --cache`） | 只缓存清单（标题/文号/日期/URL）；**正文每次现拉** |
+| 搜狗手机端检索元数据 | **默认开**，**30 分钟** TTL（`tax_sogou.py`） | 缓存整页标题/直链/日期/完整摘要、不存正文；不按 size 分键，size 只截输出，命中带 `_from_cache`，失败不缓存；`TAX_SOGOU_CACHE=0` 仅关缓存、不关保护 |
 | 详情元数据 | **默认开**，**1 小时** TTL（`tax_detail.py`） | 详情接口慢、元数据变动频率低；命令行与服务端共用同一份磁盘缓存 |
 | DOCX / PDF 全文 | **不缓存**，每次现下 | 体积大，且必须保证是现行版本 |
-| 服务端进程内缓存 | `tax_server.py` 的 `/api/text`、`/api/interpretations` | 仅在服务运行期间复用，重启即失效；与上面的磁盘缓存是两回事 |
+| 服务端进程内全文缓存 | `tax_server.py` 的 `/api/text` | 仅在服务运行期间复用，重启即失效；官方解读不另存组合结果，复用搜狗取数层的 30 分钟缓存 |
 
-三个模块共用 `~/.cache/tax-analysis-skill`，靠条目里的 `_ns` 字段区分命名空间，
-因此各自的 `--cache-stats` / `--cache-clear` 只作用于自己那一份。
+共享磁盘缓存靠 `_ns` 区分 `search` / `fgk` / `detail` / `sogou` 命名空间。
+已有的 `--cache-stats` / `--cache-clear` 只作用于各自那一份；搜狗 CLI 不提供这两个参数。
 
 ---
 
@@ -378,7 +380,7 @@ GET /api/text/ff808181927b083b0193fd65a0eb02cb
 | 数据新鲜度 | 静态（依赖手动更新） | 实时 API | **实时 API + 多源聚合** |
 | 用户意图理解 | 关键词匹配表 | 无（通用搜索） | **AI 意图分类 + 4 步引导面板** |
 | 法规原文展示 | 无 | 命令输出 | **前端 Tab 弹窗 + 关键词高亮** |
-| 政策解读 | 静态问答示例 | 无 | **360 全网搜官方解读 + AI 兜底** |
+| 政策解读 | 静态问答示例 | 无 | **搜狗 全网搜官方解读 + AI 兜底** |
 | 风险指引 | 内嵌指标表 | 无 | **搜索提示框架 + 实时验证** |
 | 前端界面 | 无 | 无 | **完整 Web Demo** |
 | 代码量 | 0（纯 Markdown） | 检索脚本为主 | **检索/分析层 + 单文件前端，逐文件职责见「代码构成」表** |
@@ -390,10 +392,10 @@ GET /api/text/ff808181927b083b0193fd65a0eb02cb
 | 层级 | 技术 | 用途 |
 |------|------|------|
 | **后端框架** | Flask 3.1 | REST API 服务 |
-| **HTTP 客户端** | requests + urllib3 | NPC API、税务总局 search5、360、搜狗、Jina Reader |
+| **HTTP 客户端** | requests + urllib3 | NPC API、税务总局 search5、搜狗、搜狗、Jina Reader |
 | **文档解析** | Python stdlib (zipfile + ElementTree) | DOCX → 纯文本提取（零依赖） |
 | **并发搜索** | concurrent.futures (ThreadPoolExecutor) | 多源并行查询 |
-| **搜索引擎** | 360 (m.so.com) HTML 解析 | .gov.cn 与地方站点检索 |
+| **搜索引擎** | 搜狗手机端 (m.sogou.com) HTMLParser；微信检索另走 weixin.sogou.com | .gov.cn、地方站点、税屋与微信公众号的检索 |
 | **前端** | 纯 HTML/CSS/JS (零框架) | 搜索界面 + 引导面板 + 法规弹窗 |
 | **AI 解读** | 外部模型 CLI（subprocess，经付费闸门） | 法规通俗化解读生成；默认关闭，需显式设置 `TAX_ENABLE_PAID_LLM=1` 与 `TAX_LLM_CMD` |
 | **测试** | Python unittest 模式 | 离线用例（拦截页判别、时效判档、去重键）+ 联网端到端用例 |
@@ -481,7 +483,7 @@ python scripts/tax_formatter.py --intent policy_lookup < result.json
 }
 ```
 
-加 `--mode aggregated` 则改吃多源结构：`keyword` + `npc` 对象 + `chinatax` / `so360` /
+加 `--mode aggregated` 则改吃多源结构：`keyword` + `npc` 对象 + `chinatax` / `sogou` /
 `shui5` / `wechat` 四个数组（后三个数组里的条目用 `_source` 标来源）。两种模式的输入输出
 都实测跑通、退出码 0。
 
@@ -519,9 +521,9 @@ tax-analysis-skill/
 │   ├── tax_search.py               # NPC 法规库检索 + 33 项税种专题映射 + NPC 串行闸
 │   ├── tax_detail.py               # 详情元信息 + DOCX 全文解析（共用同一把串行闸）
 │   ├── tax_web_search.py           # 税务总局 search5 JSON 检索
-│   ├── tax_so360.py                # 360 site: 站内检索（含拦截页识别）
+│   ├── tax_sogou.py                # 搜狗手机端单页检索（整页元数据缓存、size 只截输出；反爬与零结果分流）
 │   ├── tax_fgk.py                  # 税务总局法规库目录与正文（--body 取正文 / --cache 缓存 / 翻页自适应）
-│   ├── tax_cache.py                # 缓存唯一实现（tax_search / tax_fgk / tax_detail 三处共用；清单默认关、详情默认开；正文不缓存）
+│   ├── tax_cache.py                # 缓存唯一实现（清单／元数据分源默认；正文不缓存）
 │   ├── tax_http.py                 # 统一请求层：对外 HTTP 的唯一出口（verify 必填）
 │   ├── tax_shui5.py                # 税屋检索与正文
 │   ├── tax_wechat.py               # 微信公众号（搜狗微信）
@@ -559,8 +561,8 @@ tax-analysis-skill/
 │   │   └── references/             # 评分规则·扣除指南·稽查应对·政策文件库(30)·加计书(10)·IPO书(22)·内控模板(34)
 │   ├── shui5/
 │   │   ├── SKILL.md                # 税屋站点子技能：按任务选哪条路（关键词/限定/按文号/按栏目标签/读正文）、WAF 凭据哪枚有效、栏目地图与分页、正文收口与续页读法、站点时效线索的边界、未收的改进与取舍
-│   │   ├── NOTE.md                 # 2026-10-18 实测台账（挑战页 23,682 字节、acw_sc__v2 约 60 分钟、两条通道首屏交集 0 篇、站内只认四个入参、五种时效标记各自的站内条数、「税屋提示」批注覆盖率、文号三档阶梯读数、`--all` 取全跨提交逐行相同、首页三簇链接全指站外、正文容器内无官方原文、文章页标签是模板固定位）、八条缺陷登记与逐处变异核验记录、复测入口与限速
-│   │   └── probe_shui5.py          # 复测探针十项：挑战面、凭据与寿命、站内检索、360、两路首屏交集、栏目地图、栏目分页、正文形态、站内过滤档位、栏目表与标签翻页；只读、全项约 30 个请求、cookie 不落盘、不调模型；判据直接引 `tax_shui5`，不另立一份
+│   │   ├── NOTE.md                 # 2026-10-23 实测台账（挑战页 23,682 字节、acw_sc__v2 约 60 分钟、站内首屏 30 篇与搜狗首屏 8 篇按文章 ID 归一后交集 2 篇、站内只认四个入参、五种时效标记各自的站内条数、「税屋提示」批注覆盖率、文号三档阶梯读数、`--all` 取全跨提交逐行相同、首页三簇链接全指站外、正文容器内无官方原文、文章页标签是模板固定位）、八条缺陷登记与逐处变异核验记录、复测入口与限速
+│   │   └── probe_shui5.py          # 复测探针十项：挑战面、凭据与寿命、站内检索、搜狗、两路首屏交集、栏目地图、栏目分页、正文形态、站内过滤档位、栏目表与标签翻页；只读、全项约 30 个请求、cookie 不落盘、不调模型；判据直接引 `tax_shui5`，不另立一份
 │   ├── szse-lawrules/
 │       ├── SKILL.md                # 深交所法律规则目录检索（查询式：build 建索引后离线 query）
 │       ├── NOTE.md                 # 来源、两种渲染形态、实测校正（t 编号不表版次、业务规则需浏览器、多为 PDF 附件）
@@ -643,10 +645,10 @@ python tests/build_eval_set.py --verify          # 本地数据与清单逐项�
 | # | 决策 | 选择 | 理由 |
 |---|------|------|------|
 | 1 | 主数据源 | NPC 国家法规库 API | 权威性最高，覆盖法律/行政法规/司法解释，实测 14 个税种全部可查且本体法排在首位 |
-| 2 | 数据新鲜度策略 | 默认无缓存，每次实时查询 | 税收政策随时更新，缓存可能返回过时数据 |
+| 2 | 数据新鲜度策略 | NPC 检索／fgk 清单默认无缓存；搜狗整页元数据默认缓存 30 分钟 | 搜狗命中保留原 `searched_at`，不当成本次联网结果；正文不缓存 |
 | 3 | 搜索策略 | 标题精确 → 标题模糊（重排）→ 正文（重排）→ chinatax | NPC 标题与正文两种检索都按发布时间返回，必须本地重排 |
 | 4 | 默认时效筛选 | 仅现行有效（sxx=3） | 用户 99% 不需要看已废止的法律 |
-| 5 | 官方解读搜索 | 税务总局站内 search5 + 360 移动版 `site:` 检索 | 税务总局接口覆盖 fgk/chinatax；360 是实测能返回真实 URL 的发现通道，Bing 与百度均已弃用 |
+| 5 | 官方解读搜索 | 搜狗手机端 `site:`：默认 chinatax.gov.cn、mof.gov.cn、www.gov.cn 每站 1 问 | 默认 3 站有序查询，不再独立查 fgk；父域检索不保证法规库召回，显式 fgk／省局保留。只复用取数层 30 分钟缓存，到期重查；移除无期限组合缓存与 15 秒线程等待上限。冷却立即报错；离线验证不等于联网放行保证 |
 | 6 | AI 解读引擎 | 使用者自配的外部模型 CLI，默认关闭 | 技能会被分发出去，任何"自动发现本机已装的模型命令"都会让接收方在不知情时产生调用费用；改为只认环境变量、不设默认，闸门未开时接口返回 503 |
 | 7 | DOCX 解析 | Python stdlib (zipfile+ET) | 零 pip 依赖，不需要 python-docx |
 | 8 | 前端技术 | 纯 HTML/CSS/JS 零框架 | 单文件部署，无构建步骤 |

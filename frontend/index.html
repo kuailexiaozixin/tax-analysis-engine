@@ -692,7 +692,7 @@ table.calc-tiers td{padding:2px 6px}
         <label class="wb-label" for="wbCasePages">翻页轮数（1–20）<input type="number" id="wbCasePages" min="1" max="20" value="1"></label>
         <label class="wb-label" for="wbCaseLimit">最多几条（1–100）<input type="number" id="wbCaseLimit" min="1" max="100" value="10"></label>
       </div>
-      <label class="wb-check"><input type="checkbox" id="wbCaseShui5">加税屋那一路（经 360 site: 检索）</label>
+      <label class="wb-check"><input type="checkbox" id="wbCaseShui5">加税屋那一路（经搜狗 site: 检索）</label>
       <div class="wb-row"><button type="button" class="wb-btn primary" onclick="wbCases(this)">检索类案</button></div>
       <div class="wb-out" id="wbCasesOut"></div>
     </div>
@@ -761,7 +761,7 @@ const NEXT_STEP={user_type:'tax_type',tax_type:'intent',intent:'conditions'};
 const SOURCE_UI={
   npc:{icon:'📜',label:'NPC法规库',short:'NPC',cls:'src-npc',url:'https://flk.npc.gov.cn'},
   chinatax:{icon:'🏛️',label:'国家税务总局',short:'总局',cls:'src-chinatax',url:'https://www.chinatax.gov.cn'},
-  so360:{icon:'🔎',label:'360站内搜索',short:'360',cls:'src-anysearch',url:'https://www.so.com'},
+  sogou:{icon:'🔎',label:'搜狗搜索',short:'搜狗',cls:'src-anysearch',url:'https://m.sogou.com'},
   shui5:{icon:'🏠',label:'税屋(实务解读)',short:'税屋',cls:'src-anysearch',url:'https://www.shui5.cn'},
   wechat:{icon:'💬',label:'微信公众号(实务解读)',short:'公众号',cls:'src-anysearch',url:'https://weixin.sogou.com'},
   ctax:{icon:'📰',label:'中国税网(报社转载与税案)',short:'中国税网',cls:'src-anysearch',url:'https://www.ctaxnews.com.cn'}
@@ -774,13 +774,14 @@ const AGG_SOURCE_HINT=Object.keys(SOURCE_UI).map(k=>SOURCE_UI[k].short).join('�
 /* 卡面「📅」那一栏该叫什么。这一栏填的是条目自带的日期，而各路给的不是同一件事：
    NPC 是公布日期（gbrq），税务总局与税务法规库是成文日期（cwrq，tax_web_search
    把它写进 publish_date），中国税网是站点自己的发布日期，税屋与公众号的行日期是
-   这两家发文页上的时间、不是文件的公布或成文日期，360 那一路的条目根本没有日期
-   字段。以前不分源一律写"公布"，于是总局与法规库那一栏把成文日期标成了公布日期：
+   这两家发文页上的时间、不是文件的公布或成文日期；搜狗那一路的日期取自检索结果
+   的引用行，是站点自己标注的发布日，且只有部分条目有。以前不分源一律写"公布"，
+   于是总局与法规库那一栏把成文日期标成了公布日期：
    拿它去核对文件的公布日就对不上，而这两个日期在同一份文件上可以差好几个月。
    哪一路收的是哪一枚字段，后端写在 tax_aggregator.DATE_SERVER_FIELDS 与
    DATE_LOCAL_SOURCES；这一份由 tests/test_server_routes.py 逐键比对。
-   表里没有的源（so360）退成中性的"日期"，不猜它是什么日期。 */
-const DATE_FIELD={npc:'公布',chinatax:'成文',fgk:'成文',ctax:'发布',shui5:'站点发布',wechat:'站点发布'};
+   表里没有的源退成中性的"日期"，不猜它是什么日期。 */
+const DATE_FIELD={npc:'公布',chinatax:'成文',fgk:'成文',ctax:'发布',sogou:'站点发布',shui5:'站点发布',wechat:'站点发布'};
 function dateFieldLabel(item){
   return DATE_FIELD[(item&&item._source)||'']||'日期';
 }
@@ -812,7 +813,7 @@ document.addEventListener('DOMContentLoaded',()=>{
 
 /* 页首那句副标题写的是"这个界面把结果从哪儿取来"，所以它必须跟着数据源词表走。
    以前它手写"数据源自国家法规库 · 实时同步 · 现行有效"：六路里只有一路是 NPC 的
-   国家法规库，另外五路（总局、360、税屋、公众号、中国税网）都没被提到；而"现行
+   国家法规库，另外五路（总局、搜狗、税屋、公众号、中国税网）都没被提到；而"现行
    有效"是筛选栏在 NPC 那一侧的默认值，不是数据的属性——税务总局与法规库两路默认
    是"全部"，聚合里也照常取回已修改、已废止的文本。写在副标题里就成了对整份结果
    的一句断言，读者会以为屏上出现的每一条都现行有效。 */
@@ -823,7 +824,7 @@ function renderHeroSubtitle(){
 }
 
 /* 页脚那行"数据源"以前手写，只列了三个站点，而多源聚合实际发的是六路——
-   少掉的那三路（360 搜索、税屋、中国税网）恰好是实务层与地方口径的补充，
+   少掉的那三路（搜狗搜索、税屋、中国税网）恰好是实务层与地方口径的补充，
    读者按页脚去核对来源覆盖就会漏。现在由 SOURCE_UI 渲，加一路源只需要改那张表。
    用 textContent 建节点，不把任何名字拼进 HTML。 */
 function renderFooterSources(){
@@ -1718,7 +1719,7 @@ function fillProvinces(el,keep){
 // 否则页面上写的站点就不是真正被查的站点（典型错位：查的是全国站，界面却显示省名）。
 function interpSites(prov){
   if(prov)return [`${prov}.chinatax.gov.cn`,'chinatax.gov.cn','www.gov.cn'];
-  return ['chinatax.gov.cn','fgk.chinatax.gov.cn','mof.gov.cn','www.gov.cn'];
+  return ['chinatax.gov.cn','mof.gov.cn','www.gov.cn'];
 }
 
 /* ═══════════ SEARCH ═══════════ */
@@ -1836,7 +1837,7 @@ function renderResults(data){
   // 这一行由后端给：前端只知道自己点了哪个源，不知道这一批条目来自哪一层。
   if(result?._page_note){h+=`<div class="meta-bar" style="border-bottom:none"><span class="source-label" style="border-color:var(--accent);color:var(--accent);white-space:normal">📄 ${esc(result._page_note)}</span></div>`;}
   // 日期区间这一维在六源里的生效方式不是一种（NPC／总局／中国税网由接口收窄，
-  // 360、税屋、公众号只能在取回的窗口内补筛），整句由后端给（tax_search._date_note 与
+  // 搜狗、税屋、公众号只能在取回的窗口内补筛，税屋搜狗那一路也只有部分条目带日期），整句由后端给（tax_search._date_note 与
   // tax_aggregator._date_scope_note）。这里照抄：前端不自己判断哪一源真收窄过，
   // 也不把"窗口内补筛到 0 条"渲染成"该源没有"。读的是 result 这一层——单源与
   // 聚合两条路都把这句挂在这里。
@@ -1949,15 +1950,16 @@ async function loadInterpretationsTab(bbbsId){
     if(data.error)throw new Error(data.error);
     let h='';
     if(data.sources&&data.sources.length>0){
+      if(data.engine_error)h+=`<div class="interp-empty">部分站点取数失败（${esc(data.queries_blocked||'')}）：${esc(data.engine_error)}。以下仅为已取回的结果。</div>`;
       data.sources.forEach(item=>{
         const isOfficial=item.source_label&&['国家税务总局','财政部','税务法规库','中国政府网','全国人大','官方来源'].includes(item.source_label);
         const badge=isOfficial?'🏛️ 官方解读':'🏛️ 官方';
         const badgeClass='is-official';
-        h+=`<a class="interp-card" href="${item.url||'#'}" target="_blank" rel="noopener">
+        h+=`<a class="interp-card" href="${esc(item.url||'#')}" target="_blank" rel="noopener">
           <div class="it">📋 ${esc(item.title)}</div>
           <div class="im">
             <span class="is ${badgeClass}">${badge}</span>
-            <span>${esc(item.source_label||item.source)}</span>${item.date?`<span>${item.date}</span>`:''}
+            <span>${esc(item.source_label||item.source)}</span>${item.date?`<span>${esc(item.date)}</span>`:''}
             ${item.url?`<span style="color:var(--g600)">🔗 查看 →</span>`:''}
           </div></a>`;
       });
@@ -2076,7 +2078,7 @@ function switchTab(tab){
   // 措辞要说"实际直连了哪些源"：小颖言税/税海涛声/会计网/税小课/朴税只用来给
   // 命中条目打来源标签（TAX_PRACTICE_SOURCES），程序并不会去搜它们，写进这里会变成假承诺。
   // interp 的站点清单随省份变，所以走 interpFooterLabel() 现算，不写死。
-  const footerLabels={law:`实时获取自${SOURCE_UI.npc.label}`,interp:interpFooterLabel(),ai:'AI 生成 · 仅供参考 · 以官方为准',web:'直连税屋(shui5.cn) + 微信公众号，另经 360 全网补充；来源标签按命中条目的域名/标题识别'};
+  const footerLabels={law:`实时获取自${SOURCE_UI.npc.label}`,interp:interpFooterLabel(),ai:'AI 生成 · 仅供参考 · 以官方为准',web:'直连税屋(shui5.cn) + 微信公众号，另经搜狗全网补充；来源标签按命中条目的域名/标题识别'};
   document.getElementById('footerInfo').textContent=footerLabels[tab]||'';
 }
 
@@ -2147,7 +2149,7 @@ function guidePickTaxType(i){const t=QUICK_TYPES[i];if(t)guidePick('tax_type',t.
 
 function executeGuidedSearch(){const intentMap={policy:'',preference:'优惠',risk:'风险 合规',filing:'申报',invoice:'发票',calc:'标准 扣除'};const entMap={small:'小规模纳税人',general:'一般纳税人',micro:'小微企业',hitech:'高新技术企业'};let parts=[];if(guideState.tax_type)parts.push(guideState.tax_type);if(guideState.intent&&intentMap[guideState.intent])parts.push(intentMap[guideState.intent]);if(guideState.enterprise_type&&entMap[guideState.enterprise_type])parts.push(entMap[guideState.enterprise_type]);const custom=document.getElementById('customKeyword')?.value?.trim();if(custom)parts.push(custom);document.getElementById('searchInput').value=parts.join(' ')||'增值税';if(guideState.timeframe==='latest')document.getElementById('filterSort').value='date';if(guideState.timeframe==='2024')document.getElementById('filterDateFrom').value='2024-01-01';setNpcStatus(guideState.scope==='national'?'3':'');toggleGuidance();doSearch();}
 
-function esc(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+function esc(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML.replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 </script>
 </body>
 </html>

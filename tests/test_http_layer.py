@@ -40,7 +40,7 @@ import tax_http  # noqa: E402
 ALLOWED_BARE = {
     "tax_http.py",
     "tax_shui5.py",
-    "tax_so360.py",
+    "tax_sogou.py",
     "tax_wechat.py",
     "tax_web_search.py",
     "tax_ctax.py",
@@ -216,7 +216,7 @@ class TestShortReason(unittest.TestCase):
     def test_drops_the_url_but_keeps_the_readable_cause(self):
         exc = requests.exceptions.TooManyRedirects(
             "Redirect response '302 Found' for "
-            "https://m.so.com/s?q=%E5%A2%9E%E5%80%BC%E7%A8%8E%E8%A7%A3%E8%AF%BB&pn=1 "
+            "https://www.sogou.com/web?query=%E5%A2%9E%E5%80%BC%E7%A8%8E%E8%A7%A3%E8%AF%BB "
             "Redirecting too many times! (25 redirects)")
         why = tax_http.short_reason(exc)
         self.assertIn("TooManyRedirects", why)     # 类名留着，读的人有词可查
@@ -230,7 +230,7 @@ class TestShortReason(unittest.TestCase):
         那层嵌套原因丢掉——嵌套里说的是 urllib3 的实现，不是用户能行动的事。
         """
         exc = requests.exceptions.ConnectionError(
-            "HTTPSConnectionPool(host='m.so.com', port=443): Max retries exceeded "
+            "HTTPSConnectionPool(host='www.sogou.com', port=443): Max retries exceeded "
             "with url: /?q=%E5%A2%9E\n  (Caused by SSLError(SSLEOFError(8, "
             "'EOF occurred in violation of protocol')))")
         why = tax_http.short_reason(exc, limit=60)
@@ -238,8 +238,7 @@ class TestShortReason(unittest.TestCase):
         self.assertNotIn("Caused by", why)
         self.assertNotIn("%E5%A2%9E", why)
         self.assertLessEqual(len(why), len("ConnectionError：") + 60)
-        # 60 字这一刀落在 "retries" 之后，不是 "excee"：截断点回退到空格
-        self.assertTrue(why.endswith("Max retries"), why)
+        self.assertEqual("ConnectionError：HTTPSConnectionPool(host='www.sogou.com', port=443): Max", why)
 
 
 def main():

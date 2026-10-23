@@ -4,7 +4,8 @@
 这六条是人肉规则——程序解决不了、用的时候要留神：
 
   1. NPC 有限流，检索串行跑；评测时不要并行别的 NPC 检索
-  2. 360 被封时地方口径与税屋这一层是空的，要在答案里明说、不要拿别的源顶替
+  2. 搜狗被拦时地方口径这一层、税屋这一层都是空的，
+     要在答案里明说、不要拿别的源顶替
   3. fgk 翻得越深相关性越差，深页条目必须回 L1 核对
   4. 公众号依赖会话，并发加压会触发反爬
   5. `_reliability: medium` 说的是这条的召回方式，要落成一句具体提醒
@@ -33,6 +34,7 @@ SCRIPTS_DIR = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 import tax_ctax as CT      # noqa: E402
+import tax_cache             # noqa: E402
 import tax_detail as DT      # noqa: E402
 import tax_answer as ANS     # noqa: E402
 import tax_evidence as E     # noqa: E402
@@ -41,6 +43,7 @@ import tax_formatter as FMT  # noqa: E402
 import tax_http              # noqa: E402
 import tax_search as T       # noqa: E402
 import tax_shui5 as SH       # noqa: E402
+import tax_sogou as SOG      # noqa: E402
 import tax_wechat as W       # noqa: E402
 import tax_aggregator as AGG  # noqa: E402
 import tax_web_search as WS   # noqa: E402
@@ -105,13 +108,13 @@ class TestFgkDeepPageMarker(unittest.TestCase):
 class TestAggregatorGaps(unittest.TestCase):
     """源级失败要翻译成"缺了哪一层、能不能拿别的源顶"。"""
 
-    def _agg(self, *, so360=None, shui5=None, wechat=None):
+    def _agg(self, *, sogou=None, shui5=None, wechat=None):
         ok = lambda n: {"total": n, "results": [{"title": "财税〔2025〕1号",
                                                  "url": "https://x.test/a"}] if n else []}
         with mock.patch.object(AGG, "search_tax", return_value=ok(1)), \
              mock.patch.object(AGG, "search_chinatax", return_value=ok(1)), \
-             mock.patch.object(AGG, "so360_search",
-                               return_value=so360 if so360 is not None else ok(1)), \
+             mock.patch.object(AGG, "sogou_search",
+                               return_value=sogou if sogou is not None else ok(1)), \
              mock.patch.object(AGG, "search_shui5",
                                return_value=shui5 if shui5 is not None else ok(0)), \
              mock.patch.object(AGG, "search_wechat",
@@ -125,35 +128,41 @@ class TestAggregatorGaps(unittest.TestCase):
         self.assertEqual("", r["degraded_note"])
 
     def test_blocked_source_yields_a_gap_with_impact_and_no_substitute(self):
-        r = self._agg(so360={"_error": "360 被拦截（访问异常出错）", "results": []})
+        r = self._agg(sogou={"_error": "搜狗熔断中：约 600 秒后到期", "results": []})
         gaps = {g["source"]: g for g in r["gaps"]}
-        self.assertIn("so360", gaps)
-        self.assertEqual("360 被拦截（访问异常出错）", gaps["so360"]["reason"])
-        self.assertIn("地方口径", gaps["so360"]["impact"])
-        self.assertTrue(gaps["so360"]["do_not_substitute"])
+        self.assertIn("sogou", gaps)
+        self.assertEqual("搜狗熔断中：约 600 秒后到期", gaps["sogou"]["reason"])
+        self.assertIn("地方口径", gaps["sogou"]["impact"])
+        self.assertTrue(gaps["sogou"]["do_not_substitute"])
         # 断这句话的两个要点：不许拿别的源顶替 + 必须说明缺的是哪一层。
         # 别截半句去匹配——"不要用其他源顶替"在实现文案里并不连续
         # （实现写的是"不要用其他源的条目顶替缺失层"），断半句是形式审查。
         self.assertIn("不要用其他源的条目顶替", r["degraded_note"])
         self.assertIn("要明说缺的是哪一层", r["degraded_note"])
 
-    def test_shui5_empty_is_attributed_to_so360_not_to_shui5(self):
-        """税屋链接靠 360 的 site:shui5.cn 检索取——360 挂了，税屋的空是连带的。"""
-        r = self._agg(so360={"_error": "360 被拦截", "results": []})
+    def test_shui5_empty_is_attributed_to_sogou_when_only_sogou_was_walked(self):
+        """税屋链接靠搜狗的 site:shui5.cn 检索取——搜狗被拦、站内没走，税屋的空是连带的。"""
+        r = self._agg(sogou={"_error": "搜狗触发反爬", "results": []},
+                      shui5={"total": 0, "results": [],
+                             "_channels": {"搜狗": "被拦：搜狗触发反爬",
+                                           "站内": "没走成：搜狗那一路没回来"}})
         shui5 = [g for g in r["gaps"] if g["source"] == "shui5"]
         self.assertEqual(1, len(shui5), "税屋该被单独标一条，说明它是被连带空掉的")
-        self.assertEqual("so360", shui5[0]["blocked_by"])
+        self.assertEqual("sogou", shui5[0]["blocked_by"])
         self.assertIn("不代表税屋没有内容", shui5[0]["impact"])
 
-    def test_shui5_own_failure_is_not_attributed_to_so360(self):
+    def test_shui5_own_failure_is_not_attributed_to_sogou(self):
         r = self._agg(shui5={"_error": "WAF 挑战未通过", "results": []})
         shui5 = [g for g in r["gaps"] if g["source"] == "shui5"]
         self.assertEqual(1, len(shui5))
-        self.assertNotIn("blocked_by", shui5[0], "税屋自己报错时不该甩给 360")
+        self.assertNotIn("blocked_by", shui5[0], "税屋自己报错时不该甩给搜狗")
         self.assertIn("WAF", shui5[0]["reason"])
 
     def test_note_counts_hits_and_names_the_layer(self):
-        r = self._agg(so360={"_error": "360 被拦截", "results": []})
+        r = self._agg(sogou={"_error": "搜狗触发反爬", "results": []},
+                      shui5={"total": 0, "results": [],
+                             "_channels": {"搜狗": "被拦：搜狗触发反爬",
+                                           "站内": "没走成：搜狗那一路没回来"}})
         # 分母取的是这一轮实际发出的源名单长度，不是文案里的常量：名单加到六枚，
         # 这句就得跟着改，改了才发现漏了。打桩给的是 npc／chinatax／ctax 三路有命中。
         self.assertIn("3/6", r["degraded_note"], r["degraded_note"])
@@ -392,7 +401,7 @@ class TestAggregatorCarriesTheReminder(unittest.TestCase):
         empty = {"total": 0, "results": []}
         with mock.patch.object(AGG, "search_tax", return_value=npc), \
              mock.patch.object(AGG, "search_chinatax", return_value=chinatax), \
-             mock.patch.object(AGG, "so360_search", return_value=empty), \
+             mock.patch.object(AGG, "sogou_search", return_value=empty), \
              mock.patch.object(AGG, "search_shui5", return_value=empty), \
              mock.patch.object(AGG, "search_wechat", return_value=empty), \
              mock.patch.object(AGG, "search_ctax", return_value=empty):
@@ -925,7 +934,7 @@ class TestRoundFailureIsNotSilent(unittest.TestCase):
         """
         page = {"results": [{"title": "法律草案审议 中国人大网",
                              "url": "http://www.npc.gov.cn/npc/c2/x.html"}], "total": 1}
-        with mock.patch.object(ANS.S360, "so360_search", return_value=page) as hit:
+        with mock.patch.object(ANS.SG, "sogou_search", return_value=page) as hit:
             rows, err = ANS._legis_round("税收征收管理法 修订草案", 8)
         self.assertEqual("", err)
         self.assertEqual("npc.gov.cn", hit.call_args.kwargs["site"])
@@ -1579,7 +1588,7 @@ class TestShui5NativeSearch(unittest.TestCase):
         self.assertEqual("税收问答", rows[0]["column"])
         self.assertEqual("摘要1词", rows[0]["snippet"])
         self.assertEqual("https://www.shui5.cn/article/42/101.html", rows[0]["url"])
-        # 两条通道共用行形状：360 那一路给的键，站内这路也必须全有
+        # 两条通道共用行形状：搜狗那一路给的键，站内这路必须全有；栏目是站内独有
         self.assertEqual({"title", "url", "date", "snippet", "source",
                           "source_label", "column"}, set(rows[0]))
 
@@ -1657,48 +1666,396 @@ class TestShui5NativeSearch(unittest.TestCase):
         self.assertIn("这一词站内共 3 条", r["_status"])
 
 
-class TestShui5ChannelRouting(unittest.TestCase):
-    """auto 先走 360、它没取到才启浏览器；两条通道各 0 条是"没有"，不是"没取到"。"""
+class TestSogouWebSearch(unittest.TestCase):
+    """搜狗那一路的解析与失败分流：反爬、零结果、结构改版不能混成"0 条"。"""
 
-    def _run(self, so360, native, channel="auto"):
+    WEB = "https://www.sogou.com/web?query=x"
+
+    def setUp(self):
+        # 预算、熔断与缓存都是跨进程共享的真实状态；用例必须各用各的临时盘，
+        # 否则一条用例触发的熔断会把后面的用例一并挡住。
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        for name, value in (("_STATE_PATH", Path(tmp.name) / "state.json"),
+                            ("_cache", tax_cache.CacheManager(enabled=False)),
+                            ("SEARCH_MIN_GAP", 0)):
+            patcher = mock.patch.object(SOG, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _block(self, title, url, cite="2026-06-16", snippet="摘要"):
+        return ('<div class="vrwrap">'
+                '<h3 class="vr-title  "><a href="/link?url=abc"><em>研发费用</em>'
+                + title + '</a></h3>'
+                '<div class="img-flex"></div>'
+                '<div class="fz-mid space-txt">' + snippet + '</div>'
+                '<div class="r-sech" data-url="' + url + '"></div>'
+                '<a class="citeLinkClass"><img class="footerIcon" src="x">'
+                '<span>税屋</span><span>https://www.shui5.cn/a...</span>'
+                + ('<span class="cite-date">' + cite + '</span>' if cite else '') +
+                '</a></div>')
+
+    def _search(self, html, site="shui5.cn", size=10, final=None):
+        with mock.patch.object(SOG, "_fetch",
+                               return_value=(html, final or self.WEB, "", False)):
+            return SOG.sogou_search("研发费用加计扣除", site=site, size=size)
+
+    def _mobile(self, title, url, cite="2026-06-16", snippet="摘要", quote='"'):
+        from urllib.parse import quote as encode
+
+        return (f"<div class={quote}vrResult{quote}><h3 class=vr-tit>"
+                f'<a class=resultLink href="/tc?url={encode(url, safe="")}&amp;linkid=title">'
+                f"<em>{title}</em></a></h3><div class=citeurl>{cite}</div>"
+                f"<a class='txt-summary space-txt'>{snippet}</a></div>")
+
+    def test_mobile_quote_variants_extract_full_metadata(self):
+        for quote in ('"', "'", ""):
+            with self.subTest(quote=quote):
+                html = self._mobile("研发费用 &amp; 扣除", P1, quote=quote,
+                                    snippet="甲" * 260 + " <em>末段</em>")
+                row = self._search(html)["results"][0]
+                self.assertEqual("研发费用 & 扣除", row["title"])
+                self.assertEqual(P1, row["url"])
+                self.assertEqual("2026-06-16", row["date"])
+                self.assertEqual("甲" * 260 + " 末段", row["snippet"])
+
+    def test_mobile_dates_do_not_use_summary_or_invalid_calendar_dates(self):
+        for cite, expected in (("", ""), ("2026-02-30", ""),
+                               ("1995-01-27", "1995-01-27"),
+                               ("2024-01-01.html 2025-03-05", "2025-03-05")):
+            with self.subTest(cite=cite):
+                html = self._mobile("标题", P1, cite=cite, snippet="2020-01-01 验证码说明")
+                self.assertEqual(expected, self._search(html)["results"][0]["date"])
+                self.assertFalse(SOG._looks_like_verify_page(html))
+
+    def test_mobile_ignores_non_article_links_and_normalizes_duplicates(self):
+        html = ('<div class=vrResult><a class=resultLink href="/tc?url=https%3A%2F%2Fexample.com">'
+                '推荐词</a></div><div class=vrResult><h3>广告</h3>'
+                '<a href="/ad">推广</a></div>')
+        html += self._mobile("甲", "https://www.shui5.cn/article/90/40872.html")
+        html += self._mobile("乙", "https://www.shui5.cn/article/90/40872$2.html")
+        rows, raw, area = SOG._parse(html, size=100)
+        self.assertTrue(area)
+        self.assertEqual(2, raw)
+        self.assertEqual(1, len(rows))
+        self.assertEqual("甲", rows[0]["title"])
+
+    def test_mobile_host_filter_rejects_spoofed_domains_and_non_http_urls(self):
+        targets = ("https://shui5.cn.evil.test/a", "https://evil.test/?site=shui5.cn",
+                   "https://shui5.cn@evil.test/a", "https://notshui5.cn/a",
+                   "javascript:alert(1)", "https://[broken/a", "https://m.sogou.com/a")
+        html = "".join(self._mobile("站外", url) for url in targets)
+        html += self._mobile("站内", "https://sub.shui5.cn/a?x=1&y=2")
+        rows = self._search(html)["results"]
+        self.assertEqual(["https://sub.shui5.cn/a?x=1&y=2"], [row["url"] for row in rows])
+
+    def test_mobile_result_area_with_zero_marker_is_not_cached_as_empty(self):
+        html = '<div class=vrResult><h3>没有找到直链</h3></div>'
+        out = self._search(html)
+        self.assertIn("结构可能改版", out["_error"])
+
+    def test_mobile_class_name_in_script_is_not_a_result_area(self):
+        html = '<script>const template="vrResult";</script><p>请输入验证码</p>'
+        self.assertTrue(SOG._looks_like_verify_page(html))
+        self.assertFalse(SOG._parse(html)[2])
+        desktop = '<script>const template="vrResult";</script>' + self._block("标题", P1)
+        self.assertEqual(1, len(self._search(desktop)["results"]))
+
+    def test_mobile_multiple_citation_lines_keep_the_date(self):
+        html = self._mobile("标题", P1, cite="国家税务总局 权威机构")
+        html = html.replace("</h3>", "</h3><div class=citeurl>2011-02-23</div>")
+        self.assertEqual("2011-02-23", self._search(html)["results"][0]["date"])
+
+    def test_full_page_cache_is_shared_across_requested_sizes(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        cache = tax_cache.CacheManager(enabled=True, namespace="sogou")
+        cache.dir = Path(tmp.name)
+        for mobile in (True, False):
+            with self.subTest(mobile=mobile):
+                build = self._mobile if mobile else self._block
+                html = "".join(build(f"标题{i}", f"https://www.shui5.cn/article/42/{i}.html")
+                               for i in range(12))
+                with mock.patch.object(SOG, "_cache", cache), mock.patch.object(
+                        SOG, "_fetch", return_value=(html, self.WEB, "", False)) as hit:
+                    outputs = [SOG.sogou_search(f"缓存查询{mobile}", site="shui5.cn", size=n)
+                               for n in (1, 5, 100)]
+                self.assertEqual(1, hit.call_count)
+                self.assertEqual([1, 5, 12], [out["total"] for out in outputs])
+                self.assertEqual([False, True, True], [out["_from_cache"] for out in outputs])
+                self.assertEqual(1, len({out["searched_at"] for out in outputs}))
+
+    def test_invalid_size_is_rejected_before_network(self):
+        with mock.patch.object(SOG, "_fetch") as hit:
+            for value in (0, -1, True, 1.5, "10", None):
+                with self.subTest(value=value), self.assertRaises(ValueError):
+                    SOG.sogou_search("增值税", size=value)
+        hit.assert_not_called()
+
+    def test_only_server_errors_are_retried(self):
+        for status in (201, 400, 401, 404, 500, 503):
+            with self.subTest(status=status):
+                response = type("R", (), {"status_code": status,
+                    "url": self.WEB, "headers": {}, "content": b""})()
+                with mock.patch.object(SOG, "_get", return_value=response) as hit, \
+                        mock.patch.object(SOG.time, "sleep") as wait:
+                    _, _, error, blocked = SOG._fetch("离线查询")
+                expected = SOG.MAX_RETRIES if status >= 500 else 1
+                self.assertEqual(expected, hit.call_count)
+                self.assertEqual(expected - 1, wait.call_count)
+                self.assertIn(f"HTTP {status}", error)
+                self.assertFalse(blocked)
+
+    def test_network_failure_can_retry_and_recover(self):
+        response = type("R", (), {"status_code": 200,
+            "url": self.WEB, "headers": {}, "content": b"ok"})()
+        with mock.patch.object(SOG, "_get", side_effect=[
+                SOG.requests.ConnectionError("offline"), response]) as hit, \
+                mock.patch.object(SOG.time, "sleep") as wait:
+            html, _, error, blocked = SOG._fetch("离线查询")
+        self.assertEqual(("ok", "", False), (html, error, blocked))
+        self.assertEqual(2, hit.call_count)
+        wait.assert_called_once_with(1.5)
+
+    def test_mobile_challenge_does_not_retry_switch_endpoint_or_wait(self):
+        class R:
+            status_code = 302
+            url = SOG.SEARCH_URL % "x"
+            headers = {"Location": "https://m.sogou.com/antispider/?antip=wap_hd"}
+
+        with mock.patch("requests.Session.get", return_value=R()) as hit, \
+                mock.patch.object(SOG.time, "sleep") as wait:
+            first = SOG.sogou_search("查询甲")
+            second = SOG.sogou_search("查询乙")
+        self.assertTrue(first["_blocked"] and second["_blocked"])
+        self.assertEqual(1, hit.call_count)
+        self.assertTrue(hit.call_args.args[0].startswith("https://m.sogou.com/web/searchList.jsp?"))
+        self.assertFalse(hit.call_args.kwargs["allow_redirects"])
+        wait.assert_not_called()
+
+    def test_rows_carry_title_date_and_normalized_url(self):
+        out = self._search(self._block(
+            "加计扣除常见误区_税屋——第一时间传递财...",
+            "https://www.shui5.cn/article/90/40872$2.html"))
+        self.assertEqual(1, out["total"])
+        row = out["results"][0]
+        self.assertEqual("研发费用加计扣除常见误区_税屋——第一时间传递财...", row["title"])
+        self.assertEqual("https://www.shui5.cn/article/90/40872.html", row["url"],
+                         "第 2 页地址要归回首页，否则正文从中间读起")
+        self.assertEqual("2026-06-16", row["date"])
+        self.assertEqual("摘要", row["snippet"])
+        self.assertEqual("shui5.cn", row["source"])
+
+    def test_same_article_listed_on_two_pages_is_one_row(self):
+        html = (self._block("甲", "https://www.shui5.cn/article/90/40872.html")
+                + self._block("乙", "https://www.shui5.cn/article/90/40872$2.html"))
+        out = self._search(html)
+        self.assertEqual(1, out["total"], "归一后同一条只该留一行")
+
+    def test_date_comes_from_the_cite_line_not_the_snippet(self):
+        html = self._block("甲", P1, cite="", snippet="文中举例 2020-01-01 的口径")
+        self.assertEqual("", self._search(html)["results"][0]["date"],
+                         "摘要里的日期不是发布日，不能拿来顶")
+        html = self._block("甲", P1,
+                           cite="https://www.shui5.cn/a/2024-01-01.html 2025-03-05")
+        self.assertEqual("2025-03-05", self._search(html)["results"][0]["date"],
+                         "引用行里有多个日期时取最后一个（发布日）")
+
+    def test_antispider_redirect_is_blocked_and_not_retried(self):
+        class R:
+            url = "https://www.sogou.com/antispider/?m=1&antip=web_hd"
+            status_code = 200
+            content = b""
+
+        with mock.patch.object(SOG, "_get", return_value=R()) as hit:
+            out = SOG.sogou_search("增值税", site="shui5.cn")
+        self.assertTrue(out.get("_blocked"))
+        self.assertIn("反爬", out["_error"])
+        self.assertEqual(0, out["total"])
+        self.assertEqual(1, hit.call_count, "反爬页重发只会把封禁时间拖长")
+
+    def test_zero_result_page_is_not_an_error(self):
+        out = self._search("<html><body>抱歉，站内没有找到能和“x”匹配的内容。</body></html>")
+        self.assertEqual(0, out["total"])
+        self.assertNotIn("_error", out, "真 0 条要能跟取数失败分开")
+
+    def test_results_area_without_links_is_a_structure_error(self):
+        out = self._search('<div class="vrwrap"><h3 class="vr-title">标题</h3></div>')
+        self.assertIn("结构可能改版", out["_error"])
+
+    def test_page_without_results_area_or_marker_is_a_verify_page_error(self):
+        out = self._search("<html><body>请输入验证码</body></html>")
+        self.assertIn("验证页", out["_error"])
+
+    def test_site_filter_drops_other_domains_without_error(self):
+        html = (self._block("站外", "https://example.com/a.html")
+                + self._block("站内", P1))
+        out = self._search(html)
+        self.assertEqual(1, out["total"])
+        self.assertEqual(P1, out["results"][0]["url"])
+        out = self._search(self._block("站外", "https://example.com/a.html"))
+        self.assertEqual(0, out["total"], "全被 site: 过滤＝目标站没有，不是取数失败")
+        self.assertNotIn("_error", out)
+
+    def test_size_caps_rows(self):
+        html = "".join(self._block("标题%d" % i,
+                                   "https://www.shui5.cn/article/42/%d.html" % (100 + i))
+                       for i in range(3))
+        self.assertEqual(2, len(self._search(html, size=2)["results"]))
+
+    def test_antispider_location_trips_the_breaker_without_following(self):
+        """302 的 Location 就够判反爬，跟随会把 302 变成 200、还多花一次请求。"""
+        seen = {}
+
+        class Sess:
+            def get(self, url, **kw):
+                seen.update(kw)
+                return type("R", (), {
+                    "status_code": 302,
+                    "url": "https://www.sogou.com/web?query=x",
+                    "headers": {"Location": "https://www.sogou.com/antispider/?antip=web_hd"},
+                })()
+
+        SOG._get(Sess(), self.WEB)
+        self.assertFalse(seen["allow_redirects"])
+        self.assertGreater(SOG._read_state()["blocked_until"], time.time())
+
+    def test_active_breaker_refuses_before_any_request(self):
+        SOG._write_state({"blocked_until": time.time() + 120})
+        with mock.patch("requests.Session.get",
+                        side_effect=AssertionError("熔断期内不该发请求")):
+            out = SOG.sogou_search("增值税", site="shui5.cn")
+        self.assertTrue(out["_blocked"])
+        self.assertEqual(0, out["total"])
+        self.assertIn("熔断", out["_error"])
+
+    def test_budget_full_refuses_before_any_request(self):
+        now = time.time()
+        SOG._write_state({"recent": [now] * SOG.BUDGET_MAX,
+                          "last_request_at": now})
+        with mock.patch("requests.Session.get",
+                        side_effect=AssertionError("预算用尽后不该发请求")):
+            out = SOG.sogou_search("增值税", site="shui5.cn")
+        self.assertFalse(out.get("_blocked", False),
+                         "预算用尽不是站点反爬，别让上层按被拦处理")
+        self.assertIn("预算已用尽", out["_error"])
+
+    def test_verify_page_without_result_area_trips_the_breaker(self):
+        class R:
+            status_code = 200
+            url = self.WEB
+            headers = {}
+            content = b"<html><body>seccodeImage</body></html>"
+
+        with mock.patch.object(SOG, "_get", return_value=R()):
+            html, _, err, blocked = SOG._fetch("增值税")
+        self.assertEqual("", html)
+        self.assertTrue(blocked)
+        self.assertIn("验证页", err)
+        self.assertGreater(SOG._read_state()["blocked_until"], time.time())
+
+    def test_verify_page_marker_is_narrow(self):
+        self.assertFalse(SOG._looks_like_verify_page(
+            "<html>没有找到匹配内容，请勿输入验证码</html>"),
+            "页面已经说没有结果时，摘要里的验证码字样不能把它推翻")
+        self.assertTrue(SOG._looks_like_verify_page("<html>请输入验证码</html>"))
+
+    def test_repeat_query_is_served_from_cache_without_a_second_request(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        cache = tax_cache.CacheManager(enabled=True, namespace="sogou")
+        cache.dir = Path(tmp.name)
+        html = self._block("甲", P1)
+        with mock.patch.object(SOG, "_cache", cache), \
+             mock.patch.object(SOG, "_fetch",
+                               return_value=(html, self.WEB, "", False)) as hit:
+            first = SOG.sogou_search("研发费用加计扣除", site="shui5.cn", size=10)
+            second = SOG.sogou_search("研发费用加计扣除", site="shui5.cn", size=10)
+        self.assertEqual(1, hit.call_count, "同词同条数的第二次查询不该再花预算")
+        self.assertFalse(first["_from_cache"])
+        self.assertTrue(second["_from_cache"])
+        self.assertEqual(first["results"], second["results"])
+
+    def test_error_is_not_cached(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        cache = tax_cache.CacheManager(enabled=True, namespace="sogou")
+        cache.dir = Path(tmp.name)
+        with mock.patch.object(SOG, "_cache", cache), \
+             mock.patch.object(SOG, "_fetch",
+                               return_value=("", self.WEB,
+                                             "触发搜狗反爬（antispider）", True)):
+            SOG.sogou_search("增值税", site="shui5.cn")
+            again = SOG.sogou_search("增值税", site="shui5.cn")
+        self.assertFalse(again["_from_cache"])
+        self.assertTrue(again["_blocked"], "失败结果不能靠缓存翻成成功或零结果")
+
+
+class TestShui5ChannelRouting(unittest.TestCase):
+    """auto 先走搜狗、它没取到才启浏览器；两条通道各 0 条是"没有"，不是"没取到"。"""
+
+    def _run(self, sogou, native, channel="auto"):
         calls = []
 
-        def fake_so360(keyword, site="", size=5):
-            calls.append("360")
-            return so360
+        def fake_sogou(keyword, site="", size=5):
+            calls.append("搜狗")
+            return sogou
 
         def fake_native(keyword, size=5, **kw):
             calls.append("站内")
             return native
 
-        with mock.patch.object(SH, "so360_search", fake_so360), \
+        with mock.patch.object(SH, "sogou_search", fake_sogou), \
              mock.patch.object(SH, "search_native", fake_native):
             return SH.search_shui5("留抵退税", size=5, channel=channel), calls
 
-    def test_hit_from_360_does_not_start_a_browser(self):
+    def test_hit_from_sogou_does_not_start_a_browser(self):
         r, calls = self._run({"total": 1,
-                              "results": [{"title": "留抵退税实务税 屋——第一时间传递财税政策法规",
-                                           "url": P1, "snippet": "摘要"}]},
+                              "results": [{"title": "留抵退税实务_税屋——第一时间传递财...",
+                                           "url": P1, "date": "2026-06-16", "snippet": "摘要"}]},
                              {"results": [], "total": None, "_status": "没走成：无浏览器"})
-        self.assertEqual(["360"], calls)
-        self.assertEqual("360", r["_channel"])
+        self.assertEqual(["搜狗"], calls)
+        self.assertEqual("搜狗", r["_channel"])
         self.assertEqual("未走（指定通道）", r["_channels"]["站内"])
-        self.assertEqual("留抵退税实务", r["results"][0]["title"], "标语后缀要剥掉")
+        self.assertEqual("留抵退税实务", r["results"][0]["title"],
+                         "搜狗截断的标语后缀也要剥掉")
+        self.assertEqual("2026-06-16", r["results"][0]["date"],
+                         "搜狗给的发布日期要带进行里")
 
-    def test_blocked_360_falls_through_to_native(self):
-        r, calls = self._run({"_error": "360 被拦截（访问异常出错）", "results": []},
+    def test_sogou_cache_metadata_survives_shui5_routing(self):
+        original_time = "2026-01-02 03:04:05"
+        for cached in (False, True):
+            with self.subTest(cached=cached):
+                r, calls = self._run({
+                    "results": [{"title": "税屋解读", "url": P1}],
+                    "searched_at": original_time, "_from_cache": cached,
+                }, {"results": [], "_status": "未走"})
+                self.assertEqual(["搜狗"], calls)
+                self.assertEqual(original_time, r["searched_at"])
+                self.assertEqual(cached, r["_from_cache"])
+        r, calls = self._run({
+            "results": [], "searched_at": original_time, "_from_cache": True,
+        }, {"results": [SH._row_dict("站内解读", P1, "", "")], "_status": "命中 1 条"})
+        self.assertEqual(["搜狗", "站内"], calls)
+        self.assertFalse(r["_from_cache"])
+        self.assertNotEqual(original_time, r["searched_at"])
+
+    def test_blocked_sogou_falls_through_to_native(self):
+        r, calls = self._run({"_error": "触发搜狗反爬（antispider），0 条不代表没有匹配结果",
+                              "_blocked": True, "results": []},
                              {"results": [SH._row_dict("站内标题", P1, "2026-08-10", "摘要")],
                               "total": 1, "_status": "命中 1 条"})
-        self.assertEqual(["360", "站内"], calls)
+        self.assertEqual(["搜狗", "站内"], calls)
         self.assertEqual("站内", r["_channel"])
         self.assertEqual(1, r["total"])
         self.assertNotIn("_error", r, "换通道换到了就不该报整体失败")
+        self.assertTrue(r["_channels"]["搜狗"].startswith("被拦"))
 
     def test_forced_channels_each_touch_only_their_own_source(self):
         _, calls = self._run({"total": 0, "results": []},
                              {"results": [], "total": None, "_status": "没走成"},
-                             channel="so360")
-        self.assertEqual(["360"], calls)
+                             channel="sogou")
+        self.assertEqual(["搜狗"], calls)
         _, calls = self._run({"total": 1, "results": [{"title": "t", "url": P1}]},
                              {"results": [], "total": None, "_status": "没走成"},
                              channel="native")
@@ -1712,10 +2069,11 @@ class TestShui5ChannelRouting(unittest.TestCase):
         self.assertEqual("", r["_channel"])
 
     def test_both_channels_failing_says_which_and_why(self):
-        r, _ = self._run({"_error": "360 被拦截", "results": []},
+        r, _ = self._run({"_error": "触发搜狗反爬（antispider）", "_blocked": True,
+                          "results": []},
                          {"results": [], "total": None, "_status": "没走成：无浏览器，改纯 HTTP 直连"})
         self.assertIn("两条检索通道都没取到", r["_error"])
-        self.assertIn("360 被拦", r["_error"])
+        self.assertIn("搜狗 被拦", r["_error"])
         self.assertIn("站内 没走成", r["_error"])
 
 
@@ -1837,46 +2195,46 @@ class TestShui5ScopedSearch(unittest.TestCase):
         self.assertIn("翻到上限 1 页只取了 30 条", r["_status"],
                       "撞到上限时必须写明只取了多少，不能报成取全了")
 
-    def _route(self, so360, native, **kw):
+    def _route(self, sogou, native, **kw):
         calls = []
 
-        def fake_so360(keyword, site="", size=5):
-            calls.append("360")
-            return so360
+        def fake_sogou(keyword, site="", size=5):
+            calls.append("搜狗")
+            return sogou
 
         def fake_native(keyword, size=5, **inner):
             calls.append("站内")
             self.inner = inner
             return native
 
-        with mock.patch.object(SH, "so360_search", fake_so360), \
+        with mock.patch.object(SH, "sogou_search", fake_sogou), \
              mock.patch.object(SH, "search_native", fake_native):
             return SH.search_shui5("增值税", size=5, **kw), calls
 
-    def test_scoped_params_move_auto_off_360_and_say_why(self):
+    def test_scoped_params_move_auto_off_sogou_and_say_why(self):
         hit = {"results": [SH._row_dict("站内标题", P1, "2026-08-10", "摘要")],
                "total": 1, "_status": "命中 1 条"}
         r, calls = self._route({"total": 9, "results": [{"title": "t", "url": P1}]},
                                hit, column="北京")
-        self.assertEqual(["站内"], calls, "360 那一路没有栏目维度，这一轮压根不该问它")
-        self.assertTrue(r["_channels"]["360"].startswith("没问"), r["_channels"]["360"])
-        self.assertNotEqual("未走（指定通道）", r["_channels"]["360"],
+        self.assertEqual(["站内"], calls, "搜狗那一路没有栏目维度，这一轮压根不该问它")
+        self.assertTrue(r["_channels"]["搜狗"].startswith("没问"), r["_channels"]["搜狗"])
+        self.assertNotEqual("未走（指定通道）", r["_channels"]["搜狗"],
                             "换路是限定参数逼的，不是调用方指定的")
 
-    def test_forced_so360_with_scoped_params_reports_that_they_did_not_apply(self):
+    def test_forced_sogou_with_scoped_params_reports_that_they_did_not_apply(self):
         r, calls = self._route({"total": 9,
                                 "results": [{"title": "t", "url": P1}]},
                                {"results": [], "total": None, "_status": "没走成"},
-                               channel="so360", date_from="2025-01-01", date_to="2025-12-31")
-        self.assertEqual(["360"], calls)
+                               channel="sogou", date_from="2025-01-01", date_to="2025-12-31")
+        self.assertEqual(["搜狗"], calls)
         self.assertIn("限定没加上", r["_filter_note"],
-                      "指定了 360 又给限定：结果看着像收窄了，其实一条都没下推")
+                      "指定了搜狗又给限定：结果看着像收窄了，其实一条都没下推")
 
-    def test_unscoped_auto_still_asks_360_first(self):
+    def test_unscoped_auto_still_asks_sogou_first(self):
         r, calls = self._route({"total": 1, "results": [{"title": "t", "url": P1}]},
                                {"results": [], "total": None, "_status": "没走成"})
-        self.assertEqual(["360"], calls)
-        self.assertEqual("命中 1 条", r["_channels"]["360"])
+        self.assertEqual(["搜狗"], calls)
+        self.assertEqual("命中 1 条", r["_channels"]["搜狗"])
         self.assertNotIn("_filter_note", r)
 
 
@@ -1915,7 +2273,7 @@ class TestShui5ColumnTable(unittest.TestCase):
 
 
 class TestAggregatorShui5Attribution(unittest.TestCase):
-    """360 被拦时税屋的空算不算被连带，由这一轮站内那一路的回报决定，不再靠推断。"""
+    """搜狗被拦时税屋的空算不算被连带，由这一轮站内那一路的回报决定，不再靠推断。"""
 
     def _agg(self, channels):
         ok = lambda n: {"total": n, "results": [{"title": "财税〔2025〕1号",
@@ -1923,8 +2281,8 @@ class TestAggregatorShui5Attribution(unittest.TestCase):
         shui5 = {"total": 0, "results": [], "_channels": channels}
         with mock.patch.object(AGG, "search_tax", return_value=ok(1)), \
              mock.patch.object(AGG, "search_chinatax", return_value=ok(1)), \
-             mock.patch.object(AGG, "so360_search",
-                               return_value={"_error": "360 被拦截", "results": []}), \
+             mock.patch.object(AGG, "sogou_search",
+                               return_value={"_error": "搜狗触发反爬", "results": []}), \
              mock.patch.object(AGG, "search_shui5", return_value=shui5), \
              mock.patch.object(AGG, "search_wechat", return_value=ok(0)), \
              mock.patch.object(AGG, "search_ctax", return_value=ok(1)):
@@ -1936,31 +2294,33 @@ class TestAggregatorShui5Attribution(unittest.TestCase):
         return g[0]
 
     def test_native_ran_but_empty_is_own_not_inherited(self):
-        g = self._shui5_gap(self._agg({"360": "被拦：360 被拦截",
+        g = self._shui5_gap(self._agg({"搜狗": "被拦：搜狗触发反爬",
                                        "站内": "0 条：站点回「没有搜索到相关的内容」"}))
-        self.assertNotIn("blocked_by", g, "站内那一路跑通了，就不能再甩给 360")
+        self.assertNotIn("blocked_by", g, "站内那一路跑通了，就不能再甩给搜狗")
         self.assertIn("站内原生检索这一轮也没命中", g["reason"])
 
     def test_native_not_walked_keeps_the_inheritance(self):
-        g = self._shui5_gap(self._agg({"360": "被拦：360 被拦截",
+        g = self._shui5_gap(self._agg({"搜狗": "被拦：搜狗触发反爬",
                                        "站内": "没走成：无浏览器，改纯 HTTP 直连"}))
-        self.assertEqual("so360", g["blocked_by"])
+        self.assertEqual("sogou", g["blocked_by"])
         self.assertIn("不代表税屋没有内容", g["impact"])
-        self.assertIn("只走了 360 的 site:shui5.cn 那一路", g["reason"])
+        self.assertIn("只走了搜狗的 site:shui5.cn 那一路", g["reason"])
 
-    def test_channel_report_absent_falls_back_to_inheritance(self):
-        """没带 _channels 的旧结果（打桩、缓存）仍按老判据走，不因为新字段缺失就改口。"""
+    def test_channel_report_absent_makes_no_claim(self):
+        """没带 _channels 的结果（打桩、缓存）不推断税屋通道状态：
+        拿聚合器自己 sogou 源的失败去猜，会把两次独立请求混成一件事。"""
         ok = lambda n: {"total": n, "results": [{"title": "t", "url": "https://x.test/a"}]
                         if n else []}
         with mock.patch.object(AGG, "search_tax", return_value=ok(1)), \
              mock.patch.object(AGG, "search_chinatax", return_value=ok(1)), \
-             mock.patch.object(AGG, "so360_search",
-                               return_value={"_error": "360 被拦截", "results": []}), \
+             mock.patch.object(AGG, "sogou_search",
+                               return_value={"_error": "搜狗触发反爬", "results": []}), \
              mock.patch.object(AGG, "search_shui5", return_value=ok(0)), \
              mock.patch.object(AGG, "search_wechat", return_value=ok(0)), \
              mock.patch.object(AGG, "search_ctax", return_value=ok(1)):
-            g = self._shui5_gap(AGG.aggregate_search("测试词", size=5))
-        self.assertEqual("so360", g["blocked_by"])
+            r = AGG.aggregate_search("测试词", size=5)
+        self.assertEqual(["sogou"], [g["source"] for g in r["gaps"]],
+                         "没有 _channels 时税屋那一条不该被推断出来")
 
 
 class TestShui5DocNumberLookup(unittest.TestCase):

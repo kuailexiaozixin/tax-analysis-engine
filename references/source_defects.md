@@ -22,7 +22,9 @@
 | 源缺陷 | 现在由谁保证 | 保证到什么程度 |
 |--------|--------------|----------------|
 | NPC 限流，并行必现 | `tax_search.npc_gate`（实现为 `tax_http.SerialGate`）：`%TEMP%\tax-analysis-skill-npc.lock` 跨进程文件锁 + 进程内 `threading.Lock` | 多个进程同时开跑会自己排队，不用再记"别并行"。**这句记录是什么时候量的、今天还成不成立，见[限流记录的实测台账](#限流记录的实测台账)** |
-| 360 被封 → 地方口径这一层是空的，税屋只剩站内那一路 | `tax_aggregator` 返回的 `gaps` 与 `degraded_note` | 缺了哪层、为什么缺、能不能拿别的源顶，都写成一句可直接照抄的话；网页端渲染成警示条，不再冒充普通的"0 条" |
+| 搜狗被反爬 → 税屋只剩站内那一路；站内那一路也要浏览器过 WAF，过不了就整层空 | `tax_aggregator` 返回的 `gaps` 与 `degraded_note` | 缺了哪层、为什么缺、能不能拿别的源顶，都写成一句可直接照抄的话；网页端渲染成警示条，不再冒充普通的"0 条" |
+| 官方解读的无期限组合缓存遮蔽搜狗 30 分钟过期；15 秒线程等待会丢掉仍在 HTTP 时限内的结果 | `tax_server.search_interpretations` 逐站有序取数，不另存组合缓存；三个适配器的 `tax_doc` 同步 | `test_interpretations_page_cache_expiry` 在 TTL 前后核对真实取数层 fetch 次数 1／2；`test_interpretations_sources_run_in_order_without_worker_timeout` 验证逐站完成与顺序，不增加生产调用层 |
+| 普通 4xx 重复请求，增加等待且消耗预算 | `tax_sogou._fetch` 只重试网络异常与 5xx；403／429 仍冷却，其他非 200 直接报错 | `TestSogouWebSearch.test_only_server_errors_are_retried` 核对各状态的请求与等待次数；网络异常恢复、验证码及跳转另有用例。离线响应向量不证明线上放行 |
 | fgk 翻得越深相关性越差 | `tax_fgk` 第 2 页起标 `_reliability: medium`，并写上 `FGK_DEEP_NOTE`（`FGK_SHALLOW_PAGES = 1`） | 深页条目留在结果里参与分层，提醒就是那句写明"取自第几页、引用前要回上一级数据库核对上位法"的原文，不降权也不剔除 |
 | 公众号并发加压触发反爬 | `tax_wechat._sogou_get`：1 秒最小间隔 + 搜狗专用串行闸（`%TEMP%\tax-analysis-skill-sogou.lock`） | 打 `weixin.sogou.com` 的请求（检索、链接还原）统一进闸；离线并发用例断言同一时刻在跑的请求数峰值为 1 |
 | `_reliability: medium` 只能定位 | `tax_evidence.grade` / `_caveats` 解析该标记；`tax_aggregator` 把整源标记连同说明逐条带进聚合结果；`tax_formatter` 的两条渲染路径都会印出来 | 转成一条具体提醒，句子照抄条目自带的 `_reliability_note`，不参与 `pick_primary` 的排队；单源渲染路径吞掉这句就只剩一个角标，所以单源与多源归并两条路径都要先印警告 |
@@ -60,7 +62,7 @@
 | 归类把 sta 专题自动换源到法规库那条路仍把那几个控件丢掉，只有手选数据源才生效 | `tax_server.api_search` 抽出 `_ui_filters`，sta 专题改查 `search_fgk` 时也走它下推 filters 与 `SORT_TO_ORDER`（非法日期、非法时效同样 400） | 换源那一路若只透 `body`，界面收窄对专题题就静默无效；盯它的是 `test_sta_topic_routed_to_fgk_carries_ui_filters` |
 | 取数真失败与"翻了没筛出/库里没有"共用一句 `_error`，界面一律印"未找到" | `tax_web_search._empty_result` 与 `tax_fgk._scan_list` 的 `first_error` 分支各补 `_fetch_failed`，`renderResults` 把它单列成"取数失败…可稍后重试"排在最前，不进未找到分支 | 服务侧故障被读成"换个词重搜就有"是静默降级；盯它的是 `test_request_failure_is_flagged_not_read_as_no_hit`、`test_scan_list_flags_fetch_failure_apart_from_empty`、`test_fetch_failed_flag_survives_into_payload` |
 | 检索不发 `label` 时是全站，法规库清单被新闻与各地动态挤满：「转让定价」全站前 3 屏 0 条法规库条目，自适应早停在第 3 页收尾，整趟取回 **0** 条 | `tax_web_search.FILE_LABELS` 是十个文件类标签的白名单，`search_chinatax` 与 `tax_fgk._scan_list` 默认按它发（`file_only=True`，只有 CLI 的 `--all-labels` 能关，界面那一路恒用默认范围）；实测同一词收窄后 18 条全部取回，「小微企业」4822→184。清单缓存键的 `LIST_KEY_REV` 随之从 `pn0` 改成 `pn0-files`，非默认范围另走 `tax_fgk.scope_token` | 收窄的代价是漏掉标在「视频政策解读」「图片政策解读」上的法规库条目（实测「研发费用加计扣除」全站前 3 页 7 条），那类回的是 `media_only` 空正文；`_scan_list` 在 0 条那句 `_error` 里把范围写明，不让人把"窗口里没有"读成"库里没有"。盯它的是 `test_file_labels_is_the_default_scope`、`test_all_labels_switch_reopens_the_whole_site`、`test_scan_list_threads_scope_and_order_to_every_page`、`test_scope_and_order_have_their_own_cache_keys`、`test_zero_hit_sentence_names_the_label_scope` |
-| 界面「公布日期」那一栏在三条路径上语义不同却长得一样：多源聚合根本没下发（`tax_aggregator.aggregate_search` 的签名里没有 `date_from`/`date_to`）；NPC 只给上界时 `gbrq` 发出去是空数组，等于没收窄；NPC 精确检索（`search_type=1`）带上日期后接口丢掉检索词，只按区间回一叠与本题无关的法律清单 | 聚合分支把区间下推：NPC 缺端补界（`tax_search.DATE_CEIL`/`DATE_FLOOR`，只给上界也发真区间），税务总局经 `tax_web_search.build_filters` 的 `cwrq_from`/`cwrq_to`；360／税屋／微信公众号这一路没有日期参数，改在本轮取回的条目窗口内按条目自带日期补筛（`tax_aggregator.DATE_LOCAL_SOURCES`），逐源计数进 `_date_filter.local_window`。精确检索＋区间这一组不拒绝请求，改成取回后按「标题是否含检索词」二次核对：`total` 只报复核后的条数，接口原报条数留在 `source_total`，成因写成 `_date_note` 交界面照抄。格式校验统一走 `tax_search.check_iso_date`，四条分支（NPC 单源、聚合、chinatax、fgk）非法日期一律 400 | 2026-10-03 本机实测：只给上界「增值税」45→38 条（区间内最大 2020-08-04；修前是 45 条、首条 2025-12-25，与不带日期逐条一样）；聚合「增值税」2024-01-01—2026-12-31 从 16 条里有 4 条越界收到 9 条 0 越界；精确检索「中华人民共和国增值税法」起 2026-01-01 的 88 条复核后留 0 条（88 留在 `source_total`），同一个词不带日期是 2 条。**没带日期的条目保留而不删**，只另计 `no_date`——360 那一路压根没有日期字段，按越界处理会整源消失，再把空清单读成"该源在这个区间里没有内容"。盯它的是 `test_date_window.py` 的 `test_only_to_uses_floor`、`test_overfetch_inherits_the_range`、`test_drops_off_topic_and_notes_it`、`test_forwards_to_both_server_sources`、`test_undated_items_are_kept_and_counted`、`test_aggregated_bad_date_is_400`、`test_npc_single_source_bad_date_is_400`、`test_local_counts_are_rendered` |
+| 界面「公布日期」那一栏在三条路径上语义不同却长得一样：多源聚合根本没下发（`tax_aggregator.aggregate_search` 的签名里没有 `date_from`/`date_to`）；NPC 只给上界时 `gbrq` 发出去是空数组，等于没收窄；NPC 精确检索（`search_type=1`）带上日期后接口丢掉检索词，只按区间回一叠与本题无关的法律清单 | 聚合分支把区间下推：NPC 缺端补界（`tax_search.DATE_CEIL`/`DATE_FLOOR`，只给上界也发真区间），税务总局经 `tax_web_search.build_filters` 的 `cwrq_from`/`cwrq_to`；搜狗、税屋与微信公众号这三路的日期都只在部分条目上（搜狗与税屋取自结果引用行，公众号取结果块里的时间），改在本轮取回的条目窗口内按条目自带日期补筛（`tax_aggregator.DATE_LOCAL_SOURCES`），逐源计数进 `_date_filter.local_window`。精确检索＋区间这一组不拒绝请求，改成取回后按「标题是否含检索词」二次核对：`total` 只报复核后的条数，接口原报条数留在 `source_total`，成因写成 `_date_note` 交界面照抄。格式校验统一走 `tax_search.check_iso_date`，四条分支（NPC 单源、聚合、chinatax、fgk）非法日期一律 400 | 2026-10-03 本机实测：只给上界「增值税」45→38 条（区间内最大 2020-08-04；修前是 45 条、首条 2025-12-25，与不带日期逐条一样）；聚合「增值税」2024-01-01—2026-12-31 从 16 条里有 4 条越界收到 9 条 0 越界；精确检索「中华人民共和国增值税法」起 2026-01-01 的 88 条复核后留 0 条（88 留在 `source_total`），同一个词不带日期是 2 条。**没带日期的条目保留而不删**，只另计 `no_date`——搜狗、公众号与税屋那三路都只有部分条目带日期，按越界处理会整源消失，再把空清单读成"该源在这个区间里没有内容"。盯它的是 `test_date_window.py` 的 `test_only_to_uses_floor`、`test_overfetch_inherits_the_range`、`test_drops_off_topic_and_notes_it`、`test_forwards_to_both_server_sources`、`test_undated_items_are_kept_and_counted`、`test_aggregated_bad_date_is_400`、`test_npc_single_source_bad_date_is_400`、`test_local_counts_are_rendered` |
 | 法规库正文里的表格被摊平，税率档位与产品范围对不上 | `tax_fgk._table_lines` 把 `<table>` 单独切段铺成 Markdown 行，`_text_of` 按"文字段—表—文字段"的顺序拼；`colspan` 补空列、`rowspan` 把值带到它盖住的每一行、行宽不齐补到最宽、只有一行时不插分隔行 | 摊平丢的是行列对应，形态分两种：Word 粘贴的表每格包着 `<p>`，摊平成"一格一行"（c5204270 的税则表 191 个单元格、152 个 `<p>`，摊平 152 行 vs 铺表 49 行，表头四格成了 '序号'/'商品名称'/'税则号列'/'备注' 四行）；另一种是包着图片的单格表（c5211628、c5208804 各两张），摊平与铺表都回空。单元格不带 `<p>` 时才会整行首尾相接成一串字——这 8 篇里没有这种形态。**合并格留空比留错更坏**，所以 `rowspan` 的延续行填同一个文本而不是空串。真实占比：2026-10-04 本机扫两批共 75 篇详情页（检索词取自「税目税额表」「出口退税率」等），8 篇正文含 `<table>`（35 篇那批 6 篇、40 篇那批 2 篇），现行公告多为"表在附件里"（见下一行）。对账口径：那 8 篇里的 6 篇（c5194303、c5204270、c5204332、c5203630、c5211628、c5208804）逐篇比 `expiry_of`/`period_start_of` 与文号抽取，摊平与铺表两种输出 0 处差异；表内摊平行共 642 行，逐行在新输出里都找得到，0 行丢失。副作用一并钉住：跨格的「自X年Y月Z日 / 至…」现在被 `" \| "` 分开，不再被 `tax_evidence._EXPIRY_RANGE`（只容空白间隔）拼成一段假执行期限——这 8 篇里没有出现两端分格的表，所以那是正则层面的风险而不是已发生的缺陷。盯它的是 `test_tax_fgk.py::test_table_lines_markdown_shape`、`test_text_of_mixes_prose_and_tables_in_order`、`test_table_cell_split_does_not_fabricate_a_period` |
 | 正文是图片/视频的条目只回一句"无文字内容"，读者拿不到看原文的入口 | `tax_fgk._media_urls` 从正文容器抠 `img/video/audio/source` 的 `src`，按详情页 URL 拼成绝对地址（相对、站根 `/`、协议相对 `//`、已带协议四种写法），跳过 `data:` 占位、去重；`fetch_fgk_body` 在 `media_only` 那一路带出 `media_urls`，`search_fgk(with_body=True)` 透到条目上，命令行在"该条正文是视频/图片"下面逐行印「原文素材」 | 2026-10-04 实测：`--all-labels` 搜「研发费用加计扣除」翻 3 页取正文，5 条 `media_only` 全部带出素材地址（4 个 `.mp4`、1 个 `.jpg`），抽直链各回 HTTP 200（`video/mp4` 19712228 字节、`image/jpeg` 971707 字节）。这一栏**不进清单缓存**（它是正文层字段，缓存里只留清单）；取不到 `src` 时不带这个键，不编造地址。盯它的是 `test_media_urls_absolute_dedup_and_placeholders`、`test_media_only_body_carries_asset_urls` |
 | 随文的税率表、减免税清单常常只做成附件，正文容器里根本没有这张表 | `tax_web_search._attachments` 把接口 `appendix` 栏收成 `[{name,type,url}]`（名或链缺一项的丢掉、`appendixType` 归一成小写），`search_chinatax` 落成条目 `attachments`，`tax_fgk._scan_list` 逐条透传，命令行印「附件: 名称（链接）」 | 不接这一栏，答案只能说"正文没有表"，指不到"表在附件《X》"。实测检索「消费税 成品油」前 10 条里 6 条带附件（`.xls` 税率表、`.doc` 纳税申报表），`appendixUrl` 是绝对地址、`appendixContent` 恒为空串；附件是清单层字段，跟着清单进缓存。盯它的是 `test_search_fgk_forwards_attachments_and_media` |
@@ -95,7 +97,7 @@
 一格，这行就是没有证据；`tests/test_rate_limit_ledger.py` 逐格查，代码里新装一把闸而台账
 里没有对应行也会报红。
 
-复跑走 `python tests/probe_rate_limit.py --target npc|sogou|so360|fgk-list
+复跑走 `python tests/probe_rate_limit.py --target npc|sogou|fgk-list
 [--burst N] [--threads M] [--per-thread K]`。探针把生产路径实际要发的那一份请求抓出来
 重放（不手写副本，副本会随 payload 改版失真），并跳过串行闸——它要量的就是并行。
 单次运行的请求总量卡在 `MAX_REQUESTS = 60`：这是查询式访问的复测，不是压测。
@@ -104,7 +106,8 @@
 |---|---|---|---|---|---|
 | NPC 限流，并行必现；形态有三种——断连、HTTP 200 带 `<noscript>` 挑战页、5xx，都不回 429（`commands.md`「NPC 限流」） | `POST flk.npc.gov.cn/law-search/search/list`，详情与下载同站同闸 | `tax_search.npc_gate`（闸落成代码 2026-09-28）＋ `_MIN_INTERVAL` 0.6 秒 ＋ `max_retries` 4 按 2/4/8 秒退避 | 2026-10-04 | 三趟共 104 次：连发 15 + 8 线程×2、连发 15 + 8 线程×2、连发 10 + 16 线程×2，0 间隔、不经闸 | `200-JSON`×102、`ReadTimeout`×2（两趟各一次，都落在并发段，15 秒读上限，生产路径按退避重试）；`挑战页`×0、`429`×0、`5xx`×0、`断连`×0、`非JSON正文`×0——记录里那三种形态在 16 路并发下都没复现 |
 | 搜狗并发加压触发反爬（跳 `/antispider/`；检索与链接还原须共用一个 Session，脱会话即判爬虫） | `GET weixin.sogou.com/weixin?type=2` | `tax_wechat.sogou_gate`（闸落成代码 2026-09-28）＋ `_SOGOU_MIN_INTERVAL` 1.0 秒 | 未复测 | `--target sogou` | 没有当次数据。这一行只说明闸还在、记录还没再量过，不等于"限流仍然存在"，也不等于"可以拆闸" |
-| 360 对被限流的本机 IP 回一份约 5KB 的「访问异常出错」页：HTTP 200、一张结果卡都没有 | `GET m.so.com/s` | 没有闸；`MAX_RETRIES` 2 后把这句原样写进 `_error` | 未复测 | `--target so360` | 没有当次数据。识别形态（`_BLOCK_MARKER`）在生产代码里，量的时候照它判 |
+| 网页搜索桌面历史：连续请求 302 到 `/antispider/`，跟随后 HTTP 200、约 5.4KB、无结果块，冷却窗口内重发仍跳同页 | 历史 `GET www.sogou.com/web?query=`（非当前入口） | 现有保护保留在 `tax_sogou._sogou_gate`：`SEARCH_MIN_GAP` 3 秒、`BUDGET_MAX` 4 次／`BUDGET_WINDOW` 10 分钟、`BLOCK_SECONDS` 10 分钟熔断；这是保护配置，不是站点保证 | 2026-10-23 | 1 线程连发 6 个检索词（0 间隔，前轮已触发反爬后的复测；探针未收录网页搜索） | `200-反爬页`×6（5422–5458 字节、`blocks=0 rows=0`）、`200-结果区`×0——只证成当时桌面冷却窗口内重发无效；首次触发所需请求数未量到，不是手机阈值 |
+| 手机正常入口已观察过验证页；本轮只做本地 HTML 回放，不测联网阈值 | `GET m.sogou.com/web/searchList.jsp?keyword=`（`tax_sogou.SEARCH_URL`） | 同一串行闸、间隔、预算与熔断；冷却立即报错、不发请求，反爬不重试、不跟随；不以代理池或端点轮换绕过。整页结果元数据缓存 30 分钟，键不含 size，size 只截输出 | 未复测 | 本地 HTML 回放；`probe_rate_limit --target sogou` 只测微信入口，未收录手机网页搜索 | 没有当次数据。已观察过手机验证页，但没有新的测量日期、次数或阈值；桌面旧读数不得移作手机证据，保护配置不保证站点放行 |
 | `mp.weixin.qq.com` 的正文读取**没测到**与搜狗同样的阈值，所以只按 `READ_INTERVAL` 2.0 秒拉开间隔、不入闸 | `GET mp.weixin.qq.com/s?...` | 只有间隔，没有闸 | 从未取过阈值 | 探针未收录这一路（要收就先在 `TARGETS` 里加一条，别在台账里写没量过的数字） | 没有当次数据。这条记录的内容本身就是"没验证过"，因此不存在过期问题；它是边界，不是闸的存废待定 |
 | 总局清单接口连发不限流（`tax_gov_list` 模块文档那句"实测 20 次连发不限流"） | `POST www.chinatax.gov.cn/getFileListByCodeId` | 没有闸，靠整栏分页爬全时天然串行 | 2026-10-04 | 连发 30 次（0 间隔）+ 6 线程 × 每线程 3 次，共 48 次，耗时 2.2 秒 | `200-JSON`×48、`反爬字样`×0、`异常`×0——与记录一致，量级比原记录（20 次连发）高一档且加了并发 |
 
@@ -163,19 +166,20 @@
 ## 两个值得单独说明的细节
 
 - **税屋的空结果归因看它自己回报的 `_channels`，不再靠推断**。`tax_shui5.search_shui5`
-  有两路：360 的 `site:shui5.cn`（`channel="so360"`）与站内原生检索（`channel="native"`，
-  `POST /e/search/index.php`），默认 `auto` 先走 360，它被拦或 0 条才换站内。两条通道各按
-  自己的排序取数，2026-10-18 同一关键词「研发费用加计扣除」站内首屏 30 篇、360 首屏 10 篇，
-  按文章 ID 归一后**交集 0 篇**——所以"这一路 0 条"读不成"另一路也 0 条"。
+  有两路：搜狗的 `site:shui5.cn`（`channel="sogou"`，`tax_sogou.sogou_search`）与站内原生检索
+  （`channel="native"`，`POST /e/search/index.php`），默认 `auto` 先走搜狗，它被反爬或 0 条才换站内。
+  两条通道各按自己的排序取数，2026-10-23 同一关键词「研发费用加计扣除」站内首屏 30 篇、
+  搜狗首屏 8 篇，按文章 ID 归一后**交集 2 篇**——所以"这一路 0 条"读不成"另一路也 0 条"。
   `tax_aggregator._build_gaps` 按回报的 `站内` 状态分两种写法：这一轮站内那一路没走通
-  （`没走成`/`未走`）时，"360 被拦而税屋 0 条"才是被 360 连带的，标 `blocked_by: so360`；
+  （`没走成`/`未走`）时，"搜狗被反爬而税屋 0 条"才是被搜狗连带的，标 `blocked_by: sogou`；
   那一路走通了却还是 0 条，就不标 `blocked_by`，缺口写成"两条通道各按自己的排序取数，
   这一轮各 0 条只说明没取到，不代表税屋没有这个主题的解读"。盯它的是
   `tests/test_source_defects.py` 的 `TestAggregatorShui5Attribution`。
   站内那一路自己回报的 0 条也带着归因：`search_native` 撞到「没有搜索到相关的内容」时，
   `_status` 写明这一页两种成因分不开（站内确实没有 / 这一档参数站点不接受），上层不翻文档
   也不会把参数问题读成"这一站没有内容"。
-  走 360 那一路时行里没有日期，母技能 ④ 仍按取回条目补筛（`DATE_LOCAL_SOURCES`）。
+  搜狗手机端日期取自 `citeurl` 引用行（旧桌面为 `citeLinkClass`），不是每条都有；母技能 ④ 按取回条目补筛
+  （`DATE_LOCAL_SOURCES`），缺日期的行只在结果窗口内参与。
   站点机制与实测数字在 `subskills/shui5/NOTE.md`。
 - **`low` 现在是一道闸门，不是一条现状**。仓库里真正会打标记的只有三处
   （`tax_search` 全文检索、`tax_fgk` 深页、`tax_aggregator` 源级传播），三处都只出
@@ -238,13 +242,11 @@ SKILL.md ② 末尾指向这一节。它回答两个问题：某一格动作**�
   `TAX_SOGOU_LOCK_TIMEOUT`（默认各 180 秒）会抛 `TimeoutError`，报错里直说
   "另有进程正在打 NPC / 搜狗"。遇到它先找自己另一个会话——那是在排队的提示，
   不是代码坏了。
-- **闸只罩两个入口，而且这两把闸各自的证据新旧不同**。NPC 与搜狗各有一把闸
-  （`npc_gate`、`sogou_gate`）；`mp.weixin.qq.com` 的正文读取没测到同样的阈值，
-  仍按 `READ_INTERVAL` 拉开间隔，没往闸里塞——不给自己没验证过的结论。
-  别以为"有闸"就等于"所有站点都被限速保护"。两把闸的证据日期见
-  [限流记录的实测台账](#限流记录的实测台账)：NPC 那把在 2026-10-04 复跑到 16 路并发
-  仍未复现记录里的形态，搜狗那把未复测。这一格给的是"什么时候量的、量出来什么"，
-  拆不拆闸由读到这一行的人决定。
+- **串行闸各有自己的入口与证据**：`tax_search.npc_gate` 保护 NPC，
+  `tax_wechat.sogou_gate` 保护微信检索，`tax_sogou._sogou_gate` 保护手机网页搜索。
+  `mp.weixin.qq.com` 正文只按 `READ_INTERVAL` 拉开间隔，不入闸。
+  证据见[限流记录的实测台账](#限流记录的实测台账)：NPC 最近为 2026-10-04，
+  微信与手机网页阈值未复测，桌面 2026-10-23 数据只是历史；保护保留，不保证站点放行。
 - **缺口说明是"这次没取到"，不是"该层没有内容"**。程序只把这句话递过去，
   不替你重试、也不替你换源补缺；用什么口径回答仍然由上层决定。
 - **文号检索不出来有两种，本层只收掉了一种**。`_citation_phrase` 补前缀只在文号

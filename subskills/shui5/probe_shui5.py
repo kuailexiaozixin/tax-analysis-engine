@@ -13,7 +13,7 @@
 判据分四类，缺一项就报在哪一项上，不静默跳过：
   1. 挑战面（不需要浏览器）：无 cookie 时首页、robots.txt、文章页、一个不存在的路径
      返回的字节数是否还是同一份挑战页。
-  2. 检索与清单入口：站内搜索（帝国 CMS tempid=2）、360 的 site: 检索、栏目列表页翻页。
+  2. 检索与清单入口：站内搜索（帝国 CMS tempid=2）、搜狗的 site: 检索、栏目列表页翻页。
   3. 正文形态：arcContent 能不能取到、有没有 $N 后续页、尾部有没有混进分享控件。
   4. 限定与取数入口：站内检索的栏目、发布日期区间、匹配域各收窄到哪一档、
      栏目表与页面是否同源、标签页 `&page=` 还翻不翻得动。
@@ -188,19 +188,21 @@ def native_search(keyword: str, cookies: dict, line: int = 10) -> dict:
     return out
 
 
-# ── 4 通道二：360 的 site: 检索（脚本当前在用的一路） ──────────────────────────
-def so360_channel(keyword: str, size: int = 10) -> dict:
-    from tax_so360 import so360_search
+# ── 4 通道二：搜狗的 site: 检索（脚本当前在用的一路） ──────────────────────────
+def sogou_channel(keyword: str, size: int = 10) -> dict:
+    from tax_sogou import sogou_search
 
-    res = so360_search(keyword, site="shui5.cn", size=size)
+    res = sogou_search(keyword, site="shui5.cn", size=size)
     urls = sorted({x["url"] for x in res.get("results", [])})
-    out = {"通道": "360 站内搜索 site:shui5.cn", "关键词": keyword,
+    out = {"通道": "搜狗站内搜索 site:shui5.cn", "关键词": keyword,
            "条数": res.get("total", 0),
            "文章形态链接": len([u for u in urls if re.search(
                r"/article/[0-9a-zA-Z]+/\d+\.html", u)]),
+           "带日期行": len([x for x in res.get("results", []) if x.get("date")]),
            "链接": urls}
     if res.get("_error"):
         out["错误"] = res["_error"]
+        out["被反爬"] = bool(res.get("_blocked"))
     return out
 
 
@@ -467,19 +469,19 @@ def report(keyword: str, column: str, use_browser: bool,
     else:
         out["2 放行与 cookie"] = {"跳过": "--no-browser，后面的通道项多半吃挑战"}
     out["3 站内搜索"] = native_search(keyword, cookies)
-    out["4 360 site:"] = so360_channel(keyword)
+    out["4 搜狗 site:"] = sogou_channel(keyword)
     a = out["3 站内搜索"].get("全部链接") or []
-    b = out["4 360 site:"]
+    b = out["4 搜狗 site:"]
     if a:
         # 只比同一关键词下两路各自首屏的链接集合，不比排序；按文章 ID 归一再比，
-        # 因为 360 给的地址常带跳转参数、分片段也可能与站内给的不同
+        # 因为搜狗可能给文章第 N 页的 $N 地址，站内给的是首页地址
         def aid(u: str) -> str:
             m = re.search(r"/article/[^/]+/(\d+)", u)
             return m.group(1) if m else u
         mine = {aid(u) for u in a}
         theirs = {aid(u) for u in b.get("链接", [])}
         out["5 两路首屏交集"] = {
-            "站内首屏篇数": len(mine), "360 首屏篇数": len(theirs),
+            "站内首屏篇数": len(mine), "搜狗首屏篇数": len(theirs),
             "同一篇的条数": len(mine & theirs),
             "只在一路出现的篇数": len(mine ^ theirs)}
     out["6 栏目地图"] = columns(cookies)

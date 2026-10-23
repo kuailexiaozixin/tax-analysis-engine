@@ -201,7 +201,7 @@ chenyiwei 的其余接口差异（`recent?days=1` 可以整天空、`penalties` 
 **取到之后放哪**：草案文本不在六源里，⑧ 的位阶表也没有它的位置。走出库取证时，
 检索轮次会自动改道（见 SKILL.md ③ 的分轮编排，代码那一处是 `tax_answer.build_plan` 调 `_retarget_for_legislation`）：第 1、2 轮取回的
 同名现行版本一律重标为"修订基线"，追加的一轮去三个实位取草案解读——人大网站内
-（`legis` 源，`so360_search site:npc.gov.cn`）+ 税屋 + 公众号（草案逐条解读文章只在
+（`legis` 源，`sogou_search site:npc.gov.cn`）+ 税屋 + 公众号（草案逐条解读文章只在
 这两个实务源里）。这三源取回的条目都带 `legislative_process` 或 `medium`/`low` 标记，
 `pick_primary` 把它与 `low` 一样永久排除在主依据之外，即使它是唯一召回项。答案要标明
 那是报道转述、不是库内依据；不能用草案条款论证当期义务成立，因为文本还没表决。

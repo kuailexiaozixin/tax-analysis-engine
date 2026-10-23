@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -211,54 +212,47 @@ def test_fgk_search():
     return result
 
 
-def test_so360_search():
-    """Test 360 site: search, which replaced the removed Bing channel."""
-    print("\n[Test] 360 site search: chinatax.gov.cn")
-    from tax_so360 import so360_search
-    result = so360_search("研发费用加计扣除", site="chinatax.gov.cn", size=5)
-    assert not result.get("_error"), f"360 search failed: {result.get('_error')}"
-    assert result["total"] > 0, "360 should return chinatax links"
-    for item in result["results"]:
-        assert "chinatax.gov.cn" in item["url"], f"Off-site result: {item['url']}"
-        assert item["title"], "Result must have a title"
-    print(f"  [PASS] 360 hits: {result['total']}")
-    print(f"  [PASS] First: {result['results'][0]['title'][:60]}")
-    return result
+def test_sogou_antispider_is_reported():
+    """离线：搜狗把检索 302 到 /antispider/ 时必须报成 _blocked，不能当成 0 条命中。
 
-
-def test_so360_block_page():
-    """离线：360 的"访问异常出错"页必须报成 _error，不能当成 0 条命中。
-
-    这份页面是 HTTP 200 + 约 5KB，一张结果卡都没有。若不识别，
-    /api/interpretations 会回空列表，前端据此写出"该法规可能暂无公开的政策
-    解读文件"——把限流说成了法规属性。
+    反爬页跟随后是 HTTP 200、约 5KB、一张结果卡都没有。若不识别，上层会回空
+    列表并写出"该法规可能暂无公开的政策解读文件"——把限流说成了法规属性。
     """
-    import tax_so360
-    saved = tax_so360.requests.get
+    import tax_cache
+    import tax_sogou
+
+    tmp = tempfile.TemporaryDirectory()
+    saved = (tax_sogou.requests.Session.get, tax_sogou._STATE_PATH,
+             tax_sogou._cache, tax_sogou.SEARCH_MIN_GAP)
     calls = {"n": 0}
 
     class FakeResp:
-        status_code = 200
-        text = ('<!doctype html><title>360</title>'
-                '<div class="tip">访问异常出错</div>'
-                '<script src="https://s5.ssl.qhres2.com/static/x.js"></script>')
+        status_code = 302
+        url = "https://www.sogou.com/web?query=x"
+        headers = {"Location": "https://www.sogou.com/antispider/?from=x"}
 
-    def fake_get(url, **kw):
+    def fake_get(self, url, **kw):
         calls["n"] += 1
+        assert kw.get("allow_redirects") is False, "反爬跳转不能跟随"
         return FakeResp()
 
-    tax_so360.requests.get = fake_get
     try:
-        r = tax_so360.so360_search("增值税法 政策解读", site="chinatax.gov.cn", size=5)
+        tax_sogou.requests.Session.get = fake_get
+        tax_sogou._STATE_PATH = Path(tmp.name) / "state.json"
+        tax_sogou._cache = tax_cache.CacheManager(enabled=False)
+        tax_sogou.SEARCH_MIN_GAP = 0
+        r = tax_sogou.sogou_search("增值税法 政策解读", site="chinatax.gov.cn", size=5)
     finally:
-        tax_so360.requests.get = saved
+        (tax_sogou.requests.Session.get, tax_sogou._STATE_PATH,
+         tax_sogou._cache, tax_sogou.SEARCH_MIN_GAP) = saved
+        tmp.cleanup()
 
-    assert r["total"] == 0 and not r["results"], "拦截页不该产出任何结果"
-    assert r.get("_error"), "拦截页必须带 _error，否则上层无法与'真的没搜到'区分"
-    assert "访问异常" in r["_error"], f"_error 要说明是被拦：{r.get('_error')}"
-    print(f"  [PASS] 拦截页识别为 _error：{r['_error']}")
-    print(f"  [PASS] 重试次数 {calls['n']}（<= MAX_RETRIES {tax_so360.MAX_RETRIES}）")
-    assert calls["n"] <= tax_so360.MAX_RETRIES, "拦截页是 200，不该无限重试"
+    assert r["total"] == 0 and not r["results"], "反爬页不该产出任何结果"
+    assert r.get("_error"), "反爬页必须带 _error，否则上层无法与'真的没搜到'区分"
+    assert r.get("_blocked"), "反爬页要另带 _blocked，上层据此熔断"
+    assert "反爬" in r["_error"], f"_error 要说明是被拦：{r.get('_error')}"
+    assert calls["n"] == 1, "反爬页不重试：重发只会把封禁时间拖长"
+    print(f"  [PASS] 反爬识别为 _blocked：{r['_error']}")
     return True
 
 
@@ -267,38 +261,238 @@ def test_interpretations_distinguish_blocked_from_empty():
     import tax_server
 
     saved = tax_server._search_one_source
-    saved_cache = dict(tax_server._interp_cache)
-    tax_server._interp_cache.clear()
+    calls = []
 
     def blocked(site, query, n=5):
-        return [], "360 返回访问异常页（本机 IP 被限流），0 条不代表没有匹配结果"
+        calls.append(site)
+        return [], "搜狗触发反爬（antispider），0 条不代表没有匹配结果"
 
     tax_server._search_one_source = blocked
     try:
         r = tax_server.search_interpretations("中华人民共和国增值税法", "增值税")
-        cached_after_block = dict(tax_server._interp_cache)
+        tax_server.search_interpretations("中华人民共和国增值税法", "增值税")
     finally:
         tax_server._search_one_source = saved
 
     assert r["total"] == 0
     assert r.get("engine_error"), "被拦时必须给出原因"
-    assert r["queries_blocked"].endswith("/8"), f"要给出被拦次数/总查询数：{r.get('queries_blocked')}"
-    assert not cached_after_block, "被拦的空结果不能进缓存，否则限流恢复后仍一直回空"
-    print(f"  [PASS] engine_error={r['engine_error']} / 未写缓存")
+    assert r["queries_blocked"].endswith("/3"), f"要给出被拦次数/总查询数（每站一条检索式）：{r.get('queries_blocked')}"
+    assert len(calls) == 6, "失败后再查必须重新进入取数层"
+    print(f"  [PASS] engine_error={r['engine_error']} / 失败后重新取数")
 
-    # 搜索引擎正常时同样允许"真的没有解读"，此时才该给空态文案
-    tax_server._interp_cache.clear()
     tax_server._search_one_source = lambda site, query, n=5: ([], "")
     try:
         r2 = tax_server.search_interpretations("中华人民共和国增值税法", "增值税")
     finally:
         tax_server._search_one_source = saved
-        tax_server._interp_cache.clear()
-        tax_server._interp_cache.update(saved_cache)
     assert not r2.get("engine_error"), "正常返回 0 条时不应误报被拦"
     assert r2.get("total") == 0
     print("  [PASS] 正常 0 条不带 engine_error")
     return True
+
+
+def test_interpretations_page_cache_expiry(monkeypatch, tmp_path):
+    import tax_cache
+    import tax_server
+    import tax_sogou
+
+    cache = tax_cache.CacheManager(enabled=True, namespace="sogou")
+    cache.dir = tmp_path
+    monkeypatch.setattr(tax_sogou, "_cache", cache)
+    clock = [time.time()]
+    monkeypatch.setattr(time, "time", lambda: clock[0])
+    calls = []
+
+    def fake_fetch(query):
+        calls.append(query)
+        html = ('<div class=vrResult><h3><a class=resultLink '
+                'href="/tc?url=https%3A%2F%2Fchinatax.gov.cn%2Farticle.html">'
+                f'增值税法官方解读第{len(calls)}版</a></h3></div>')
+        return html, "", "", False
+
+    monkeypatch.setattr(tax_sogou, "_fetch", fake_fetch)
+    first = tax_server.search_interpretations("缓存过期验证", sources=["chinatax.gov.cn"])
+    clock[0] += tax_sogou.CACHE_TTL - 1
+    cached = tax_server.search_interpretations("缓存过期验证", sources=["chinatax.gov.cn"])
+    assert len(calls) == 1
+    assert first["sources"] == cached["sources"]
+    clock[0] += 2
+    refreshed = tax_server.search_interpretations("缓存过期验证", sources=["chinatax.gov.cn"])
+    assert len(calls) == 2
+    assert refreshed["sources"][0]["title"] == "增值税法官方解读第2版"
+
+
+def test_interpretations_sources_run_in_order_without_worker_timeout(monkeypatch):
+    import threading
+    import tax_server
+
+    caller = threading.get_ident()
+    calls = []
+
+    def source(site, query, n):
+        assert threading.get_ident() == caller
+        calls.append(site)
+        return [{"url": f"https://{site}/interpretation"}], ""
+
+    monkeypatch.setattr(tax_server, "_search_one_source", source)
+    result = tax_server.search_interpretations("串行查询验证")
+    assert result["total"] == 3
+    assert not result.get("engine_error")
+    assert calls == ["chinatax.gov.cn", "mof.gov.cn", "www.gov.cn"]
+
+
+def test_interpretations_default_three_site_plan(monkeypatch):
+    import tax_server
+
+    calls = []
+
+    def fake_source(site, query, n):
+        calls.append((site, query, n))
+        return [{"url": f"https://{site}/interpretation"}], ""
+
+    monkeypatch.setattr(tax_server, "_search_one_source", fake_source)
+    result = tax_server.search_interpretations("中华人民共和国增值税法", "增值税")
+    expected = [
+        ("chinatax.gov.cn", "增值税 官方解读", 100),
+        ("mof.gov.cn", "增值税法 政策解读", 100),
+        ("www.gov.cn", "增值税法 政策解读", 100),
+    ]
+    assert sorted(calls) == sorted(expected)
+    assert [item["url"] for item in result["sources"]] == [
+        f"https://{site}/interpretation" for site, _, _ in expected
+    ]
+    assert not any(site == "fgk.chinatax.gov.cn" for site, _, _ in calls)
+    assert result["total"] == 3
+    assert not result.get("engine_error")
+    repeated = tax_server.search_interpretations("中华人民共和国增值税法", "增值税")
+    assert repeated["sources"] == result["sources"]
+    assert len(calls) == 6
+
+
+def test_interpretations_exact_source_dedup_keeps_explicit_subdomains(monkeypatch):
+    import tax_server
+
+    calls = []
+    sources = ["chinatax.gov.cn", "chinatax.gov.cn", "fgk.chinatax.gov.cn",
+               "shanghai.chinatax.gov.cn", "fgk.chinatax.gov.cn", "www.gov.cn"]
+
+    def fake_source(site, query, n):
+        calls.append((site, query, n))
+        return [{"url": f"https://{site}/interpretation"}], ""
+
+    monkeypatch.setattr(tax_server, "_search_one_source", fake_source)
+    result = tax_server.search_interpretations("增值税法", sources=sources)
+    expected = [
+        ("chinatax.gov.cn", "增值税法 解读", 100),
+        ("fgk.chinatax.gov.cn", "增值税法 政策解读", 100),
+        ("shanghai.chinatax.gov.cn", "增值税法 政策解读", 100),
+        ("www.gov.cn", "增值税法 政策解读", 100),
+    ]
+    assert sorted(calls) == sorted(expected)
+    assert [item["url"] for item in result["sources"]] == [
+        f"https://{site}/interpretation" for site, _, _ in expected
+    ]
+    assert len(sources) == 6
+
+
+def test_interpretations_province_plan_is_retained(monkeypatch):
+    import tax_server
+
+    calls = []
+
+    def fake_source(site, query, n):
+        calls.append((site, query, n))
+        return [], ""
+
+    monkeypatch.setattr(tax_server, "_search_one_source", fake_source)
+    tax_server.search_interpretations("增值税法", province="shanghai")
+    assert sorted(calls) == sorted([
+        ("shanghai.chinatax.gov.cn", "增值税法 解读", 100),
+        ("chinatax.gov.cn", "增值税法 政策解读", 100),
+        ("www.gov.cn", "增值税法 政策解读", 100),
+    ])
+
+
+def test_interpretations_full_page_before_filter_and_fifteen_result_cap(monkeypatch):
+    import tax_server
+
+    calls = []
+    page = [{"title": "无关手机游戏内容", "url": f"https://game.test/{i}"}
+            for i in range(4)]
+    page += [{"title": f"增值税法官方政策解读{i}",
+              "url": f"https://chinatax.gov.cn/interpretation/{i}"}
+             for i in range(20)]
+
+    def fake_sogou(query, site, size):
+        calls.append((site, size))
+        return {"results": page[:size]}
+
+    monkeypatch.setattr(tax_server, "sogou_search", fake_sogou)
+    result = tax_server.search_interpretations("增值税法")
+    assert sorted(calls) == sorted([
+        ("chinatax.gov.cn", 100), ("mof.gov.cn", 100), ("www.gov.cn", 100),
+    ])
+    assert result["total"] == 20
+    assert len(result["sources"]) == 15
+    assert [item["url"] for item in result["sources"]] == [
+        f"https://chinatax.gov.cn/interpretation/{i}" for i in range(15)
+    ]
+    assert not result.get("engine_error")
+
+
+def test_interpretations_partial_errors_reported_without_caching(monkeypatch):
+    import tax_server
+
+    calls = []
+
+    def partial_source(site, query, n):
+        calls.append((site, query, n))
+        if site == "chinatax.gov.cn":
+            return [{"url": "https://chinatax.gov.cn/interpretation"}], ""
+        if site == "mof.gov.cn":
+            return [], "mof search blocked"
+        raise RuntimeError("gov search failed")
+
+    monkeypatch.setattr(tax_server, "_search_one_source", partial_source)
+    result = tax_server.search_interpretations("增值税法")
+    assert result["total"] == 1
+    assert len(result["sources"]) == 1
+    assert result["queries_blocked"] == "2/3"
+    assert "mof search blocked" in result["engine_error"]
+    assert "www.gov.cn: RuntimeError：gov search failed" in result["engine_error"]
+    tax_server.search_interpretations("增值税法")
+    assert len(calls) == 6
+
+    monkeypatch.setattr(tax_server, "_search_one_source", lambda site, query, n: ([], ""))
+    recovered = tax_server.search_interpretations("增值税法")
+    assert not recovered.get("engine_error")
+    assert not recovered.get("queries_blocked")
+    assert recovered["total"] == 0
+
+
+def test_interpretation_missing_date_is_not_inferred_from_url(monkeypatch):
+    import tax_server
+
+    monkeypatch.setattr(tax_server, "sogou_search", lambda *a, **k: {
+        "results": [{"title": "增值税法政策解读", "date": "",
+                     "url": "https://www.gov.cn/archive/20240101/item.html"}]})
+    rows, reason = tax_server._search_one_source("www.gov.cn", "增值税法")
+    assert not reason
+    assert rows[0]["date"] == ""
+
+
+def test_interpretations_all_source_exceptions_reported(monkeypatch):
+    import tax_server
+
+    def failed_source(site, query, n):
+        raise TimeoutError("offline timeout")
+
+    monkeypatch.setattr(tax_server, "_search_one_source", failed_source)
+    result = tax_server.search_interpretations("增值税法")
+    assert result["total"] == 0 and result["sources"] == []
+    assert result["queries_blocked"] == "3/3"
+    for site in ["chinatax.gov.cn", "mof.gov.cn", "www.gov.cn"]:
+        assert f"{site}: TimeoutError：offline timeout" in result["engine_error"]
 
 
 def test_shui5_search():
@@ -1178,7 +1372,7 @@ def test_aggregated_sort_date():
     stubs = {
         "search_tax": lambda *a, **k: {"results": [dict(npc_item)]},
         "search_chinatax": lambda *a, **k: {"results": [dict(sta_item)]},
-        "so360_search": lambda *a, **k: {"results": [dict(web_item)]},
+        "sogou_search": lambda *a, **k: {"results": [dict(web_item)]},
         "search_shui5": lambda *a, **k: {"results": []},
         "search_wechat": lambda *a, **k: {"results": []},
         "search_ctax": lambda *a, **k: {"results": []},
@@ -1268,8 +1462,7 @@ def main():
         ("chinatax.gov.cn Search5", test_chinatax_search),
         ("fgk Regulation Library", test_fgk_search),
         ("fgk Article Body", test_fgk_body),
-        ("360 Site Search", test_so360_search),
-        ("360 Block Page Detection", test_so360_block_page),
+        ("Sogou Antispider Detection", test_sogou_antispider_is_reported),
         ("Interpretations Blocked vs Empty", test_interpretations_distinguish_blocked_from_empty),
         ("shui5.cn Search", test_shui5_search),
         ("shui5.cn Article Body", test_shui5_read_article),

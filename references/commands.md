@@ -8,7 +8,7 @@
 
 - [L1 NPC 法规库](#l1-npc-法规库上位法)
 - [L2 总局法规库与站点](#l2-总局法规库与站点规章与公告)
-- [L3 360 站内搜索](#l3-360-站内搜索地方口径)
+- [L3 搜狗手机端站内搜索](#l3-搜狗手机端站内搜索地方口径)
 - [L4 税屋与公众号](#l4-税屋与公众号实务案例与解读)
 - [法规详情与全文下载](#法规详情与全文下载)
 - [检索词归类](#检索词归类)
@@ -77,7 +77,7 @@ python scripts/tax_search.py "<关键词>" --status 1 --size 20
   并打一句 `_date_note` 说明成因。真要按日期在全库收窄，改用税务总局／法规库那两路
   （`tax_web_search` 的 `cwrqStart`/`cwrqEnd`，语义是**成文日期**，与 NPC 的公布日期不是同一件事，
   跨源比日期时别把它们并成一列）。多源聚合的同一对参数走 `tax_aggregator.py --from/--to`：
-  NPC 与总局由接口自己收窄，360／税屋／微信公众号没有日期参数，是在**本轮取回的条目窗口内**
+  NPC 与总局由接口自己收窄，搜狗／税屋／微信公众号只在部分条目带日期，是在**本轮取回的条目窗口内**
   按条目自带日期补筛，命令行会为每个补筛源打一行「取回／区间内／区间外剔除／无日期保留」计数，
   JSON 里对应 `_date_filter.local_window`；窗口外该源仍可能有区间内的文件，补筛到 0 条不能读成
   "该源在这个区间里没有内容"。
@@ -238,28 +238,44 @@ python scripts/tax_fgk.py "研发费用" --size 1 --assoc
   总局／法规库时，该栏整栏换成 search5 的五个文本值且默认「全部」；NPC／聚合那两路仍发
   数字 `status`。两套值域互不发对方那条链。
 
-## L3：360 站内搜索（地方口径）
+## L3：搜狗手机端站内搜索（地方口径）
 
 ```bash
 # 指定站点
-python scripts/tax_so360.py "<关键词>" --site chinatax.gov.cn --size 10
-python scripts/tax_so360.py "<关键词>" --site shui5.cn --size 10
-python scripts/tax_so360.py "<关键词>" --site gov.cn --size 10
-python scripts/tax_so360.py "<关键词>" --site <省>.chinatax.gov.cn --size 10
+python scripts/tax_sogou.py "<关键词>" --site chinatax.gov.cn --size 10
+python scripts/tax_sogou.py "<关键词>" --site gov.cn --size 10
+python scripts/tax_sogou.py "<关键词>" --site <省>.chinatax.gov.cn --size 10
 
 # 全网（不限定站点）
-python scripts/tax_so360.py "<关键词> 税收 政策解读" --size 10
+python scripts/tax_sogou.py "<关键词> 税收 政策解读" --size 10
 ```
 
-省局子站（shenzhen/shanghai/beijing/guizhou 等）与地方文件**只能从这里进**，
-NPC 法规库与总局检索都不收。省级与市级文件（地方留成返还、地方附加减免、
-报送与受理时限、地方备案资料清单）全在这一层，跳过它就答不了"我们省怎么办"
-这类问题。
+省局子站（shenzhen/shanghai/beijing/guizhou 等）与地方文件走这一层，
+跳过它就答不了"我们省怎么办"这类问题。
+
+正常入口是 `tax_sogou.SEARCH_URL`：`https://m.sogou.com/web/searchList.jsp?keyword=%s`。
+`HTMLParser` 读 `vrResult`，直链取 `h3` 内 `resultLink` 的 `url` 参数；日期只读 `citeurl`
+引用行、不拿摘要日期顶位，摘要不再截 200 字。桌面字段只兼容历史 HTML，不是正常入口。
+每次只取一页，尽量保留整页可用元数据；`--size` 只截输出、不增加请求或翻页，也不保证取满。
+整页元数据默认缓存 30 分钟（`CACHE_TTL`），键不含 size，同词同站换 size 可复用；正文不缓存。
+
+官方解读（`tax_server.search_interpretations`）默认只问 `chinatax.gov.cn`、`mof.gov.cn`、
+`www.gov.cn`，每站 1 问，基线 8 问减为 3 问；不再默认独立问 fgk，总局 site 可能命中其子域，但不保证法规库召回。
+显式 sources 指定 fgk／省局仍保留；province 路径用省局＋总局＋中国政府网，每站 1 问。
+各站按 sources 顺序查询，每问先取单页结果再过滤去重，最终最多展示 15 条，不代表站内总量。
+只复用搜狗取数层的 30 分钟缓存，不另存无期限的组合结果；到期后重查，不用 15 秒线程等待截断 HTTP 结果。
+仅网络异常与 5xx 有限重试；其他非 200 状态直接报错，403／429 仍触发冷却。
+
+保留串行闸、3 秒最小间隔、10 分钟内 4 次预算与反爬后 10 分钟熔断；这是保护配置，
+不是站点阈值或放行保证。缓存未命中且处于冷却时立即报 `_error`，不等待到期、不发请求；
+反爬不重试、不跟随跳转，不以代理池或端点轮换绕过。税屋可改走自有 `--channel native`。
+手机验证页已观察过，阈值未复测；本轮仅本地 HTML 回放，历史证据见 `references/source_defects.md`。
 
 ## L4：税屋与公众号（实务案例与解读）
 
 ```bash
 python scripts/tax_shui5.py "<关键词>" --size 5 --read    # 税屋：连正文一起取（推荐）
+python scripts/tax_shui5.py "<关键词>" --channel sogou --size 5    # 只走搜狗 site:，不要凭据、不启浏览器
 python scripts/tax_shui5.py "<关键词>" --channel native --size 5   # 只走站内搜索，带日期/摘要/栏目
 python scripts/tax_shui5.py "<关键词>" --channel native --column 北京,深圳 --size 20  # 限定栏目
 python scripts/tax_shui5.py "<关键词>" --channel native --from 2025-01-01 --to 2025-12-31  # 区间要成对
@@ -280,7 +296,7 @@ python scripts/tax_browser.py --check                     # 探测本机已装�
 ```
 
 栏目那一串参数（`--column` / `--from` / `--to` / `--match` / `--all`）只有站内那一路有，
-`--channel auto` 撞上它们时会自动换成站内并在 `_channels` 里写明"这一轮没问过 360"。
+`--channel auto` 撞上它们时会自动换成站内并在 `_channels` 里写明"这一轮没问过搜狗"。
 `--list` / `--tag` 完全不检索，是把站点自己的组织方式（栏目、标签）当成入口用；
 两者取回的行与检索结果同形。`--column` 认目录名、导航名、首页短标签或 classid，
 多个用逗号，换算只查 `data/shui5_columns.json`，查不到就整体报缺而不发半截限定的命令。
@@ -360,13 +376,14 @@ print(json.dumps(A.search_terms('<用户原话>'),ensure_ascii=False,indent=2))"
 
 ## 缓存控制
 
-三类缓存的默认值不同，这是有意的：
+各类缓存的默认值不同，这是有意的：
 
 | 缓存 | 默认 | TTL | 为什么 |
 |---|---|---|---|
 | NPC 检索清单（`tax_search.py`） | 关 | 5 分钟 | 政策随时更新，默认每次实时查 |
 | 总局法规库清单（`tax_fgk.py`） | 关 | 1 小时 | 同上；只有批量检索或多轮追查同一主题时才开 |
 | 详情元数据（`tax_detail.py`） | **开** | 1 小时 | 详情接口慢、元数据变动频率低，值得用一点新鲜度换速度 |
+| 搜狗整页元数据（`tax_sogou.py`） | **开** | 30 分钟 | 同词同站复用整页，size 只截输出、不分缓存键；失败不缓存，命中带 `_from_cache` |
 
 总局清单的缓存键里带一个翻页基准版本号（`tax_fgk.LIST_KEY_REV`）。改翻页基准、
 改每页条数、改默认检索范围这类会影响"清单里装的是哪一屏"的代码时，把它一起改，
@@ -397,16 +414,15 @@ python scripts/tax_detail.py --info <bbbs_id> --no-cache   # 本次强制现拉
    已废止、被修订的法条当成现行有效引用，这对合规工具是不可接受的风险。
    （实测：NPC 详情接口返回的 `content` 树只有章 / 节标题，条文只在 DOCX / PDF 里，
    所以详情缓存里也没有正文；`tests/test_detail_cache.py` 有一条用例守着这个契约。）
-2. **TTL 按源的变动频率定**：NPC 库政策更新快，取 5 分钟；总局法规库目录与
-   详情元数据变动慢，取 1 小时。缓存都落在 `~/.cache/tax-analysis-skill`。
-3. **命中缓存会在输出里留痕**：`tax_search.py` 打 `[缓存]`，`tax_fgk.py` 打
-   `[清单缓存 Ns 前]`，`tax_detail.py` 打 `[详情缓存 Ns 前]`。
-   **别拿 `fetched_at` 当"刚查过"的证据**——命中时它记的是第一次抓取的时刻；
-   要做时效性判断，先 `--no-cache` 或 `--cache-clear` 再查。
+2. **TTL 按源分别定**：NPC 5 分钟，总局法规库目录与详情元数据 1 小时，搜狗整页元数据
+   30 分钟。缓存都落在 `~/.cache/tax-analysis-skill`。
+3. **命中缓存会留痕**：NPC／fgk／详情的 CLI 打缓存标记，搜狗 JSON 带 `_from_cache`。
+   **别拿 `fetched_at`／`searched_at` 当"刚查过"的证据**——命中复用的是原取数时刻；
+   NPC／fgk／详情按各自清缓存开关现拉；搜狗到期后再查，`TAX_SOGOU_CACHE=0` 可关闭缓存，不能绕过保护。
 
-三个脚本的缓存都由 `scripts/tax_cache.py` 提供（唯一实现）。同一个目录下靠条目里的
-`_ns` 字段分命名空间（`search` / `fgk` / `detail`），所以各自的 `--cache-stats`、
-`--cache-clear` 只作用于自己那一份，删不到详情缓存那一格；跨命名空间清理算越界缺陷。
+缓存由 `scripts/tax_cache.py` 提供（唯一实现），靠 `_ns` 分命名空间
+（`search` / `fgk` / `detail` / `sogou`）。NPC／fgk／详情各自的 `--cache-stats`、
+`--cache-clear` 只作用于自己那一份；搜狗 CLI 没有这两个开关，跨命名空间清理算越界缺陷。
 
 ## 命令一览
 
@@ -432,8 +448,8 @@ python scripts/tax_wechat.py "<关键词>" --size 5 --read
 python scripts/tax_ctax.py "<关键词>" --size 5 --read
 python scripts/tax_ctax.py --find-doc "<文号>"
 
-# 360 站内搜索 — 省局与地方文件
-python scripts/tax_so360.py "<关键词>" --site chinatax.gov.cn --size 10
+# 搜狗手机端站内搜索 — 省局与地方文件
+python scripts/tax_sogou.py "<关键词>" --site chinatax.gov.cn --size 10
 
 # 法规详情 — 元数据与全文
 python scripts/tax_detail.py --info <法规ID>
@@ -441,7 +457,7 @@ python scripts/tax_detail.py --preview <法规ID>
 
 # 多源聚合 — 六源全开
 python scripts/tax_aggregator.py "<关键词>" --size 10
-python scripts/tax_aggregator.py "<关键词>" --sources npc,chinatax,so360,shui5,wechat,ctax --size 10
+python scripts/tax_aggregator.py "<关键词>" --sources npc,chinatax,sogou,shui5,wechat,ctax --size 10
 python scripts/tax_aggregator.py "<关键词>" --from 2024-01-01 --to 2026-12-31   # 按源分两种口径，见 L1 的 --from/--to 说明
 ```
 
@@ -484,7 +500,8 @@ NPC 验到 16 路并发、三趟共 104 次请求，下面那三种形态一个�
 | NPC 限流 | 断连、挑战页、5xx | 等退避重跑，不要改成别的关键词 |
 | fgk 正文取不到 | `_error` 写明"该条正文为视频/图片，无文字内容" | 换同题材的文号条目，不要据标题推测正文 |
 | 税屋正文取不到 | 每条结果带 `_error` | 确认 `--check` 是否探到浏览器；仍失败改用公众号。**先分清是没凭据还是站点上没这篇**：没凭据时任何地址都回同一份挑战页，判据与凭据寿命见 `subskills/shui5/SKILL.md` |
-| 360 读超时 | 程序已重试 | 重跑一次；再失败改用更短的关键词 |
+| 搜狗反爬／冷却／预算耗尽 | `_error` 非空；反爬或熔断另带 `_blocked=True`，预算耗尽不带该标记 | 冷却立即报错、不发请求；不立即重跑、改词、切代理或轮换端点绕过。保留失败原因，税屋可显式走 `--channel native` |
+| 搜狗网络失败／结构改版 | 网络异常与 5xx 才有限重试；有结果区却无可用直链、或既无结果区也无无结果提示，均带 `_error` | 按原因稍后复查，不当真 0 条；只有无错误的空结果才是本轮未命中，不代表站内没有相关内容 |
 | 总局清单为空却报告了命中数 | `_empty_reason` 分两种成因：写"已翻过末页"就是翻页参数越界，按已取回的清单下结论即可；写"该页在末页之内却没给条目清单"就是这一轮没取到清单，换检索词再取一轮才有结论 | 两种都不等于"库里没有这份文件"，答案里不得据空清单说无此规定 |
 | 中国税网返回"没走成" | `_status` 以「没走成」开头的是**请求被拦在发出之前**：栏目名不在 `data/ctax_columns.json`、或与表里多行重名（`column_lookup` 的 `ambiguous`/`missing`，会把候选一并列出）、或空词没带栏目、或日期不是 `yyyy-mm-dd`、或 `match` 不在 `MATCH_POSITIONS` 的四枚里、或 `channel` 不在 0/1/2 里、或不收满时 `size` 不是正整数、或 `max_rows` 为负、或 `--list` 的 `--pages` 非正。绕过命令行直接给 `_search_once` 传越界值时，站点那一路回 500，`_status` 末尾带 HTTP 码与字节数并写明"不是限流" | 换限定条件重发，别把它当成"站内没有"；站内确实没命中时 `_status` 写的是「0 条：这一词（连同本轮限定）在站内没有命中」，两句不是一回事 |
 | 中国税网取到的条数明显比预期少 | `_status` 写「取到 N 条，这一词共 M 条；已到页数上限」就是没翻到底（`SEARCH_MAX_PAGES` × `SEARCH_PAGE_SIZE`），写「已到 max_rows=N 行的上限」就是先撞到 `--max-rows` 那枚行数预算，写「合并同一篇挂多栏的行 K 行」则是一篇稿挂了几栏出几行被并成一条 | 第一种加 `--all`（要控制花费就配 `--max-rows`），第二种是 `--max-rows` 给的预算用完了、想多要就加大它或去掉，第三种是正常合并、不是丢数据；三种都不读成"这一词只有这些" |

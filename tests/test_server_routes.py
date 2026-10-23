@@ -181,13 +181,13 @@ class TestSearchRoute(_RouteCase):
     def test_rejects_source_outside_the_ui_domain(self):
         """「数据源」发来自界面取值域之外的值必须 400，不许当成 NPC 悄悄查完。
 
-        以前 ctax／shui5／wechat／so360 这些取数层的源名、以及 aggregate 这种
+        以前 ctax／shui5／wechat／sogou 这些取数层的源名、以及 aggregate 这种
         少个 d 的拼法，都会落进 api_search 的 else 分支按 NPC 检索并回 200：
         调用方以为结果是自己点的那一源出来的。2026-10-20 只读复现：
         source=ctax 与 source=aggregate 都回 200、被调的是 search_tax。
         不给 source 才是默认 NPC，下一条款意钉住这一区分。
         """
-        for bad in ("ctax", "shui5", "wechat", "so360", "aggregate", "chinatax ",
+        for bad in ("ctax", "shui5", "wechat", "sogou", "aggregate", "chinatax ",
                     "", "NPC", None):
             with self.subTest(source=bad):
                 with mock.patch.object(tax_server, "search_tax") as npc, \
@@ -878,12 +878,12 @@ class TestWebRelatedRoute(_RouteCase):
     # ── 打桩在引擎入口的那两条：桩形不能由被测函数自己决定 ──
 
     def _web_only(self, n):
-        """让全网这一路真的经过 _search_web_broad，只在 so360_search 处打桩。"""
+        """让全网这一路真的经过 _search_web_broad，只在 sogou_search 处打桩。"""
         found = {"results": [{"title": "企业重组所得税处理的实务解读第%d篇" % i,
                               "url": "https://shui5.cn/a/%d.html" % i,
                               "snippet": "摘要"} for i in range(n)]}
         return (
-            mock.patch.object(tax_server.tax_related, "so360_search",
+            mock.patch.object(tax_server.tax_related, "sogou_search",
                               lambda query, site="", size=10: found),
             mock.patch.object(tax_server, "fetch_detail", return_value={"title": "增值税法"}),
             mock.patch.object(tax_server, "_search_practice_sources", return_value=[]),
@@ -1513,7 +1513,7 @@ def hand_written_copies(html, keys):
     按源分键的表在界面上只有两张，扫描时整块跳过：SOURCE_UI 给六源的显示名，
     DATE_FIELD 给每一路卡面日期那一栏的名字。后者量的是另一根轴（这一路的日期
     取的是公布、成文、发布还是站点发布时间），值不是源名，与显示名不冲突；把它
-    算成第二份词表就会逼着两根轴挤进一张表，而 so360 根本没有日期字段、fgk 又不
+    算成第二份词表就会逼着两根轴挤进一张表，而 sogou 的日期取自结果引用行、fgk 又不
     是六源之一，那张表两头都装不下。
     """
     outside = strip_vocab_tables(html)
@@ -1632,23 +1632,29 @@ class TestFrontendSourceVocabulary(unittest.TestCase):
         DATE_SERVER_FIELDS 记的是接口自己收的那枚字段（公布日期 gbrq / 成文日期
         cwrq / 发布日期 startDate-endDate），三者含义不同：同一份文件的公布日与
         成文日可以差好几个月。界面以前不分源一律写"公布"。
-        so360 那一路的条目没有日期字段（tax_so360.py 里连 date 这个字都不出现），
-        所以它不进这张表、卡面退回中性的"日期"，不替它编一个名字。
+        sogou 那一路的日期取自检索结果的引用行（tax_sogou.py 的结果行带 date），
+        是站点自己标注的发布日，所以它进这张表、卡面写"站点发布"；取不到日期
+        的条目仍按空串处理，页面不替它编一个日期。
         """
         block = DATE_FIELD_RE.search(self.html)
         self.assertIsNotNone(block, "DATE_FIELD 那张表不见了")
         date_field = dict(re.findall(r"(\w+):'([^']*)'", block.group(1)))
-        from tax_aggregator import DATE_SERVER_SOURCES, DATE_SERVER_FIELDS
+        from tax_aggregator import (DATE_SERVER_SOURCES, DATE_SERVER_FIELDS,
+                                    DATE_LOCAL_SOURCES)
         for s in DATE_SERVER_SOURCES:
             self.assertIn(s, date_field, s)
             self.assertIn(date_field[s], DATE_SERVER_FIELDS[s],
                           "%s 卡面写的「%s」对不上后端登记的 %r"
                           % (s, date_field[s], DATE_SERVER_FIELDS[s]))
         scripts = Path(__file__).resolve().parent.parent / "scripts"
-        so360_src = (scripts / "tax_so360.py").read_text(encoding="utf-8")
-        # 双向钉：这一路哪天真的开始给日期，就必须同时往 DATE_FIELD 里加一项
-        self.assertEqual(("date" in so360_src), ("so360" in date_field))
-        self.assertNotIn("so360", date_field)
+        sogou_src = (scripts / "tax_sogou.py").read_text(encoding="utf-8")
+        # 双向钉：这一路哪天不再给日期，就必须同时从 DATE_FIELD 里删掉
+        self.assertEqual(('"date"' in sogou_src), ("sogou" in date_field))
+        self.assertIn("sogou", date_field)
+        self.assertEqual("站点发布", date_field["sogou"])
+        for s in DATE_LOCAL_SOURCES:
+            self.assertIn(s, date_field,
+                          "%s 没有日期参数、日期只来自条目本身，卡面也得给它一个词" % s)
 
     def test_fgk_date_label_is_the_chinatax_layer_it_reroutes_to(self):
         """换到法规库那层时卡面写「成文」，因为它抄的就是 chinatax 的 publish_date。
@@ -1711,15 +1717,15 @@ class TestFrontendSourceVocabulary(unittest.TestCase):
     def test_mutation_second_vocabulary_is_caught(self):
         """把补筛那一行改回手写的短名表，两条判据都必须报红。
 
-        注入的就是修复前那一句（`const nm={so360:'360 搜索',shui5:'税屋',…}`），
+        注入的就是修复前那一句（`const nm={sogou:'搜狗搜索',shui5:'税屋',…}`），
         所以这两条不是空转：修复前它们确实是红的。
         """
         real = renderer_lines(self.html, "lw[k].got")[0]
         injected = real.replace("(SOURCE_UI[k]||{label:k}).label",
-                                "{so360:'360 搜索',shui5:'税屋'}[k]||k")
+                                "{sogou:'搜狗搜索',shui5:'税屋'}[k]||k")
         self.assertNotIn("SOURCE_UI", injected)
         mutated = self.html.replace(real, injected)
-        self.assertEqual(["so360", "shui5"], hand_written_copies(mutated, list(self.ui)))
+        self.assertEqual(["sogou", "shui5"], hand_written_copies(mutated, list(self.ui)))
         offenders = [name for name in [v["label"] for v in self.ui.values()] +
                      [v["short"] for v in self.ui.values()] if name in injected]
         self.assertTrue(offenders, "改写后的那一行里没有源名，注入没打到点上")

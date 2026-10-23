@@ -7,8 +7,6 @@ import json
 import re
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date
 from pathlib import Path
 from urllib.parse import quote
 
@@ -22,7 +20,7 @@ from tax_analyze import legislative_stage, legislative_note
 from tax_detail import fetch_detail, download_bytes, SXX_MAP, _parse_docx_from_bytes
 from tax_web_search import search_chinatax, build_filters
 from tax_fgk import search_fgk
-from tax_so360 import so360_search
+from tax_sogou import sogou_search
 from tax_shui5 import search_shui5
 import tax_related
 from tax_aggregator import aggregate_search, DEFAULT_SOURCES
@@ -45,8 +43,8 @@ urllib3.disable_warnings()
 app = Flask(__name__, static_folder=None)
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
-# 监听地址。默认只绑本机回环：这个服务会拿本机 IP 去抓 NPC / 总局 / 360 /
-# 搜狗，暴露到局域网等于把本机配额借给别人用。
+# 监听地址。默认只绑本机回环：这个服务会拿本机 IP 去抓 NPC / 总局 / 搜狗 /
+# 税屋，暴露到局域网等于把本机配额借给别人用。
 #   本机自用   默认 127.0.0.1
 #   局域网共享 TAX_BIND=0.0.0.0
 #   容器里跑   必须 TAX_BIND=0.0.0.0——`-p` 端口映射靠 DNAT 把包投给容器自己
@@ -309,7 +307,6 @@ def _count_note(result: dict, source: str, page: int) -> str:
 
 
 _text_cache = {}
-_interp_cache = {}
 
 # 相关网页的三路组合、垃圾过滤与来源标签都在 tax_related 里。
 # 这一层只留转出，Flask 与三个适配器才用的是同一份判据。
@@ -317,26 +314,8 @@ _is_garbage_result = tax_related.is_garbage_result
 
 # ── Interpretation Search Engine ─────────────────────────────────────────
 
-def _date_from_url(url: str) -> str:
-    """从 URL 里的日期目录里取发布日期，取不到就返回空串。
-
-    常见形态是 /201904/t20220313_xxx.html 或 /201904/816904caec....shtml。
-    后者那串 32 位哈希紧跟在年份后面，直接正则抓 8 位数字会拼出 "2019-04-81"
-    这种不存在的日期，所以抓到之后要按真实日历校验一遍。
-    """
-    m = re.search(r"(\d{4})[-/]?(\d{2})[-/]?(\d{2})", url)
-    if not m:
-        return ""
-    y, mo, d = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
-    try:
-        date(y, mo, d)
-    except ValueError:
-        return ""
-    return f"{y:04d}-{mo:02d}-{d:02d}"
-
-
 def _search_one_source(site: str, query: str, n: int = 5) -> tuple[list, str]:
-    """Search a specific site for policy interpretations, via 360 site: search.
+    """Search a specific site for policy interpretations, via Sogou site: search.
 
     返回 (结果, 拦截说明)。说明非空表示这一路根本没取到数据，调用方不能把
     0 条当成"该站点没有解读"。
@@ -345,7 +324,7 @@ def _search_one_source(site: str, query: str, n: int = 5) -> tuple[list, str]:
     cn/m.bing.com 虽偶发返回 10 个 <li class="b_algo">，但内容与查询无关
     （查 chinatax.gov.cn 企业所得税法 返回"元气壁纸"），属于不可信降级。
     """
-    found = so360_search(query, site=site, size=n)
+    found = sogou_search(query, site=site, size=n)
     if found.get("_error"):
         return [], found["_error"]
 
@@ -357,7 +336,7 @@ def _search_one_source(site: str, query: str, n: int = 5) -> tuple[list, str]:
         results.append({
             "title": title,
             "url": item["url"],
-            "date": _date_from_url(item.get("url", "")),
+            "date": item.get("date", ""),
             "source": site,
             "source_label": _source_label(site),
             "snippet": item.get("snippet", ""),
@@ -407,48 +386,39 @@ def search_interpretations(law_title: str, keyword: str = "",
                            province: str = "") -> dict:
     """Search **official** policy interpretations ONLY from .gov.cn sources.
     Practice/public-account/web results belong in /api/web-related, NOT here."""
-    cache_key = f"{law_title}|{keyword}|{'-'.join(sources or [])}|{province}"
-    if cache_key in _interp_cache:
-        return _interp_cache[cache_key]
-
     if sources is None:
         if province:
             sources = [f"{province}.chinatax.gov.cn", "chinatax.gov.cn", "www.gov.cn"]
         else:
-            sources = ["chinatax.gov.cn", "fgk.chinatax.gov.cn", "mof.gov.cn", "www.gov.cn"]
+            sources = ["chinatax.gov.cn", "mof.gov.cn", "www.gov.cn"]
+    sources = list(dict.fromkeys(sources))
 
     title_short = law_title.replace("中华人民共和国", "").strip()
 
-    # 只搜官方站点的解读：每站两条问法，避免 4 站 × 4 问 = 16 次请求
-    official_queries = [
-        f"{title_short} 政策解读",
-        f"{keyword} 官方解读" if keyword and keyword != law_title else f"{title_short} 解读",
-    ]
+    base_query = f"{title_short} 政策解读"
+    alt_query = (f"{keyword} 官方解读" if keyword and keyword != law_title
+                 else f"{title_short} 解读")
+    search_plan = []
+    for i, site in enumerate(sources):
+        q_text = alt_query if i == 0 and alt_query != base_query else base_query
+        search_plan.append((site, q_text))
 
     all_results = []
     seen_urls = set()
     blocked = []
 
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = {}
-        for site in sources:
-            for q_text in official_queries[:3]:
-                futures[(site, q_text)] = pool.submit(
-                    _search_one_source, site, q_text, 4
-                )
-
-        for (site, q_text), future in futures.items():
-            try:
-                items, why = future.result(timeout=15)
-                if why:
-                    blocked.append(why)
-                for item in items:
-                    if isinstance(item, dict) and item.get("url"):
-                        if item["url"] not in seen_urls:
-                            seen_urls.add(item["url"])
-                            all_results.append(item)
-            except Exception:
-                pass
+    for site, q_text in search_plan:
+        try:
+            items, why = _search_one_source(site, q_text, 100)
+            if why:
+                blocked.append(why)
+            for item in items:
+                if isinstance(item, dict) and item.get("url"):
+                    if item["url"] not in seen_urls:
+                        seen_urls.add(item["url"])
+                        all_results.append(item)
+        except Exception as exc:
+            blocked.append(f"{site}: {tax_http.short_reason(exc)}")
 
     result = {
         "law_title": law_title,
@@ -457,15 +427,9 @@ def search_interpretations(law_title: str, keyword: str = "",
         "sources": all_results[:15],
         "searched_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
-    # 一条站点都没取到时必须说清是"被拦"还是"确实没有"：前端空态文案
-    # "该法规可能暂无公开的政策解读文件"只有在搜索引擎正常工作时才成立。
-    # 被拦的这种结果不进缓存，否则限流恢复后仍会一直回空。
-    if not all_results and blocked:
-        result["engine_error"] = blocked[0]
-        result["queries_blocked"] = f"{len(blocked)}/{len(futures)}"
-        return result
-
-    _interp_cache[cache_key] = result
+    if blocked:
+        result["engine_error"] = "; ".join(dict.fromkeys(blocked))
+        result["queries_blocked"] = f"{len(blocked)}/{len(search_plan)}"
     return result
 
 
@@ -878,7 +842,7 @@ def api_interpretations(bbbs_id):
 
 # ── Web-related search (broader, more practical) ──────────────────────────
 def _search_web_broad(query: str, n: int = 8) -> tuple[list, str]:
-    """360 全网那一路；实现与三个适配器共用 tax_related 那一份。"""
+    """搜狗全网那一路；实现与三个适配器共用 tax_related 那一份。"""
     results, note = tax_related.search_web_broad(query, n)
     return results, note
 

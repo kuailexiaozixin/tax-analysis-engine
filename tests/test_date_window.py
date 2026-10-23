@@ -209,7 +209,7 @@ def _stubbed_sources(calls, payloads=None):
     """
     payloads = payloads or {}
     mocks = []
-    for name in ("search_tax", "search_chinatax", "so360_search",
+    for name in ("search_tax", "search_chinatax", "sogou_search",
                  "search_shui5", "search_wechat", "search_ctax"):
         def make(fn_name):
             def stub(*a, **kw):
@@ -240,7 +240,7 @@ class _Group:
 
 
 _FN_SOURCE = {"search_tax": "npc", "search_chinatax": "chinatax",
-              "so360_search": "so360", "search_shui5": "shui5",
+              "sogou_search": "sogou", "search_shui5": "shui5",
               "search_wechat": "wechat", "search_ctax": "ctax"}
 
 
@@ -293,7 +293,7 @@ class TestAggregatorLocalWindow(unittest.TestCase):
         return {
             "npc": [{"title": "法A", "publish_date": "2025-05-01"}],
             "chinatax": [{"title": "公告B", "date": "2025-06-01"}],
-            "so360": [{"title": "省局C"}, {"title": "省局D"}],
+            "sogou": [{"title": "省局C"}, {"title": "省局D"}],
             "shui5": [{"title": "解读E", "date": "2025-04-01"},
                       {"title": "解读F", "date": "2019-01-01"}],
             "wechat": [{"title": "公号G", "date": "2018-01-01"},
@@ -315,13 +315,13 @@ class TestAggregatorLocalWindow(unittest.TestCase):
         self.assertIn("公号H", titles)
 
     def test_undated_items_are_kept_and_counted(self):
-        """360 那一路解析结果根本没有日期字段，按区间外处理会整源消失。"""
+        """搜狗那一路不是每条都带日期，按区间外处理会让无日期条目整源消失。"""
         r = self._run(date_from="2024-01-01", date_to="2026-12-31")
         titles = {it["title"] for it in r["items"]}
         self.assertIn("省局C", titles)
         self.assertIn("省局D", titles)
-        self.assertEqual(2, r["_date_filter"]["local_window"]["so360"]["no_date"])
-        self.assertEqual(0, r["_date_filter"]["local_window"]["so360"]["out_of_range"])
+        self.assertEqual(2, r["_date_filter"]["local_window"]["sogou"]["no_date"])
+        self.assertEqual(0, r["_date_filter"]["local_window"]["sogou"]["out_of_range"])
 
     def test_local_counts_add_up_per_source(self):
         r = self._run(date_from="2024-01-01", date_to="2026-12-31")
@@ -336,10 +336,10 @@ class TestAggregatorLocalWindow(unittest.TestCase):
     def test_every_local_source_in_scope_has_an_entry(self):
         """某源这一轮 0 条也要留键，缺键会被读成"这一源没参与补筛"。"""
         calls = {}
-        with _stubbed_sources(calls, {"npc": [], "chinatax": [], "so360": [],
+        with _stubbed_sources(calls, {"npc": [], "chinatax": [], "sogou": [],
                                       "shui5": [], "wechat": []}):
             r = tax_aggregator.aggregate_search("增值税", date_from="2024-01-01")
-        self.assertEqual({"so360", "shui5", "wechat"},
+        self.assertEqual({"sogou", "shui5", "wechat"},
                          set(r["_date_filter"]["local_window"]))
         for st in r["_date_filter"]["local_window"].values():
             self.assertEqual(0, st["got"])
@@ -484,7 +484,7 @@ class TestFrontendDateNote(unittest.TestCase):
         from tax_aggregator import (DATE_SERVER_FIELDS, DEFAULT_SOURCES,
                                     _date_scope_note)
         stats = {s: {"got": 4, "in_range": 2, "out_of_range": 1, "no_date": 1}
-                 for s in ("so360", "shui5", "wechat")}
+                 for s in ("sogou", "shui5", "wechat")}
         note = _date_scope_note("2024-01-01", "2026-12-31", list(DEFAULT_SOURCES),
                                 stats, "")
         for source, field in DATE_SERVER_FIELDS.items():

@@ -46,7 +46,7 @@ INTENT_HEADERS = {
 }
 
 PRACTICE_SOURCE_LABELS = {
-    "so360": "360",
+    "sogou": "搜狗",
     "shui5": "税屋",
     "wechat": "公众号",
 }
@@ -145,13 +145,13 @@ def merge_aggregated_response(npc_results: dict, chinatax_results: list,
                               intent: str = "policy_lookup") -> str:
     """Format aggregated results from multiple data sources.
 
-    practice_results 是 360 / 税屋 / 微信公众号的条目，每条带 _source 标明来源。
+    practice_results 是搜狗 / 税屋 / 微信公众号的条目，每条带 _source 标明来源。
     """
 
     searched_at = time.strftime("%Y-%m-%d %H:%M:%S")
     lines = [
         f"> 🔍 **多源实时查询** | {searched_at}",
-        f"> 数据源: NPC 国家法规库 | 国家税务总局 | 360 | 税屋 | 微信公众号",
+        f"> 数据源: NPC 国家法规库 | 国家税务总局 | 搜狗 | 税屋 | 微信公众号",
         "",
         f"## \"{keyword}\" — {INTENT_HEADERS.get(intent, '查询结果')}",
         "",
@@ -185,9 +185,9 @@ def merge_aggregated_response(npc_results: dict, chinatax_results: list,
                 lines.append(f"  链接: {item['url']}")
         lines.append("")
 
-    # 360 / 税屋 / 微信公众号：实务解读与地方文件，权威性低于上面两源
+    # 搜狗 / 税屋 / 微信公众号：实务解读与地方文件，权威性低于上面两源
     if practice_results:
-        lines.append("### 🏠 实务解读与地方文件（360 / 税屋 / 微信公众号）")
+        lines.append("### 🏠 实务解读与地方文件（搜狗 / 税屋 / 微信公众号）")
         lines.append("")
         for item in practice_results[:8]:
             src = PRACTICE_SOURCE_LABELS.get(item.get("_source", ""), "网页")
@@ -226,7 +226,7 @@ def main():
     data = json.loads(raw)
 
     if args.mode == "aggregated":
-        practice = (data.get("so360", []) + data.get("shui5", [])
+        practice = (data.get("sogou", []) + data.get("shui5", [])
                     + data.get("wechat", []))
         output = merge_aggregated_response(
             npc_results=data.get("npc"),

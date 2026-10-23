@@ -37,7 +37,7 @@ MaoDocs **无前置防护**：直连 curl/urllib 即返 200 带全文。实测�
 | **"时效性：现行有效"是站方录入** | 详情页发文信息块带"时效性：现行有效"文字，非接口状态位、无修订链 | 不接进 `tax_evidence.judge_validity`；别据此写"经判定现行有效" |
 | **索引页混挂全局导航** | 分类索引页 HTML 同时含站点全局导航（会计法/证券法/注册会计师法/企业会计制度）与本类子条目 | 脚本 `search` 只认 `/{分类前缀}/` 下的链接；否则"准则""法"这类词会把导航项当命中带回 |
 | **一个准则可能是一整篇、不按主题分页** | `cass`（小企业会计准则）本类只有 2 页：正文 + 附录（会计科目/账务处理/报表）；搜"存货"返回 0 是**确实没有单独存货篇**，不是失败 | 空结果先按分类粒度判断，别当取数失败；要按主题找应先确认该系列是否分篇 |
-| **`garr` 是跨专题大类** | `securities/garr/` 下按 accounting/auditing/appraisal/issuing/listing/overseas… 分子目录，原生 38 篇；搜"减持"返回 0 因该站此分类无此标题篇 | 命中不稳时先 `search garr ""` 列全类再定位；不要退回 360  broad-web |
+| **`garr` 是跨专题大类** | `securities/garr/` 下按 accounting/auditing/appraisal/issuing/listing/overseas… 分子目录，原生 38 篇；搜"减持"返回 0 因该站此分类无此标题篇 | 命中不稳时先 `search garr ""` 列全类再定位；不要退回 搜狗 broad-web |
 | **Git Bash 路径改写** | `fetch "/accounting/ent/cas/02.html"` 里以 `/` 开头的参数被 MSYS 改写成 `D:/Git/accounting/...` → 404 | 相对路径要配 `MSYS_NO_PATHCONV=1`，或直接传完整 URL（脚本对 `http` 开头不做拼接） |
 
 ## 与 chenyiwei-bbs 的分工
