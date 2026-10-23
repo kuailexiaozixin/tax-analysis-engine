@@ -191,8 +191,8 @@ class TestRegistryShape(unittest.TestCase):
         """研发三套口径的唯一基准在子技能那份文件里，本条只取加计扣除那一列。"""
         hint = " ".join(p["law_hint"] for p in BY_CODE["RD01"]["参数"])
         self.assertIn("rd-mgmt-methodology.md", hint)
-        self.assertTrue((ROOT / "subskills" / "rd-deduction-hitech" / "references" /
-                         "rd-mgmt-methodology.md").exists(),
+        self.assertTrue((ROOT / "subskills" / "R&D-Expenses" / "subskills" /
+                         "rd-internal-control" / "references" / "rd-mgmt-methodology.md").exists(),
                         "注册表指向的口径基准文件不存在")
 
 

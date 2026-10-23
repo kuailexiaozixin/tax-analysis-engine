@@ -12,11 +12,11 @@
      所以子技能文档里 ⑤ 及以上的圈号只可能是"回 ⑦ 定级""进 ⑧"这种指针——一旦
      子技能被单独分发，收的人手上没有那 13 步，编号就指不到东西。文内自数的
      枚举允许，实测本轮 subskills 里的圈号最大到 ④（chinatax/NOTE.md 的三条与四条
-     读法、rd-deduction-hitech 的三条能力线）；要自数到第五项就改用 `1.` 的阿拉伯
+     读法、R&D-Expenses 的三条能力线）；要自数到第五项就改用 `1.` 的阿拉伯
      数字列表。
   3. **路径指针存在**：文档里 `references/…`、`scripts/…`、`tests/…`、`frontend/…`、
      `subskills/…`、`eval/…` 那 134 处指针（本轮实测口径见下面"计数"），先按子技能
-     目录解、再按仓库根解。rd-deduction-hitech 有自己的 `references/`，母技能那一份
+     目录解、再按仓库根解。R&D-Expenses 有自己的 `references/`，母技能那一份
      在仓库根，两套都算落地；写成 `scripts/tax_browser.BrowserSession` 那种带符号名
      后缀的形态，去掉尾段再试；带 `*` 的按 glob 至少命中一个。
   4. **「第X步／第X节」指针落地**：53 处（本轮实测）逐个解到真实标记。这个仓库里
@@ -91,7 +91,7 @@ def bundle_gaps(dirs, skill_texts):
         if d.name in MIRROR_DOCS:
             continue
         t = skill_texts.get(d.name)
-        if t is not None and not re.search(r"(?m)^## 工作流\s*$", t):
+        if t is not None and not re.search(r"(?m)^##\s+.*工作流\s*$", t):
             gaps.append(f"{d.name}: SKILL.md 没有 ## 工作流 这一节")
     return gaps
 
@@ -210,11 +210,11 @@ class TestPathPointers(unittest.TestCase):
         self.assertEqual(path_gaps(self.pairs), [])
 
     def test_local_references_directory_counts_as_resolved(self):
-        """rd-deduction-hitech 自带 references/，指针先按子技能目录解——这条钉住
+        """R&D-Expenses 自带 references/，指针先按子技能目录解——这条钉住
         两解法的优先级，否则删掉本地那份会被读成断链。"""
-        sdir = SUBSKILLS / "rd-deduction-hitech"
+        sdir = SUBSKILLS / "R&D-Expenses" / "subskills" / "rd-internal-control"
         self.assertTrue((sdir / "references").is_dir())
-        self.assertTrue(path_resolves("references/deduction-guide.md", sdir))
+        self.assertTrue(path_resolves("references/rd-mgmt-methodology.md", sdir))
 
     def test_mutation_bogus_script_name_is_caught(self):
         broken = [("subskills/chinatax/SKILL.md", SUBSKILLS / "chinatax",
@@ -224,9 +224,9 @@ class TestPathPointers(unittest.TestCase):
                          "拼错的脚本名没被查出来")
 
     def test_mutation_dropped_local_reference_file_is_caught(self):
-        sdir = SUBSKILLS / "rd-deduction-hitech"
-        real = path_resolves("references/deduction-guide.md", sdir)
-        ghost = path_resolves("references/deduction-guidex.md", sdir)
+        sdir = SUBSKILLS / "R&D-Expenses" / "subskills" / "rd-internal-control"
+        real = path_resolves("references/rd-mgmt-methodology.md", sdir)
+        ghost = path_resolves("references/rd-mgmt-methodologx.md", sdir)
         self.assertTrue(real)
         self.assertFalse(ghost, "子技能本地 references/ 里不存在的文件被放过了")
 
