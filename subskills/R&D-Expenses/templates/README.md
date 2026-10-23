@@ -1,10 +1,10 @@
-# 模板库索引（制度 / 流程 / 表单）
+# 模板库索引（制度 / 流程 / 表单 / 辅助账）
 
-> 迁移自旧「研发费用加计扣除与高企认定」技能包的模板库，共 **29 份**：制度 16 / 流程 7 / 表单与报表 6。文件使用 `{{占位符}}`，填入企业信息即成稿。
-> 支撑文档（同技能 `references/`）：[`rd-mgmt-methodology.md`](../references/rd-mgmt-methodology.md)（研发费用管理方法论）、[`regulatory-basis.md`](../references/regulatory-basis.md)（政策口径索引）、[`workflow-governance.md`](../references/workflow-governance.md)（制度侧工作流）、[`workflow-evidence.md`](../references/workflow-evidence.md)（证据 / 资料包工作流）。
-> ⚠️ **政策引用以本包 `../../policy/` 原文及其现行效力为准**；迁移文档内的旧文件名仅作线索，引用时按 `../../policy/README.md` 核对。
+> 本技能可交付模板共 **34 份**，文件使用 `{{占位符}}`，填入企业信息即成稿。主要在「3.5 内控建设与流程优化」场景由第 5–6 步直接调用；`03-forms` 的表单/报表亦服务于 3.2 申报与 3.3 优惠。
+> 方法底座：[`../references/rd-mgmt-methodology.md`](../references/rd-mgmt-methodology.md)、[`../references/workflow-governance.md`](../references/workflow-governance.md)、[`../references/workflow-evidence.md`](../references/workflow-evidence.md)。
+> ⚠️ 政策引用以本技能 [`../policy/`](../policy/README.md) 原文及其现行效力为准。
 
-## 一、制度（templates/01-regulations/，16）
+## 一、制度（01-regulations/，16）
 
 | 文件 | 用途 |
 |:---|:---|
@@ -25,7 +25,7 @@
 | cooperation-patent-management.md | 产学研合作与知识产权管理制度 |
 | travel-meeting-expense-system.md | 研发差旅费及会议费管理制度 |
 
-## 二、流程（templates/02-processes/，7）
+## 二、流程（02-processes/，7）
 
 | 文件 | 用途 |
 |:---|:---|
@@ -37,7 +37,7 @@
 | equipment-audit-workflows.md | 设备共用分摊流程 + 外部核查应对流程 |
 | budget-adjustment-and-cross-period-workflows.md | 预算编制调整流程 + 费用跨期调整流程 |
 
-## 三、表单与报表（templates/03-forms/，6）
+## 三、表单与报表（03-forms/，6）
 
 | 文件 | 用途 |
 |:---|:---|
@@ -47,3 +47,15 @@
 | evidence-checklist.md | 三套资料证据清单（加计 8 项 / 高企 6 项 / IPO 8 项） |
 | labor-cost-allocation.md | 人工费用分配明细表 + 汇总表（含算法） |
 | expense-difference-explanation.md | 加计 / 高企 / 会计口径差异说明 |
+
+## 四、辅助账实操工具（04-practical-tools/，5）
+
+| 文件 | 覆盖模板 | 用途 |
+|:---|:---|:---|
+| AL-01-auxiliary-ledger-templates.md | AL-01~04 | 费用结构明细表 / 人员人工 / 材料领用 / 设备折旧电费 |
+| AL-05-project-flow-table.md | AL-05~06 | 项目汇总 + 费用明细流转 |
+| AL-07-allocation-tables.md | AL-07~11 | 工资 / 材料 / 折旧 / 设备 / 工时统计 5 张分配表 |
+| AL-12-personnel-ledger.md | AL-12~14 | 研发人员台账（工资 / 社保 / 导入模板） |
+| AL-15-ledger-working-papers.md | AL-15~17 | 台账底稿 / 凭证序时簿 / 外部费用导入 |
+
+> 官方辅助账样式原文见 [`../policy/税务总局公告2021-28号-进一步落实研发费用加计扣除政策.md`](../policy/税务总局公告2021-28号-进一步落实研发费用加计扣除政策.md)（二、辅助账样式）与 [`../policy/研发费用加计扣除与高新技术企业优惠实务及案例.md`](../policy/研发费用加计扣除与高新技术企业优惠实务及案例.md) 表 4-2 / 4-3。

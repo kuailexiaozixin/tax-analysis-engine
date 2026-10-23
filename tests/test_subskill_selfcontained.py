@@ -53,6 +53,9 @@ SUBSKILLS = ROOT / "subskills"
 # 上游镜像件：结构与措辞由站点定，第 1 项（工作流小节）对它豁免
 MIRROR_DOCS = {"chenyiwei-bbs"}
 
+# 内容已并入 SKILL.md（目录结构 + 部署约束）与各资产 README 的技能：不强制 NOTE.md
+NO_NOTE_DOCS = {"R&D-Expenses"}
+
 CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯"
 LOCAL_CIRCLED_MAX = 4            # 文内自数只到 ④；⑤ 起算主技能私有编号
 NUM = "一二三四五六七八九十"
@@ -86,7 +89,7 @@ def bundle_gaps(dirs, skill_texts):
     for d in dirs:
         if not (d / "SKILL.md").exists():
             gaps.append(f"{d.name}: 缺 SKILL.md")
-        if not (d / "NOTE.md").exists():
+        if d.name not in NO_NOTE_DOCS and not (d / "NOTE.md").exists():
             gaps.append(f"{d.name}: 缺 NOTE.md")
         if d.name in MIRROR_DOCS:
             continue
@@ -212,7 +215,7 @@ class TestPathPointers(unittest.TestCase):
     def test_local_references_directory_counts_as_resolved(self):
         """R&D-Expenses 自带 references/，指针先按子技能目录解——这条钉住
         两解法的优先级，否则删掉本地那份会被读成断链。"""
-        sdir = SUBSKILLS / "R&D-Expenses" / "subskills" / "rd-internal-control"
+        sdir = SUBSKILLS / "R&D-Expenses"
         self.assertTrue((sdir / "references").is_dir())
         self.assertTrue(path_resolves("references/rd-mgmt-methodology.md", sdir))
 
@@ -224,7 +227,7 @@ class TestPathPointers(unittest.TestCase):
                          "拼错的脚本名没被查出来")
 
     def test_mutation_dropped_local_reference_file_is_caught(self):
-        sdir = SUBSKILLS / "R&D-Expenses" / "subskills" / "rd-internal-control"
+        sdir = SUBSKILLS / "R&D-Expenses"
         real = path_resolves("references/rd-mgmt-methodology.md", sdir)
         ghost = path_resolves("references/rd-mgmt-methodologx.md", sdir)
         self.assertTrue(real)

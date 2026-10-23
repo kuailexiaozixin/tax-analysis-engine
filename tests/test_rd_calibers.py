@@ -24,10 +24,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 SUB = ROOT / "subskills" / "R&D-Expenses"
-ACC = SUB / "subskills" / "rd-accounting-tax"
-BASE = ACC / "references" / "subject-caliber-baseline.md"
+REF = SUB / "references"
+BASE = REF / "subject-caliber-baseline.md"
 SKILL = SUB / "SKILL.md"
-ACC_SKILL = ACC / "SKILL.md"
 POLICY = SUB / "policy"
 
 BOOK = POLICY / "研发费用加计扣除与高新技术企业优惠实务及案例.md"
@@ -101,8 +100,8 @@ class TestSingleBaseline(unittest.TestCase):
                                 "基准文件应标题与正文各写一次「唯一基准」")
 
     def test_subskill_entry_points_back(self):
-        self.assertFalse(pointer_missing(read(ACC_SKILL)),
-                         "rd-accounting-tax 的 SKILL.md 没有指回科目级口径基准")
+        self.assertFalse(pointer_missing(read(SKILL)),
+                         "SKILL.md 没有指回科目级口径基准")
 
 
 class TestValuesMatchOriginalText(unittest.TestCase):
@@ -227,7 +226,7 @@ class TestMutations(unittest.TestCase):
         self.assertEqual(7, len(heads))
 
     def test_mut_pointer_removed_goes_red(self):
-        broken = read(ACC_SKILL).replace("subject-caliber-baseline", "口径另表")
+        broken = read(SKILL).replace("subject-caliber-baseline", "口径另表")
         self.assertTrue(pointer_missing(broken))
 
 
